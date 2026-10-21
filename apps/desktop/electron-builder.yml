@@ -1,0 +1,43 @@
+appId: org.libretv.desktop
+productName: LibreTV
+copyright: AGPL-3.0-or-later · 基于 LibreSpark/LibreTV
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - out/**
+  - package.json
+
+extraMetadata:
+  main: out/main/index.js
+
+asar: true
+
+win:
+  target:
+    - nsis
+    - portable
+  artifactName: LibreTV-${version}-${arch}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: LibreTV
+
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.entertainment
+  artifactName: LibreTV-${version}-${arch}.${ext}
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: AudioVideo
+  artifactName: LibreTV-${version}-${arch}.${ext}

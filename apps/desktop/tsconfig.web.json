@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["vite/client"],
+    "paths": {
+      "@libretv/core": ["../../packages/core/src/index.ts"],
+      "@renderer/*": ["./src/renderer/src/*"],
+      "@defaults": ["../../defaults/sources.json"]
+    }
+  },
+  "include": ["src/renderer/src/**/*.ts", "src/renderer/src/**/*.tsx", "src/preload/index.d.ts"]
+}

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+out/
+release/
+.tools/
+.artifacts/
+reference/LibreTV/.git/
+*.log
+.DS_Store
+apps/androidtv/.gradle/
+apps/androidtv/**/build/
+apps/androidtv/local.properties
+apps/androidtv/.kotlin/
