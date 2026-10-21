@@ -15,6 +15,16 @@ let proxy: MediaProxy | null = null;
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL;
 
+/**
+ * 允许用环境变量指定数据目录。
+ *
+ * 便携版应当把数据放在 exe 旁边（否则同一台机器上的安装版和便携版会互相覆盖
+ * 历史、源和设置），自动化脚本也需要一个干净目录来跑，不能污染用户真实数据。
+ * 必须放在 app ready 之前执行，setPath 之后才生效。
+ */
+const userDataOverride = process.env.LIBRETV_USER_DATA;
+if (userDataOverride) app.setPath('userData', path.resolve(userDataOverride));
+
 /** 窗口/任务栏图标：与上游 LibreTV 同一套 artwork（打包后放在 resources/icon.png） */
 const appIcon = app.isPackaged
   ? path.join(process.resourcesPath, 'icon.png')
