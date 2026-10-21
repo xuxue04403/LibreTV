@@ -11,3 +11,6 @@ apps/androidtv/.gradle/
 apps/androidtv/**/build/
 apps/androidtv/local.properties
 apps/androidtv/.kotlin/
+apps/androidtv/keystore.properties
+apps/androidtv/*.jks
+apps/androidtv/*.keystore

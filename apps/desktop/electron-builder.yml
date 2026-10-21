@@ -30,6 +30,7 @@ win:
   target:
     - nsis
     - portable
+  # 两个目标不能共用 artifactName，否则后构建的会覆盖前一个（实测只剩便携版）
   artifactName: LibreTV-${version}-${arch}.${ext}
 
 nsis:
@@ -38,6 +39,10 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   shortcutName: LibreTV
+  artifactName: LibreTV-Setup-${version}-${arch}.${ext}
+
+portable:
+  artifactName: LibreTV-Portable-${version}-${arch}.${ext}
 
 mac:
   target:
