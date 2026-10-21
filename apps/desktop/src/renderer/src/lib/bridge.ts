@@ -35,6 +35,8 @@ export function appInfo(): AppInfo {
 
 const fetchHttp = createFetchHttp();
 
+let streamSeq = 0;
+
 /**
  * 渲染层 HTTP 适配器：
  * 桌面端走主进程（无 CORS、可注入 UA），浏览器预览回退到 fetch。
@@ -57,6 +59,57 @@ export const http: HttpClient = {
       bytes: res.bytes,
       text: res.text,
     };
+  },
+
+  /**
+   * 流式抓取：直播源（2.5MB / 近万频道）整串下载要一分钟以上，
+   * 这里让分块边到边解析，第一批频道几百毫秒就能显示。
+   * 没有主进程（浏览器预览）时退回 fetch 的流式实现。
+   */
+  async stream(url, options): Promise<HttpResponse> {
+    if (!window.libretv) {
+      if (!fetchHttp.stream) return fetchHttp.request(url, options);
+      return fetchHttp.stream(url, options);
+    }
+    const streamId = ++streamSeq;
+    const parts: Uint8Array[] = [];
+    let total = 0;
+    let cancelled = false;
+    const onAbort = (): void => {
+      cancelled = true;
+      void window.libretv?.streamCancel(streamId);
+    };
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+
+    try {
+      const res = await window.libretv.stream(
+        url,
+        { headers: options.headers, idleTimeoutMs: options.idleTimeoutMs, streamId },
+        (chunk) => {
+          if (cancelled) return;
+          total += chunk.byteLength;
+          parts.push(chunk);
+          options.onChunk(chunk);
+        }
+      );
+      const bytes = new Uint8Array(total);
+      let offset = 0;
+      for (const p of parts) {
+        bytes.set(p, offset);
+        offset += p.byteLength;
+      }
+      if (!res.ok) throw new Error(res.error || `HTTP ${res.status}`);
+      return {
+        ok: res.ok,
+        status: res.status,
+        url: res.url,
+        headers: res.headers ?? {},
+        bytes,
+        text: new TextDecoder('utf-8').decode(bytes),
+      };
+    } finally {
+      options.signal?.removeEventListener('abort', onAbort);
+    }
   },
 };
 

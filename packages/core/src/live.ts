@@ -7,7 +7,7 @@
  */
 
 import { maybeGunzip, type HttpClient } from './http';
-import { collectGroups, parseM3u, parseM3uEpgUrl } from './m3u';
+import { collectGroups, createM3uParser, parseM3u, parseM3uEpgUrl } from './m3u';
 import type { EpgProgram, LiveChannel, LiveEpg, LivePlaylist } from './types';
 
 export interface LiveOptions {
@@ -15,20 +15,128 @@ export interface LiveOptions {
   signal?: AbortSignal;
 }
 
-/** 拉取并解析 M3U 订阅 */
+export interface LiveProgress {
+  /** 目前已解析出的频道总数 */
+  channels: number;
+  /** 已下载字节数 */
+  bytes: number;
+  /** 已耗时（ms） */
+  elapsed: number;
+}
+
+export interface LiveStreamOptions extends LiveOptions {
+  /**
+   * 每解析出一批新频道就回调一次（渐进渲染）。
+   *
+   * 只有宿主提供了 `http.stream` 才会真正渐进；否则会在下载完成后
+   * 一次性回调。调用方应当把回调当成「累加」而不是「全量」。
+   */
+  onChannels?: (added: LiveChannel[], progress: LiveProgress) => void;
+  /** 每隔多久推一次进度（默认 400ms），避免大列表把渲染层刷爆 */
+  progressIntervalMs?: number;
+  /**
+   * 流式路径下「多久没收到数据」判定卡死（默认 20 秒）。
+   *
+   * 不用 timeoutMs 是因为大列表（上万频道）合法地要下一两分钟，
+   * 总时长死线会把正常情况误杀。
+   */
+  idleTimeoutMs?: number;
+}
+
+/** UTF-8 流式解码器：网络分块会切开多字节字符，必须用流式模式 */
+function createDecoder(): { decode: (chunk: Uint8Array) => string; flush: () => string } {
+  const decoder = new TextDecoder('utf-8');
+  return {
+    decode: (chunk) => decoder.decode(chunk, { stream: true }),
+    flush: () => decoder.decode(),
+  };
+}
+
+/**
+ * 拉取并解析 M3U 订阅。
+ *
+ * 传了 `onChannels` 且宿主支持 `http.stream` 时会走渐进路径：
+ * 边下边解析，第一批频道几百毫秒就能显示，而不是等整个列表下完。
+ */
 export async function fetchLivePlaylist(
   url: string,
   http: HttpClient,
-  opts: LiveOptions = {}
+  opts: LiveStreamOptions = {}
 ): Promise<LivePlaylist & { epgUrl?: string }> {
+  const headers = {
+    Accept: 'application/x-mpegURL, application/vnd.apple.mpegurl, text/plain, */*',
+  };
+  const started = Date.now();
+
+  if (opts.onChannels && typeof http.stream === 'function') {
+    const parser = createM3uParser(url);
+    const decoder = createDecoder();
+    const all: LiveChannel[] = [];
+    let bytes = 0;
+    let lastPush = 0;
+    const interval = opts.progressIntervalMs ?? 400;
+    let head = '';
+
+    const emit = (added: LiveChannel[], force: boolean): void => {
+      if (added.length === 0) return;
+      for (const ch of added) all.push(ch);
+      const now = Date.now();
+      if (!force && now - lastPush < interval) return;
+      lastPush = now;
+      opts.onChannels?.(added, { channels: all.length, bytes, elapsed: now - started });
+    };
+
+    const feed = (chunk: Uint8Array): void => {
+      bytes += chunk.byteLength;
+      if (chunk.byteLength === 0) return;
+      // 注意：同一个 TextDecoder 的 stream 模式是有状态的，一块字节只能 decode 一次，
+      // 否则第二个 chunk 会被当成「接续上一块剩余字节」→ 中文全变乱码。
+      const text = decoder.decode(chunk);
+      // 前 4KB 留下来解析 #EXTM3U 头部的 EPG 地址与订阅名
+      if (head.length < 4096) head += text.slice(0, 4096 - head.length);
+      emit(parser.push(text), false);
+    };
+
+    let res;
+    try {
+      res = await http.stream(url, {
+        headers,
+        signal: opts.signal,
+        idleTimeoutMs: opts.idleTimeoutMs,
+        onChunk: feed,
+      });
+    } catch (err) {
+      // 流式中途失败但已经拿到部分频道时用已解析结果兜底（总比空白页好）
+      emit(parser.end(), true);
+      if (all.length === 0) throw err;
+      return { channels: all, groups: collectGroups(all), name: readPlaylistName(head) };
+    }
+    emit(parser.push(decoder.flush()), false);
+    emit(parser.end(), true);
+
+    if (all.length === 0) throw new Error('未解析到可用频道（可能是 txt 格式或不支持的列表）');
+    const text = res.text || head;
+    return {
+      name: readPlaylistName(text || head),
+      channels: all,
+      groups: collectGroups(all),
+      epgUrl: parseM3uEpgUrl(text || head, url),
+    };
+  }
+
   const res = await http.request(url, {
-    headers: { Accept: 'application/x-mpegURL, application/vnd.apple.mpegurl, text/plain, */*' },
+    headers,
     timeoutMs: opts.timeoutMs ?? 15_000,
     signal: opts.signal,
   });
   if (!res.ok) throw new Error(`直播源拉取失败（HTTP ${res.status}）`);
   const channels = parseM3u(res.text, url);
   if (channels.length === 0) throw new Error('未解析到可用频道（可能是 txt 格式或不支持的列表）');
+  opts.onChannels?.(channels, {
+    channels: channels.length,
+    bytes: res.bytes.byteLength,
+    elapsed: Date.now() - started,
+  });
   return {
     name: readPlaylistName(res.text),
     channels,

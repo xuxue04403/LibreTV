@@ -55,7 +55,12 @@ fun LibretvApp(vm: AppViewModel) {
     Box(Modifier.fillMaxSize().background(Bg)) {
         when (screen) {
             is Screen.Player -> PlayerScreen(vm, screen, onExit = { vm.back() })
-            is Screen.LivePlayer -> LivePlayerScreen(vm, screen.channel, onExit = { vm.back() })
+            is Screen.LivePlayer -> LivePlayerScreen(
+                vm = vm,
+                channel = screen.channel,
+                playlist = screen.playlist,
+                onExit = { vm.back() },
+            )
             is Screen.CastPlayer -> CastPlayerScreen(screen, onExit = { vm.back() })
             else -> Row(Modifier.fillMaxSize()) {
                 NavRail(screen, onSelect = { vm.go(it) })

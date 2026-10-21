@@ -86,6 +86,33 @@
 
 候选链由 `packages/core/src/failover.ts` 的 `buildPlaybackCandidates` 生成，**按源轮转**而不是按结果顺序取满 8 条：搜「沙丘」时单个源可能命中 8 个版本，顺序取会让整条链全来自同一个站，而换源要解决的恰恰是该站整体挂掉。TV 端 `PlaybackCandidate.build` 是同规则的 Kotlin 实现。
 
+### 直播列表加载
+
+直播列表的瓶颈在**下载**，不在解析。实测 iptv-org 的 `index.m3u`（11485 个频道，2.46MB）：服务器只给约 35KB/s 且**不启用 gzip**，整串下完要 70–90 秒；而 `parseM3u` 解析 11 万行只要十几毫秒。所以优化全部围绕「不让用户盯着一分钟空列表」：
+
+```
+第 0 秒   读本地缓存（libretv-live-cache-v1，TTL 6h）──命中──▶ 立刻渲染，后台静默刷新
+第 0.7 秒 流式响应首块到达 ──▶ 增量解析 ──▶ 首批频道上屏（实测 719–1431ms）
+第 1–90 秒 每批新增频道 append，标题栏显示「仍在读取（x.x MB）」
+第 90 秒   全部完成 ──▶ 去重后落盘
+```
+
+三段实现分别落在：
+
+1. **`packages/core/src/m3u.ts` 的 `createM3uParser`**：`push(chunk)` 用 `indexOf('\n')` 手动切行（不用 `split`，避免大列表反复分配），跨块的半行存进 `carry`，`end()` 收尾。`parseM3u` 退化成 `push(全文) + end()` 的薄封装，保证整串与增量结果 `toEqual`。
+2. **`packages/core/src/http.ts` 的 `HttpClient.stream`**：可选方法，没实现的宿主自动退回 `request()`（行为不变，只是不渐进）。空闲死线而非总时长寿（默认 20 秒无数据才断）；大列表合法地要下一分钟，给总时长设死线反而会误杀。
+3. **桌面 `Live.tsx` 的增量揭示**：一次只挂载 240 张卡片（`PAGE_SIZE`），用 `IntersectionObserver` 哨兵追加，`rootMargin: 800px`。11485 个频道全量挂载会产生 92945 个 DOM 节点，首屏和滚动都要几百毫秒；窗口化后稳定在 2000–4000 个节点。换台索引仍用**全量** `visible`，所以按 ↓ 能切到尚未挂载的频道。
+
+TV 端同构：`Repository.liveChannelsStream` 按 `batchSize = 120` 回调，`AppViewModel.refreshLive` 用 `Mutex` 累加并**节流 400ms** 才推一次 UI（一万多个频道不节流就是近百次「重算 groups + 整体替换列表」，Compose 重组会明显卡顿）；`AppStore` 用精简字段（`n/u/l/g/t/sk/sn`）而非直接序列化 `LiveChannel` 落盘，省空间也隔离模型演进。
+
+### 直播换台
+
+桌面与 TV 共用同一套语义（`packages/core/src/live-switch.ts` / `data/LiveSwitch.kt`）：在**当前过滤后的可见列表**里循环，而不是全量频道 —— 用户已选分组或搜过关键词，换到列表外的台会莫名其妙。
+
+- 桌面：`LivePlayer` 在 `window` 上监听 `keydown`，`↑/PageUp` 上一台、`↓/PageDown` 下一台、`Esc` 退出、`M` 静音；顶栏另有上一台/下一台按钮与 `n / total` 计数。
+- TV：`onPreviewKeyEvent` 映射 `DirectionUp/Left/ChannelUp` → 上一台、`DirectionDown/Right/ChannelDown` → 下一台、`MediaNext/Previous`、`OK` 暂停继续。`Screen.LivePlayer` 带 `playlist` 字段（进播放页时的可见列表），为空则上下键不响应（首页直播收藏就是这种）。
+- 换台时立刻销毁旧实例（HLS `destroy()` / ExoPlayer `setMediaItem`），否则旧流会在后台继续占带宽和解码器。`8 秒` 的 `switching` 兜底闸门用于防止某些流迟迟不到 `STATE_READY` 导致上下键永久失灵。
+
 ### 投屏链路（发送端）
 
 ```
@@ -142,7 +169,7 @@ scale = min(逻辑宽度dp / 960, 逻辑高度dp / 540)  // 夹在 [0.35, 5]
 
 ### 播放器调优与失败转移
 
-`data/Playback.kt` 统一构建 `ExoPlayer`，不散落在 UI 层：
+`data/Playback.kt` 统一构建 `ExoPlayer`，不散落在 UI 层（点播 `PlayerScreen` 与直播 `LivePlayerScreen` 共用同一个构建器）：
 
 - `DefaultLoadControl`：`MIN_BUFFER_MS 1500` / `MAX_BUFFER_MS 30000` / `BUFFER_FOR_PLAYBACK_MS 1500` / `BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS 3000` / `BACK_BUFFER_MS 20000`，并 `setPrioritizeTimeOverSizeThresholds(true)`。起播只要 1.5 秒缓冲就出画面，长缓冲留给播放中兜底。
 - `DefaultHttpDataSource.Factory`：固定 `Net.UA`、`connectTimeout 12s` / `readTimeout 20s`、`allowCrossProtocolRedirects`、`Accept-Encoding: identity`（避免拿到 gzip 的分片流）。OkHttp 无 CORS 概念，也不需要回环代理。

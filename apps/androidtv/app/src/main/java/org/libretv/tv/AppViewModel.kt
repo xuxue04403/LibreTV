@@ -9,11 +9,14 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import org.libretv.tv.data.AppData
 import org.libretv.tv.data.AppSettings
@@ -52,7 +55,16 @@ sealed interface Screen {
         /** 同片源候选链（含当前源，当前源排第一）；失败时按顺序自动切换 */
         val candidates: List<PlaybackCandidate> = emptyList(),
     ) : Screen
-    data class LivePlayer(val channel: LiveChannel) : Screen
+    data class LivePlayer(
+        val channel: LiveChannel,
+        /**
+         * 换台用的频道序列（通常是当前分组+关键词过滤后的可见列表）。
+         *
+         * 为空时退化成「只播这一个」，遥控器上下键不响应——首页的直播收藏
+         * 就是这样进来的：那里没有列表语境，硬换到别的收藏反而不符合预期。
+         */
+        val playlist: List<LiveChannel> = emptyList(),
+    ) : Screen
     data object Cast : Screen
     data class CastPlayer(val url: String, val title: String) : Screen
 }
@@ -78,6 +90,10 @@ data class LiveUi(
     val groups: List<String> = emptyList(),
     val selectedGroup: String = "全部",
     val keyword: String = "",
+    /** 已下载字节数（渐进加载时显示进度，让用户知道正在动而不是卡死） */
+    val downloadedBytes: Long = 0,
+    /** 命中本地缓存：界面已经可用，后台仍在刷新 */
+    val fromCache: Boolean = false,
 )
 
 data class CategoryUi(
@@ -593,40 +609,140 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // —— 直播 ——
-    fun loadLive() {
+
+    /** 直播缓存的签名：源地址集合 + 成人过滤开关，任一变化都重拉 */
+    private fun liveSignature(sources: List<LiveSource>, adultFilter: Boolean): String =
+        sources.map { it.url }.sorted().joinToString("|") + "#" + if (adultFilter) "1" else "0"
+
+    /**
+     * 拉取直播频道列表：缓存优先 + 渐进渲染。
+     *
+     * 实测 iptv-org 的 index.m3u 有 2.46MB、服务器只给 ~35KB/s，整串下载要 70 秒，
+     * 而解析只要十几毫秒。原实现是全部下完才赋值，用户要盯着一分钟空列表。
+     * 现在三件事同时做：
+     * 1. 先读 DataStore 缓存，命中就立刻渲染（进直播页从 70 秒降到 0）；
+     * 2. 网络请求边下边解析，每 120 个频道刷新一次列表（第一批约 1 秒上屏）；
+     * 3. 全部完成后落盘，下次直接命中。
+     */
+    fun loadLive(force: Boolean = false) {
         val sources = _data.value.activeLiveSources()
         if (sources.isEmpty()) {
             live = live.copy(loading = false)
             showToast("还没有启用任何直播源")
             return
         }
-        live = live.copy(loading = true, channels = emptyList(), statuses = emptyList())
-        viewModelScope.launch {
-            // 多个直播源并行拉取：串行时每加一个源就多等一整轮超时，
-            // 4 个源里只要有一个慢源，整个直播页就会卡住十几秒
-            val fetched = sources.map { source ->
-                async {
-                    source to runCatching { repo.liveChannels(source, _data.value.settings.adultFilter) }
-                }
-            }.awaitAll()
+        if (live.loading) return
+        val adultFilter = _data.value.settings.adultFilter
+        val signature = liveSignature(sources, adultFilter)
+        live = live.copy(loading = true, downloadedBytes = 0)
 
-            val collected = mutableListOf<LiveChannel>()
-            val statuses = mutableListOf<Pair<String, String>>()
-            fetched.forEach { (source, result) ->
-                result
-                    .onSuccess { channels ->
-                        collected += channels
-                        statuses += source.name to "${channels.size} 频道"
-                    }
-                    .onFailure { statuses += source.name to (it.message ?: "加载失败") }
+        viewModelScope.launch {
+            // 1) 缓存优先
+            if (!force) {
+                val cached = runCatching { store.liveCache(signature) }.getOrNull()
+                if (!cached.isNullOrEmpty()) {
+                    live = live.copy(
+                        channels = cached,
+                        groups = listOf("全部") + Parsers.groups(cached),
+                        statuses = sources.map { s -> s.name to "${cached.count { it.sourceKey == s.key }} 频道" },
+                        loading = false,
+                        fromCache = true,
+                    )
+                    // 后台继续刷新，失败就保留缓存（缓存总比空列表有用）
+                    refreshLive(sources, adultFilter, signature, quiet = true, progressive = false)
+                    return@launch
+                }
             }
+            refreshLive(sources, adultFilter, signature, quiet = false, progressive = true)
+        }
+    }
+
+    /**
+     * 真正发起网络请求。
+     *
+     * @param progressive 为 true 时边下边把已解析的频道推给 UI，为 false 时只等最终结果。
+     *   已经有缓存列表在屏上时必须传 false：否则界面会先退化成前 120 个频道再长回来，
+     *   视觉上像「列表被重置了」。
+     */
+    private suspend fun refreshLive(
+        sources: List<LiveSource>,
+        adultFilter: Boolean,
+        signature: String,
+        quiet: Boolean,
+        progressive: Boolean,
+    ) {
+        // 按源分别累加，合并时按 sources 顺序取，避免频道顺序在每次刷新时乱跳
+        val buffers = LinkedHashMap<String, List<LiveChannel>>()
+        val mutex = Mutex()
+        val done = HashMap<String, String>()
+        // 渐进刷新节流：全球列表一万多个频道、每 120 个回调一次，不节流就是
+        // 近百次「重算 groups + 整体替换列表」，Compose 重组会明显卡顿。
+        // 400ms 足够让首屏一秒内出现，又把工作量压到个位数量级。
+        var lastPush = 0L
+        val pushIntervalMs = 400L
+        val reportProgress = { bytes: Long ->
+            live = live.copy(downloadedBytes = bytes)
+        }
+
+        coroutineScope {
+            sources.forEach { source ->
+                launch {
+                    var count = 0
+                    runCatching {
+                        repo.liveChannelsStream(
+                            source = source,
+                            adultFilter = adultFilter,
+                            onBytes = { if (source.key == sources.first().key) reportProgress(it) },
+                        ) { batch ->
+                            count += batch.size
+                            mutex.withLock {
+                                buffers[source.key] = (buffers[source.key] ?: emptyList()) + batch
+                                val now = System.currentTimeMillis()
+                                if (progressive && (lastPush == 0L || now - lastPush >= pushIntervalMs)) {
+                                    lastPush = now
+                                    val merged = sources.mapNotNull { buffers[it.key] }.flatten()
+                                    // loading 保持 true：列表已经在长，但仍需显示"仍在读取"，
+                                    // 也让 loadLive 的并发保护继续生效
+                                    live = live.copy(
+                                        channels = merged,
+                                        groups = listOf("全部") + Parsers.groups(merged),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                        .onSuccess { mutex.withLock { done[source.key] = "$count 频道" } }
+                        .onFailure { err ->
+                            mutex.withLock {
+                                done[source.key] =
+                                    if (count > 0) "$count 频道（下载中断）"
+                                    else (err.message ?: "加载失败")
+                            }
+                        }
+                }
+            }
+        }
+
+        val merged = sources.mapNotNull { buffers[it.key] }.flatten()
+        if (merged.isEmpty()) {
+            // 一个频道都没拿到：缓存还在就别清空，只把 loading 摘掉
             live = live.copy(
                 loading = false,
-                channels = collected,
-                statuses = statuses,
-                groups = listOf("全部") + Parsers.groups(collected),
+                downloadedBytes = 0,
+                statuses = sources.map { s -> s.name to (done[s.key] ?: "加载失败") },
             )
+            if (!quiet) showToast("所有直播源都没有解析到频道")
+            return
         }
+        live = live.copy(
+            loading = false,
+            channels = merged,
+            groups = listOf("全部") + Parsers.groups(merged),
+            statuses = sources.map { s -> s.name to (done[s.key] ?: "加载失败") },
+            downloadedBytes = 0,
+            fromCache = false,
+        )
+        runCatching { store.saveLiveCache(signature, merged) }
     }
 
     fun setLiveGroup(group: String) {

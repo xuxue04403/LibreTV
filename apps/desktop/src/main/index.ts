@@ -218,12 +218,109 @@ ipcMain.handle(
   }
 );
 
+/**
+ * 流式抓取（直播 M3U / XMLTV）。
+ *
+ * 为什么单独开一条通道：`http:fetch` 必须等 `arrayBuffer()` 落地才返回，
+ * 而 iptv-org 的 index.m3u 有 2.5MB、实测服务器限速到 ~35KB/s，要下 70 秒。
+ * 这里改为边收边把分块推给渲染层，主播只要几百毫秒就能看到第一批频道。
+ *
+ * 每个流带一个递增 id，配 `http:stream:cancel` 用于切页/换源时中止。
+ */
+const activeStreams = new Map<number, AbortController>();
+let streamSeq = 0;
+
+ipcMain.handle(
+  'http:stream',
+  async (
+    event,
+    url: string,
+    options?: { headers?: Record<string, string>; idleTimeoutMs?: number; streamId?: number }
+  ) => {
+    const started = Date.now();
+    let target: URL;
+    try {
+      target = await assertAllowedTarget(url, process.env.LTV_ALLOW_PRIVATE_MEDIA === '1');
+    } catch (err) {
+      return { ok: false, status: 400, url, error: err instanceof Error ? err.message : '地址不可用', ms: 0 };
+    }
+
+    const streamId = options?.streamId ?? ++streamSeq;
+    const controller = new AbortController();
+    activeStreams.set(streamId, controller);
+    const idleTimeoutMs = Math.min(120_000, Math.max(5_000, options?.idleTimeoutMs ?? 30_000));
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const armIdle = (): void => {
+      if (idleTimer) clearTimeout(idleTimer);
+      // 只限「多久没数据」，不限制总时长：大列表合法地要下一分钟
+      idleTimer = setTimeout(() => controller.abort(), idleTimeoutMs);
+    };
+
+    try {
+      armIdle();
+      const res = await fetch(target.href, {
+        headers: {
+          'User-Agent': DEFAULT_UA,
+          Accept: 'application/x-mpegURL, application/vnd.apple.mpegurl, application/xml, text/plain, */*',
+          ...(options?.headers ?? {}),
+        },
+        redirect: 'follow',
+        signal: controller.signal,
+      });
+
+      const headerMap: Record<string, string> = {};
+      res.headers.forEach((v, k) => {
+        headerMap[k.toLowerCase()] = v;
+      });
+
+      if (!res.ok) {
+        return { ok: false, status: res.status, url: res.url || url, headers: headerMap, error: `HTTP ${res.status}`, ms: Date.now() - started };
+      }
+      if (!res.body) {
+        return { ok: true, status: res.status, url: res.url || url, headers: headerMap, bytes: 0, ms: Date.now() - started };
+      }
+
+      const reader = res.body.getReader();
+      let bytes = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        armIdle();
+        bytes += value.byteLength;
+        if (bytes > MAX_IPC_BODY_BYTES) {
+          await reader.cancel().catch(() => undefined);
+          return { ok: false, status: 413, url, headers: headerMap, error: '响应体过大', ms: Date.now() - started };
+        }
+        // 拷贝一份再发：value 的 buffer 可能被 undici 复用
+        event.sender.send('http:stream:chunk', streamId, Buffer.from(value));
+      }
+      return { ok: true, status: res.status, url: res.url || url, headers: headerMap, bytes, ms: Date.now() - started };
+    } catch (err) {
+      const aborted = err instanceof Error && (err.name === 'AbortError' || controller.signal.aborted);
+      return {
+        ok: false,
+        status: aborted ? 408 : 0,
+        url,
+        error: aborted ? '请求超时' : err instanceof Error ? err.message : '网络请求失败',
+        ms: Date.now() - started,
+      };
+    } finally {
+      if (idleTimer) clearTimeout(idleTimer);
+      activeStreams.delete(streamId);
+    }
+  }
+);
+
+ipcMain.handle('http:stream:cancel', (_event, streamId: number) => {
+  activeStreams.get(streamId)?.abort();
+  activeStreams.delete(streamId);
+});
+
 ipcMain.handle('window:toggle-fullscreen', () => {
   if (!win) return false;
   win.setFullScreen(!win.isFullScreen());
   return win.isFullScreen();
 });
-
 ipcMain.handle('window:set-fullscreen', (_event, value: boolean) => {
   win?.setFullScreen(Boolean(value));
   return Boolean(value);

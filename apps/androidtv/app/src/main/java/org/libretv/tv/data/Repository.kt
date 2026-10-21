@@ -149,12 +149,56 @@ class Repository(private val net: Net = Net) {
         return null
     }
 
-    suspend fun liveChannels(source: LiveSource, adultFilter: Boolean = true): List<LiveChannel> {        val text = net.getText(source.url, mapOf("Accept" to "application/x-mpegURL, text/plain, */*"))
+    suspend fun liveChannels(source: LiveSource, adultFilter: Boolean = true): List<LiveChannel> {
+        val text = net.getText(source.url, mapOf("Accept" to "application/x-mpegURL, text/plain, */*"))
         val parsed = Parsers.parseM3u(text, source.url)
         if (parsed.isEmpty()) throw IOException("未解析到可用频道")
         // 直播此前完全没有成人过滤：用户自加的 M3U 成人类目会原样露出
         val channels = Parsers.filterAdultChannels(parsed, adultFilter)
         return channels.map { it.copy(sourceKey = source.key, sourceName = source.name) }
+    }
+
+    /**
+     * 渐进式拉取直播源：边下边解析，每凑一批就回调。
+     *
+     * 为什么不用 liveChannels：index.m3u 有 2.46MB、服务器限速到 ~35KB/s，
+     * 整串读完要 70 秒，而解析只要十几毫秒。边下边显示能把「看到第一个频道」
+     * 从 70 秒压到 1 秒左右。
+     *
+     * @param onBatch 每批已过滤的新频道（调用方自行合并去重）
+     * @return 全部频道；中途异常由调用方 runCatching 处理
+     */
+    suspend fun liveChannelsStream(
+        source: LiveSource,
+        adultFilter: Boolean = true,
+        batchSize: Int = 120,
+        onBytes: (Long) -> Unit = {},
+        onBatch: suspend (List<LiveChannel>) -> Unit,
+    ): List<LiveChannel> {
+        val parser = Parsers.M3uLineParser(source.url)
+        val all = ArrayList<LiveChannel>()
+        var batch = ArrayList<LiveChannel>(batchSize)
+
+        net.forEachLine(
+            source.url,
+            headers = mapOf("Accept" to "application/x-mpegURL, text/plain, */*"),
+            onBytes = onBytes,
+        ) { line ->
+            val channel = parser.push(line) ?: return@forEachLine true
+            if (!adultFilter || !Parsers.isAdultChannel(channel.name, channel.group, channel.tvgId)) {
+                val decorated = channel.copy(sourceKey = source.key, sourceName = source.name)
+                all += decorated
+                batch += decorated
+                if (batch.size >= batchSize) {
+                    onBatch(batch)
+                    batch = ArrayList(batchSize)
+                }
+            }
+            true
+        }
+        if (batch.isNotEmpty()) onBatch(batch)
+        if (all.isEmpty()) throw IOException("未解析到可用频道")
+        return all
     }
 
     /** 分类表缓存（6 小时内复用，切分类不重复打上游）。分类页会并行抓多个源，必须并发安全 */

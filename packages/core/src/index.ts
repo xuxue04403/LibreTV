@@ -19,5 +19,6 @@ export * from './search';
 export * from './detail';
 export * from './failover';
 export * from './live';
+export * from './live-switch';
 export * from './subscriptions';
 export * from './storage';

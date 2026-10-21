@@ -31,6 +31,8 @@
 | HLS / MP4 播放、倍速、快捷键 | ✅ | ✅ 遥控器方向键 |
 | 广告分片过滤（m3u8 `adjump` / 超短片头段） | ✅ | ⏳ 路线图 |
 | 直播 / IPTV（M3U、分组、收藏） | ✅ | ✅ |
+| **直播列表渐进加载**（缓存优先 + 边下边解析边显示，万级频道首屏 < 1.5 秒） | ✅ | ✅ |
+| **直播换台** | ✅ `↑ / ↓` 换台、`M` 静音、`Esc` 退出 | ✅ 遥控器 `↑ / ↓ / ← / →`、`CH+ / CH-` |
 | 观看进度续播 / 历史 / 收藏 | ✅ | ✅ |
 | 数据源管理、订阅导入（LibreTV / TVBOX）、导入导出 | ✅ | ✅ |
 | **投屏** | ✅ DLNA **发送端**（把影片推到电视/盒子） | ✅ DLNA **接收端**（手机投到电视） |
@@ -62,6 +64,7 @@
 - **按分辨率自适应缩放**：以 960×540dp 为设计基准，按实际逻辑宽高取 `min(w/960, h/540)` 缩放整套 dp/sp。廉价 4K 盒子把 `densityDpi` 误报成 160（逻辑宽度 3840dp）时，界面会等比放大 4 倍，而不是缩在左上角
 - 首页分类入口只显示**真正有内容**的分类（探测结果落 DataStore，冷启动不闪烁）
 - 播放页把操作映射到遥控器：`OK` 播放/暂停、`←→` 快退/快进 10s、`↑` 选集、`返回` 退出
+- 直播播放中 `↑ / ↓`（含 `← / →`、`CH+ / CH-`）直接换台，在当前分组/搜索结果内循环
 - 作为 **DLNA 接收端（DMR）** 常驻：手机视频 App 的投屏列表里出现「LibreTV 电视」，选中即在电视播放
 - 开机横幅、Leanback 启动器、`android.software.leanback` 声明齐全
 
@@ -69,7 +72,7 @@
 
 ```
 defaults/sources.json        内置默认源（两端共用同一份）
-packages/core/               共享 TS 核心：解析 / 聚合 / 订阅 / 存储模型（108 项单测）
+packages/core/               共享 TS 核心：解析 / 聚合 / 订阅 / 存储模型 / 增量解析（175 项单测）
 apps/desktop/                Electron 桌面端（main / preload / renderer）
 apps/androidtv/              Android TV（Kotlin + Compose + Media3 + 自研 DLNA DMR）
 tools/mock-cms/              本地假采集站（端到端联调 + 截图）
@@ -107,14 +110,17 @@ APK 位置：`apps/androidtv/app/build/outputs/apk/debug/app-debug.apk`（debug 
 ### 测试
 
 ```bash
-npm test                     # 核心解析/聚合/换源 + 桌面代理 153 项单测
+npm test                     # 核心解析/聚合/换源/增量解析 + 桌面代理 175 项单测
 npm run test:dlna            # DLNA 发送端链路（SSDP → 设备描述 → SOAP）
-cd apps/androidtv && gradle testDebugUnitTest   # Kotlin 解析层/换源/缩放 50 项单测
+cd apps/androidtv && gradle testDebugUnitTest   # Kotlin 解析层/换源/缩放/换台 60 项单测
 ```
 
 端到端联调（本地假采集站 + 真实 HLS 视频）：见 [docs/build.md](docs/build.md#端到端联调)。
 
-换源链路的真机验证脚本在 `tools/e2e/failover.mjs`（CDP 驱动，桌面端需以 `--remote-debugging-port=9333` 启动）：它会搜索 → 起播 → 按 `S` 手动换源 → 屏蔽当前 CDN 域名，确认播放器自动切到别的源并继续播放。
+真机验证脚本都在 `tools/e2e/`（CDP 驱动，桌面端需以 `--remote-debugging-port=9333` 启动）：
+
+- `failover.mjs`：搜索 → 起播 → 按 `S` 手动换源 → 屏蔽当前 CDN 域名，确认播放器自动切到别的源并继续播放。
+- `live.mjs`：记录直播列表从首次上屏到加载完成的频道数时间线 → 挑一个能播的频道起播 → 按 `↓` / `↑` 换台并确认台名变化。
 
 ## 关于内置源与内容
 

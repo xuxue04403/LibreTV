@@ -222,41 +222,63 @@ object Parsers {
         startsWith("http://", ignoreCase = true) || startsWith("https://", ignoreCase = true)
 
     fun parseM3u(content: String, baseUrl: String? = null): List<LiveChannel> {
-        val channels = mutableListOf<LiveChannel>()
-        if (content.isBlank()) return channels
-        val seen = HashSet<String>()
-        var attrs: Map<String, String> = emptyMap()
-        var title = ""
-        var extGroup = ""
-        var pending = false
-
+        if (content.isBlank()) return emptyList()
+        val parser = M3uLineParser(baseUrl)
+        val out = ArrayList<LiveChannel>()
         for (raw in content.lineSequence()) {
-            val line = raw.trim()
-            if (line.isEmpty()) continue
+            parser.push(raw)?.let { out += it }
+        }
+        return out
+    }
+
+    /**
+     * 单行驱动的 M3U 解析器。
+     *
+     * 直播源（iptv-org 的 index.m3u 有 2.46MB / 近万频道）在限速网络上要下 70 秒，
+     * 而解析只要十几毫秒。按行喂入即可边下边显示，第一个频道约 1 秒上屏；
+     * 与桌面的 createM3uParser 语义一致。
+     */
+    class M3uLineParser(private val baseUrl: String? = null) {
+        private val seen = HashSet<String>()
+        private var attrs: Map<String, String> = emptyMap()
+        private var title = ""
+        private var extGroup = ""
+        private var pending = false
+
+        /** 第一行（#EXTM3U 头），用于解析 x-tvg-url */
+        var head: String = ""
+            internal set
+
+        /** 喂入一行，返回**这一行**新解析出的频道（多数行为 null） */
+        fun push(rawLine: String): LiveChannel? {
+            if (head.isEmpty()) head = rawLine
+            val line = rawLine.trim()
+            if (line.isEmpty()) return null
+
             if (line.startsWith("#EXTINF", ignoreCase = true)) {
                 attrs = ATTR_RE.findAll(line).associate { it.groupValues[1].lowercase() to it.groupValues[2].trim() }
-                val stripped = line.replace(ATTR_STRIP_RE, "").replace(Regex("^#EXTINF\\s*:\\s*", RegexOption.IGNORE_CASE), "")
+                val stripped = line
+                    .replace(ATTR_STRIP_RE, "")
+                    .replace(Regex("^#EXTINF\\s*:\\s*", RegexOption.IGNORE_CASE), "")
                 val comma = stripped.indexOf(',')
-                title = (if (comma >= 0) stripped.substring(comma + 1) else stripped)
-                    .trim()
-                    .trim('"')
+                title = (if (comma >= 0) stripped.substring(comma + 1) else stripped).trim().trim('"')
                 extGroup = ""
                 pending = true
-                continue
+                return null
             }
             if (line.startsWith("#EXTGRP:", ignoreCase = true)) {
                 val g = line.substring(8).trim()
                 if (pending && g.isNotEmpty() && attrs["group-title"].isNullOrEmpty()) extGroup = g
-                continue
+                return null
             }
-            if (line.startsWith("#")) continue
+            if (line.startsWith("#")) return null
 
             val url = normalizeStreamUrl(line, baseUrl)
             pending = false
-            if (url == null || !seen.add(url)) continue
+            if (url == null || !seen.add(url)) return null
             val tvgId = attrs["tvg-id"]?.takeIf { it.isNotBlank() }
             val logo = attrs["tvg-logo"]?.let { normalizeStreamUrl(it, baseUrl) }
-            channels += LiveChannel(
+            return LiveChannel(
                 id = tvgId ?: stableId(url),
                 name = title.ifBlank { nameFromUrl(url) },
                 url = url,
@@ -265,7 +287,6 @@ object Parsers {
                 tvgId = tvgId,
             )
         }
-        return channels
     }
 
     fun groups(channels: List<LiveChannel>): List<String> {

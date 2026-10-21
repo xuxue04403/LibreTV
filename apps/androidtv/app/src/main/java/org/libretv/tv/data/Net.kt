@@ -41,6 +41,47 @@ object Net {
         response.body?.byteStream() ?: throw IOException("空响应")
     }
 
+    /**
+     * 逐行流式读取并回调。
+     *
+     * 为什么不用 getText：iptv-org 的 index.m3u 有 2.46MB，服务器限速到 ~35KB/s，
+     * 整串读完要 70 秒以上；解析本身只要十几毫秒。边读边解析，第一个频道约 1 秒
+     * 就能上屏，用户不必盯着空列表等一分钟。
+     *
+     * @param onLine 每读到一行回调一次（已去掉行尾 \r）；返回 false 可提前终止。
+     *   允许挂起：渐进解析要在攒够一批时切回主线程刷新列表，若回调是同步的就没法做
+     * @param onBytes 已读字节数回调（用于进度显示）
+     */
+    suspend fun forEachLine(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
+        onBytes: (Long) -> Unit = {},
+        onLine: suspend (String) -> Boolean,
+    ): Long = withContext(Dispatchers.IO) {
+        val builder = Request.Builder().url(url).header("User-Agent", UA).header("Accept", "*/*")
+        headers.forEach { (k, v) -> builder.header(k, v) }
+        client.newCall(builder.build()).execute().use { response ->
+            if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
+            val body = response.body ?: throw IOException("空响应")
+            var total = 0L
+            var lastReport = 0L
+            body.byteStream().bufferedReader(Charsets.UTF_8).use { reader ->
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    total += line.length + 1L
+                    // 每 64KB 报一次，避免进度回调本身成为开销
+                    if (total - lastReport >= 64 * 1024) {
+                        lastReport = total
+                        onBytes(total)
+                    }
+                    if (!onLine(line)) break
+                }
+            }
+            onBytes(total)
+            total
+        }
+    }
+
     /** 给 Coil 用的图片请求：带上 UA/Referer，绕部分图床防盗链 */
     fun imageRequest(url: String): Request =
         Request.Builder()

@@ -866,7 +866,9 @@ textarea.input {
 }
 .channel-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  /* 148px 时英文台名（iptv-org 大多很长）会被截成「CCTV-...」，
+     留到 196px 才能看出「CCTV-4 欧洲」这类区分，列数少一点反而更好认 */
+  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
   gap: 10px;
 }
 .channel {

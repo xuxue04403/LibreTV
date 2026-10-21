@@ -59,6 +59,10 @@ import org.libretv.tv.Screen
 import org.libretv.tv.data.AppData
 import org.libretv.tv.data.LiveChannel
 import org.libretv.tv.data.Net
+import org.libretv.tv.data.Playback
+import org.libretv.tv.data.channelAt
+import org.libretv.tv.data.indexOfChannel
+import org.libretv.tv.data.stepChannelIndex
 import org.libretv.tv.ui.theme.Accent
 import org.libretv.tv.ui.theme.OkGreen
 import org.libretv.tv.ui.theme.Panel
@@ -69,7 +73,7 @@ import org.libretv.tv.ui.theme.TextPrimary
 fun LiveScreen(vm: AppViewModel, data: AppData) {
     val live = vm.live
     LaunchedEffect(Unit) {
-        if (live.channels.isEmpty() && !live.loading) vm.loadLive()
+        if (!live.loading && live.channels.isEmpty()) vm.loadLive()
     }
 
     val channels = remember(live.channels, live.selectedGroup, live.keyword) {
@@ -82,12 +86,22 @@ fun LiveScreen(vm: AppViewModel, data: AppData) {
         }
     }
 
+    // 分组计数一次遍历算好：原来是每个分组各 count 一遍（近万频道 × 上百分组 = 每次重组上百万次比较）
+    val counts = remember(live.channels, live.groups) {
+        val map = HashMap<String, Int>()
+        live.channels.forEach { ch ->
+            val g = ch.group ?: "未分组"
+            map[g] = (map[g] ?: 0) + 1
+        }
+        map
+    }
+
     Row(Modifier.fillMaxSize().padding(ScreenPadding)) {
         Column(Modifier.width(226.dp)) {
             SectionHeader("分组", if (live.groups.isEmpty()) "" else "${live.groups.size - 1} 个")
             LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
                 items(live.groups) { group ->
-                    val count = if (group == "全部") live.channels.size else live.channels.count { (it.group ?: "未分组") == group }
+                    val count = if (group == "全部") live.channels.size else counts[group] ?: 0
                     GroupRow(group, count, group == live.selectedGroup) { vm.setLiveGroup(group) }
                 }
             }
@@ -105,12 +119,21 @@ fun LiveScreen(vm: AppViewModel, data: AppData) {
                 )
                 Spacer(Modifier.width(12.dp))
                 Text(
-                    if (live.loading) "解析直播源中…" else "${channels.size} / ${live.channels.size} 个频道",
+                    when {
+                        live.channels.isNotEmpty() && live.loading -> "已加载 ${live.channels.size} 个频道，仍在读取…"
+                        live.loading -> if (live.downloadedBytes > 0) {
+                            "正在读取直播源 ${live.downloadedBytes / 1024} KB…"
+                        } else {
+                            "连接直播源…"
+                        }
+                        live.fromCache -> "${channels.size} / ${live.channels.size} 个频道（缓存）"
+                        else -> "${channels.size} / ${live.channels.size} 个频道"
+                    },
                     color = TextMuted,
                     fontSize = MaterialTheme.typography.bodySmall.fontSize,
                 )
                 Spacer(Modifier.weight(1f))
-                TvButton("重新加载", onClick = { vm.loadLive() })
+                TvButton("重新加载", onClick = { vm.loadLive(force = true) })
             }
 
             if (live.statuses.isNotEmpty()) {
@@ -142,7 +165,9 @@ fun LiveScreen(vm: AppViewModel, data: AppData) {
                         ChannelRow(
                             channel = channel,
                             favorite = data.liveFavorites.any { it.url == channel.url },
-                            onPlay = { vm.go(Screen.LivePlayer(channel)) },
+                            // 把当前可见列表一并带进播放页：遥控器上下键就在这个列表里循环换台，
+                            // 而不是全量频道（用户已选分组/搜过关键词，换到列表外的频道会莫名其妙）
+                            onPlay = { vm.go(Screen.LivePlayer(channel, channels)) },
                             onToggleFavorite = { vm.toggleLiveFavorite(channel) },
                         )
                     }
@@ -153,8 +178,7 @@ fun LiveScreen(vm: AppViewModel, data: AppData) {
 }
 
 @Composable
-private fun GroupRow(label: String, count: Int, active: Boolean, onClick: () -> Unit) {
-    TvCard(
+private fun GroupRow(label: String, count: Int, active: Boolean, onClick: () -> Unit) {    TvCard(
         onClick = onClick,
         containerColor = if (active) org.libretv.tv.ui.theme.Panel2 else Panel,
         shape = RoundedCornerShape(10.dp),
@@ -243,42 +267,51 @@ private fun ChannelRow(
     }
 }
 
-/** 直播播放页：无进度条，方向键只做音量/退出，避免误触 */
+/**
+ * 直播播放页：方向键上下换台，OK 暂停/继续。
+ *
+ * 换台在 `playlist`（进播放页时的可见频道列表）里循环，与桌面端的 ↑/↓ 行为一致。
+ * playlist 为空（例如从首页直播收藏直接进来）时上下键不响应——那里没有列表语境。
+ */
 @OptIn(UnstableApi::class)
 @Composable
-fun LivePlayerScreen(vm: AppViewModel, channel: LiveChannel, onExit: () -> Unit) {
+fun LivePlayerScreen(
+    vm: AppViewModel,
+    channel: LiveChannel,
+    playlist: List<LiveChannel>,
+    onExit: () -> Unit,
+) {
     val context = LocalContext.current
+    var current by remember(channel.url) { mutableStateOf(channel) }
     var error by remember { mutableStateOf<String?>(null) }
     var buffering by remember { mutableStateOf(true) }
     var overlay by remember { mutableStateOf(true) }
+    var switching by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
 
+    val index = indexOfChannel(playlist, current.url)
+    val total = playlist.size
+
     // 播放器与频道 URL 绑定：切台时必须重建，否则会复用已 release 的实例
-    val exo = remember(channel.url) {
-        ExoPlayer.Builder(context).build().apply {
-            playWhenReady = true
-            setHandleAudioBecomingNoisy(true)
-            setAudioAttributes(
-                androidx.media3.common.AudioAttributes.Builder()
-                    .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
-                    .setUsage(androidx.media3.common.C.USAGE_MEDIA)
-                    .build(),
-                true,
-            )
-        }
+    val exo = remember(current.url) {
+        Playback.build(context).apply { playWhenReady = true }
     }
 
-    DisposableEffect(channel.url) {
-        exo.setMediaItem(MediaItem.fromUri(channel.url))
+    DisposableEffect(current.url) {
+        error = null
+        buffering = true
+        exo.setMediaItem(MediaItem.fromUri(current.url))
         exo.prepare()
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 buffering = playbackState == Player.STATE_BUFFERING || playbackState == Player.STATE_IDLE
+                if (playbackState == Player.STATE_READY) switching = false
             }
 
             override fun onPlayerError(playerError: PlaybackException) {
                 error = (playerError.message ?: "直播流加载失败").take(120)
                 buffering = false
+                switching = false
             }
         }
         exo.addListener(listener)
@@ -289,6 +322,34 @@ fun LivePlayerScreen(vm: AppViewModel, channel: LiveChannel, onExit: () -> Unit)
     }
 
     LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
+
+    // 换台闸门兜底：某些流迟迟不到 READY 也不报错，不设死线会让上下键永久失灵
+    LaunchedEffect(current.url) {
+        if (switching) {
+            kotlinx.coroutines.delay(8_000)
+            switching = false
+        }
+    }
+
+    // 信息条 4 秒后自动隐藏：常驻会一直压住画面上沿
+    LaunchedEffect(overlay, current.url) {
+        if (overlay) {
+            kotlinx.coroutines.delay(4_000)
+            overlay = false
+        }
+    }
+
+    // 换台：在可见列表里循环，动画期间忽略重复按键避免连跳
+    val switchTo: (Int) -> Unit = { dir ->
+        if (!switching && playlist.size > 1) {
+            val next = channelAt(playlist, stepChannelIndex(playlist.size, index, if (dir > 0) 1 else -1))
+            if (next != null && next.url != current.url) {
+                switching = true
+                current = next
+                overlay = true
+            }
+        }
+    }
 
     Box(
         Modifier
@@ -303,6 +364,19 @@ fun LivePlayerScreen(vm: AppViewModel, channel: LiveChannel, onExit: () -> Unit)
                         if (exo.isPlaying) exo.pause() else exo.play()
                         overlay = true
                         true
+                    }
+                    // 上下键换台，左右键做上一台/下一台（遥控器上左右更顺手）
+                    Key.DirectionUp, Key.DirectionLeft, Key.ChannelUp -> {
+                        switchTo(-1); true
+                    }
+                    Key.DirectionDown, Key.DirectionRight, Key.ChannelDown -> {
+                        switchTo(1); true
+                    }
+                    Key.MediaNext -> {
+                        switchTo(1); true
+                    }
+                    Key.MediaPrevious -> {
+                        switchTo(-1); true
                     }
                     // 返回键交给 Activity 的 BackHandler，避免 KeyDown 消费 + KeyUp 不消费
                     // 导致 BackHandler 再触发一次、一次退两级
@@ -322,6 +396,7 @@ fun LivePlayerScreen(vm: AppViewModel, channel: LiveChannel, onExit: () -> Unit)
                 }
             },
             modifier = Modifier.fillMaxSize(),
+            update = { it.player = exo },
         )
 
         if (buffering && error == null) {
@@ -335,11 +410,16 @@ fun LivePlayerScreen(vm: AppViewModel, channel: LiveChannel, onExit: () -> Unit)
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     TvButton("重试", onClick = { error = null; exo.prepare() })
+                    if (playlist.size > 1) {
+                        TvButton("下一个频道", onClick = { switchTo(1) })
+                    }
                     TvButton("返回", onClick = onExit)
                 }
             }
         }
 
+        // 顶部信息条：按键后出现，4 秒无操作淡出，避免长时间遮挡画面
+        if (overlay) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -354,11 +434,24 @@ fun LivePlayerScreen(vm: AppViewModel, channel: LiveChannel, onExit: () -> Unit)
             }
             Spacer(Modifier.width(10.dp))
             Column {
-                Text(channel.name, color = TextPrimary, fontSize = MaterialTheme.typography.titleLarge.fontSize, fontWeight = FontWeight.Bold)
-                Text(channel.group ?: "未分组", color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
+                Text(current.name, color = TextPrimary, fontSize = MaterialTheme.typography.titleLarge.fontSize, fontWeight = FontWeight.Bold)
+                Text(current.group ?: "未分组", color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
             }
             Spacer(Modifier.weight(1f))
-            Text("OK 暂停/继续 · 返回 退出", color = Color(0xFF9AA4B4), fontSize = MaterialTheme.typography.bodySmall.fontSize)
+            if (total > 1) {
+                Text(
+                    "${index + 1} / $total",
+                    color = TextMuted,
+                    fontSize = MaterialTheme.typography.bodySmall.fontSize,
+                )
+                Spacer(Modifier.width(16.dp))
+            }
+            Text(
+                if (total > 1) "↑↓ 换台 · OK 暂停/继续 · 返回 退出" else "OK 暂停/继续 · 返回 退出",
+                color = Color(0xFF9AA4B4),
+                fontSize = MaterialTheme.typography.bodySmall.fontSize,
+            )
+        }
         }
     }
 }

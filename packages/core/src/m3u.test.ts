@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { stripAdGroups } from './ad-filter';
-import { collectGroups, normalizeStreamUrl, parseM3u, parseM3uEpgUrl } from './m3u';
+import { collectGroups, createM3uParser, normalizeStreamUrl, parseM3u, parseM3uEpgUrl } from './m3u';
 
 describe('parseM3u', () => {
   it('解析标准 EXTINF 属性与分组', () => {
@@ -56,6 +56,74 @@ describe('parseM3u', () => {
   it('normalizeStreamUrl 拒绝空串与非法协议', () => {
     expect(normalizeStreamUrl('  ')).toBeUndefined();
     expect(normalizeStreamUrl('udp://1.2.3.4:5000')).toBeUndefined();
+  });
+});
+
+describe('createM3uParser（增量解析）', () => {
+  const playlist = [
+    '#EXTM3U',
+    '#EXTINF:-1 tvg-id="cctv1" group-title="央视",CCTV-1',
+    'https://a/1.m3u8',
+    '#EXTINF:-1 tvg-id="cctv2" group-title="央视",CCTV-2',
+    'https://a/2.m3u8',
+    '#EXTINF:-1 group-title="卫视",湖南卫视',
+    'https://a/3.m3u8',
+  ].join('\n');
+
+  /** 把整串按固定长度切片喂进去，模拟网络分块 */
+  const feedBy = (chunkSize: number): string[] => {
+    const parser = createM3uParser();
+    const names: string[] = [];
+    for (let i = 0; i < playlist.length; i += chunkSize) {
+      names.push(...parser.push(playlist.slice(i, i + chunkSize)).map((c) => c.name));
+    }
+    names.push(...parser.end().map((c) => c.name));
+    return names;
+  };
+
+  it('任意切分位置都与整串解析结果一致', () => {
+    const expectNames = ['CCTV-1', 'CCTV-2', '湖南卫视'];
+    for (const size of [1, 2, 3, 7, 13, 64, 1000]) {
+      expect(feedBy(size), `chunkSize=${size}`).toEqual(expectNames);
+    }
+  });
+
+  it('分块切开多字节中文也不会乱码', () => {
+    // 中文按 1 字节切分必然切开 3 字节的 UTF-8 序列
+    expect(feedBy(1)).toEqual(['CCTV-1', 'CCTV-2', '湖南卫视']);
+  });
+
+  it('跨块累积的 EXTINF 属性仍然生效', () => {
+    const parser = createM3uParser();
+    // 属性名和值分别落在不同 chunk 里
+    parser.push('#EXTINF:-1 tvg-id="cctv1" tvg-na');
+    parser.push('me="CCTV1" group-title="央视",CCTV-1\n');
+    const first = parser.push('https://a/1.m3u8\n');
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatchObject({ id: 'cctv1', group: '央视', rawName: 'CCTV1' });
+  });
+
+  it('只返回本段新增频道，不重复返回已解析的', () => {
+    const parser = createM3uParser();
+    const a = parser.push('#EXTINF:-1,A\nhttps://a/1.m3u8\n');
+    const b = parser.push('#EXTINF:-1,B\nhttps://a/2.m3u8\n');
+    expect(a.map((c) => c.name)).toEqual(['A']);
+    expect(b.map((c) => c.name)).toEqual(['B']);
+  });
+
+  it('末行没有换行时 end() 能收尾', () => {
+    const parser = createM3uParser();
+    expect(parser.push('#EXTINF:-1,尾部频道\nhttps://a/tail.m3u8')).toHaveLength(0);
+    expect(parser.end().map((c) => c.name)).toEqual(['尾部频道']);
+  });
+
+  it('整串与增量解析结果完全一致', () => {
+    expect(parseM3u(playlist)).toEqual(
+      (() => {
+        const parser = createM3uParser();
+        return parser.push(playlist).concat(parser.end());
+      })()
+    );
   });
 });
 

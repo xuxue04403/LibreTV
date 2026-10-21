@@ -51,16 +51,30 @@ interface ExtinfContext {
   extGroup: string;
 }
 
-export function parseM3u(content: string, baseUrl?: string): LiveChannel[] {
-  const channels: LiveChannel[] = [];
-  if (!content) return channels;
+/**
+ * 可增量喂入的 M3U 解析器。
+ *
+ * 为什么需要增量：iptv-org 的 index.m3u 有 2.5MB / 近万频道，实测服务器限速
+ * 下要下 70 秒以上，而解析本身只要十几毫秒。整串解析意味着用户要盯着空列表
+ * 等一分多钟；改成边收边解析，第一个频道约 1 秒就能上屏。
+ */
+export interface M3uParser {
+  /** 喂入一段文本，返回**这一段**新解析出的频道（可能为空） */
+  push(chunk: string): LiveChannel[];
+  /** 收尾：把最后一行没换行的残余数据解析完 */
+  end(): LiveChannel[];
+}
 
+export function createM3uParser(baseUrl?: string): M3uParser {
   const seen = new Set<string>();
   let ctx: ExtinfContext | null = null;
+  // 跨 chunk 的半行缓存：网络分块几乎不会落在换行处
+  let carry = '';
+  let pending: LiveChannel[] = [];
 
-  for (const rawLine of content.split(/\r?\n/)) {
+  function handleLine(rawLine: string): void {
     const line = rawLine.trim();
-    if (!line) continue;
+    if (!line) return;
 
     if (line.toUpperCase().startsWith('#EXTINF')) {
       const attrs: Record<string, string> = {};
@@ -75,28 +89,28 @@ export function parseM3u(content: string, baseUrl?: string): LiveChannel[] {
         .replace(/^"+|"+$/g, '');
 
       ctx = { attrs, title, extGroup: '' };
-      continue;
+      return;
     }
 
     if (line.toUpperCase().startsWith('#EXTGRP:')) {
       const g = line.slice('#EXTGRP:'.length).trim();
       if (ctx && g && !ctx.attrs['group-title']) ctx.extGroup = g;
-      continue;
+      return;
     }
 
-    if (line.startsWith('#')) continue;
+    if (line.startsWith('#')) return;
 
     const url = normalizeStreamUrl(line, baseUrl);
     const cur = ctx;
     ctx = null;
-    if (!url || seen.has(url)) continue;
+    if (!url || seen.has(url)) return;
     seen.add(url);
 
     const attrs = cur?.attrs ?? {};
     const tvgId = attrs['tvg-id'] || undefined;
     const logo = attrs['tvg-logo'] ? normalizeStreamUrl(attrs['tvg-logo'], baseUrl) : undefined;
     const name = cur?.title || nameFromUrl(url);
-    channels.push({
+    pending.push({
       id: tvgId || stableId(url),
       name,
       url,
@@ -107,7 +121,44 @@ export function parseM3u(content: string, baseUrl?: string): LiveChannel[] {
     });
   }
 
-  return channels;
+  function take(): LiveChannel[] {
+    if (pending.length === 0) return [];
+    const out = pending;
+    pending = [];
+    return out;
+  }
+
+  return {
+    push(chunk: string): LiveChannel[] {
+      if (!chunk) return take();
+      const text = carry ? carry + chunk : chunk;
+      carry = '';
+      let start = 0;
+      for (;;) {
+        const nl = text.indexOf('\n', start);
+        if (nl === -1) break;
+        // 行尾的 \r 交给 trim 处理
+        handleLine(text.slice(start, nl));
+        start = nl + 1;
+      }
+      if (start < text.length) carry = text.slice(start);
+      return take();
+    },
+    end(): LiveChannel[] {
+      if (carry) {
+        handleLine(carry);
+        carry = '';
+      }
+      return take();
+    },
+  };
+}
+
+export function parseM3u(content: string, baseUrl?: string): LiveChannel[] {
+  if (!content) return [];
+  const parser = createM3uParser(baseUrl);
+  const channels = parser.push(content);
+  return channels.concat(parser.end());
 }
 
 /** 从频道列表提取分组（去重，保持出现顺序，未分组归入「未分组」） */

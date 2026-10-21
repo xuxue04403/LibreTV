@@ -26,8 +26,25 @@ export interface HttpResponse {
   text: string;
 }
 
+export interface HttpStreamOptions extends HttpRequestOptions {
+  /** 每收到一块就回调（可能是任意切分位置，含半个 UTF-8 字符） */
+  onChunk: (chunk: Uint8Array) => void;
+  /** 多久没收到任何数据就判定卡死（默认 20 秒），与总时长无关 */
+  idleTimeoutMs?: number;
+}
+
 export interface HttpClient {
   request(url: string, options?: HttpRequestOptions): Promise<HttpResponse>;
+  /**
+   * 可选能力：边下边回调。
+   *
+   * 直播源（iptv-org 的 index.m3u 有 2.5MB）实测服务器限速到 ~35KB/s，
+   * 整串下载要 70 秒以上，而解析只要十几毫秒。有了流式通道，第一个频道
+   * 约 1 秒就能上屏，用户不必盯着空列表等一分多钟。
+   *
+   * 没实现的宿主会走 request() 的回退路径（行为不变，只是不渐进）。
+   */
+  stream?(url: string, options: HttpStreamOptions): Promise<HttpResponse>;
 }
 
 export class HttpError extends Error {
@@ -56,37 +73,97 @@ function withTimeout(signal: AbortSignal | undefined, timeoutMs: number | undefi
 /** 基于全局 fetch 的实现（Electron 渲染层 / 浏览器 / Node 18+ 可用） */
 export function createFetchHttp(fetchImpl?: typeof fetch): HttpClient {
   const doFetch = fetchImpl ?? globalThis.fetch;
+
+  async function send(url: string, options: HttpRequestOptions = {}): Promise<Response> {
+    if (typeof doFetch !== 'function') throw new HttpError('当前环境没有 fetch 实现', 0);
+    const { method = 'GET', headers = {}, body, timeoutMs, signal } = options;
+    try {
+      return await doFetch(url, {
+        method,
+        headers,
+        body,
+        redirect: 'follow',
+        signal: withTimeout(signal, timeoutMs),
+      });
+    } catch (err) {
+      if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) {
+        throw new HttpError('请求超时', 408);
+      }
+      throw new HttpError(err instanceof Error ? err.message : '网络请求失败', 0);
+    }
+  }
+
+  function headersOf(res: Response): Record<string, string> {
+    const headerMap: Record<string, string> = {};
+    res.headers.forEach((v, k) => {
+      headerMap[k.toLowerCase()] = v;
+    });
+    return headerMap;
+  }
+
   return {
     async request(url, options = {}) {
-      if (typeof doFetch !== 'function') throw new HttpError('当前环境没有 fetch 实现', 0);
-      const { method = 'GET', headers = {}, body, timeoutMs, signal } = options;
-      let res: Response;
-      try {
-        res = await doFetch(url, {
-          method,
-          headers,
-          body,
-          redirect: 'follow',
-          signal: withTimeout(signal, timeoutMs),
-        });
-      } catch (err) {
-        if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) {
-          throw new HttpError('请求超时', 408);
-        }
-        throw new HttpError(err instanceof Error ? err.message : '网络请求失败', 0);
-      }
+      const res = await send(url, options);
       const buf = new Uint8Array(await res.arrayBuffer());
-      const headerMap: Record<string, string> = {};
-      res.headers.forEach((v, k) => {
-        headerMap[k.toLowerCase()] = v;
-      });
       return {
         ok: res.ok,
         status: res.status,
         url: res.url || url,
-        headers: headerMap,
+        headers: headersOf(res),
         bytes: buf,
         text: new TextDecoder('utf-8').decode(buf),
+      };
+    },
+
+    async stream(url, options) {
+      const { onChunk, idleTimeoutMs = 20_000, ...rest } = options;
+      // 总时长不设死线（大列表可能合法地下一分钟），只设「多久没数据」的空闲死线
+      const res = await send(url, { ...rest, timeoutMs: undefined });
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      const armIdle = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          void res.body?.cancel().catch(() => undefined);
+        }, idleTimeoutMs);
+      };
+
+      if (res.body) {
+        const reader = res.body.getReader();
+        armIdle();
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            armIdle();
+            total += value.byteLength;
+            onChunk(value);
+            // 同时留一份：调用方要 text 时不必重下
+            chunks.push(value);
+          }
+        } catch (err) {
+          if (err instanceof Error && err.name === 'AbortError') throw new HttpError('请求超时', 408);
+          throw new HttpError(err instanceof Error ? err.message : '网络请求失败', 0);
+        } finally {
+          if (idleTimer) clearTimeout(idleTimer);
+        }
+      }
+
+      const bytes = new Uint8Array(total);
+      let offset = 0;
+      for (const c of chunks) {
+        bytes.set(c, offset);
+        offset += c.byteLength;
+      }
+
+      return {
+        ok: res.ok,
+        status: res.status,
+        url: res.url || url,
+        headers: headersOf(res),
+        bytes,
+        text: new TextDecoder('utf-8').decode(bytes),
       };
     },
   };
