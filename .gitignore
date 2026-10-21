@@ -4,6 +4,7 @@ out/
 release/
 .tools/
 .artifacts/
+.tmp/
 reference/LibreTV/.git/
 *.log
 .DS_Store

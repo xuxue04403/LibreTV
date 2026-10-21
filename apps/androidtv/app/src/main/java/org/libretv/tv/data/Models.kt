@@ -46,6 +46,59 @@ data class SearchGroup(
     val items: List<SearchItem>,
 )
 
+/**
+ * 一个可尝试的播放源（失败转移用）。
+ *
+ * 与桌面端 packages/core 的 PlaybackCandidate 一一对应：同一个影片在
+ * 不同采集站的 vodId 不同，所以必须成对保存源与 id。
+ */
+data class PlaybackCandidate(
+    val source: VodSource,
+    val vodId: String,
+    val sourceName: String = source.name,
+) {
+    val key: String get() = "${source.key}:$vodId"
+
+    companion object {
+        /** 单条候选链的最大长度：覆盖常见聚合结果，又不至于把失败检测拖太久 */
+        const val MAX = 8
+
+        fun of(item: SearchItem, sources: List<VodSource>): PlaybackCandidate? {
+            val source = sources.firstOrNull { it.key == item.sourceKey }
+                ?: item.sourceUrl?.takeIf { it.startsWith("http") }?.let {
+                    VodSource(item.sourceKey, item.sourceName, it, isAdult = item.isAdult)
+                }
+                ?: return null
+            return PlaybackCandidate(source, item.vodId, item.sourceName.ifEmpty { source.name })
+        }
+
+        /**
+         * 把同片源搜索结果整理成候选链，当前正在播放的源排第一。
+         *
+         * 去重、跳过拿不到详情的源；顺序沿用搜索结果（已按源名排序），保证两端一致。
+         */
+        fun build(
+            items: List<SearchItem>,
+            sources: List<VodSource>,
+            active: Pair<String, String>? = null,
+            limit: Int = MAX,
+        ): List<PlaybackCandidate> {
+            val seen = HashSet<String>()
+            val out = ArrayList<PlaybackCandidate>()
+            for (item in items) {
+                val candidate = of(item, sources) ?: continue
+                if (!seen.add(candidate.key)) continue
+                out += candidate
+            }
+            if (active != null) {
+                val index = out.indexOfFirst { it.source.key == active.first && it.vodId == active.second }
+                if (index > 0) out.add(0, out.removeAt(index))
+            }
+            return if (out.size > limit) out.subList(0, limit).toList() else out
+        }
+    }
+}
+
 data class SourceOutcome(
     val sourceKey: String,
     val sourceName: String,

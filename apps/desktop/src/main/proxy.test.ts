@@ -199,6 +199,19 @@ describe('媒体代理 HTTP 行为', () => {
         res.end('<script>alert(1)</script>');
         return;
       }
+      if (req.url === '/slow.ts') {
+        // 分两段回，中间停顿：用来验证代理是「边收边发」而不是攒完再发
+        res.writeHead(200, { 'Content-Type': 'video/mp2t' });
+        res.write(Buffer.alloc(64 * 1024, 3));
+        setTimeout(() => res.end(Buffer.alloc(64 * 1024, 4)), 400);
+        return;
+      }
+      if (req.url === '/playlist-no-type.m3u8') {
+        // 不给 mpegurl content-type，靠 body 前缀识别
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+        res.end('#EXTM3U\n#EXTINF:6,\nseg1.ts\n');
+        return;
+      }
       if (req.url === '/notfound') {
         res.writeHead(404, { 'Content-Type': 'text/plain' });
         res.end('nope');
@@ -255,5 +268,45 @@ describe('媒体代理 HTTP 行为', () => {
   it('上游 404 状态原样透传', async () => {
     const res = await proxyGet('/notfound');
     expect(res.status).toBe(404);
+  });
+
+  /**
+   * 核心性能回归：分片必须流式转发。
+   * 老实现把整个响应体读进 Buffer 再回写，首字节要等上游写完才发得出去；
+   * 这里上游故意在中间停顿 400ms，流式实现应该在停顿前就把第一段发出来。
+   */
+  it('分片边收边发（首字节早于上游写完）', async () => {
+    const started = Date.now();
+    const res = await proxyGet('/slow.ts');
+    const reader = res.body!.getReader();
+    const firstChunk = await reader.read();
+    const firstByteAt = Date.now() - started;
+    expect(firstChunk.done).toBe(false);
+    expect(firstChunk.value!.byteLength).toBeGreaterThan(0);
+    // 上游 400ms 后才补第二段，流式实现此时已经拿到首块
+    expect(firstByteAt).toBeLessThan(350);
+
+    let total = firstChunk.value!.byteLength;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+    }
+    expect(total).toBe(128 * 1024);
+  });
+
+  it('分片响应带可缓存头（seek 回头能命中）', async () => {
+    const res = await proxyGet('/no-length.ts');
+    expect(res.headers.get('cache-control')).toContain('max-age');
+    // 播放列表必须不缓存：里面是带 token 的临时地址，缓存住会让换源失效
+    const playlist = await proxyGet('/playlist.m3u8');
+    expect(playlist.headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('content-type 不是 mpegurl 时靠 body 前缀识别播放列表', async () => {
+    const res = await proxyGet('/playlist-no-type.m3u8');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/vnd.apple.mpegurl');
+    expect(await res.text()).toContain('/p?ad=0&url=');
   });
 });

@@ -26,6 +26,8 @@
 | **首页分类入口**（电影 / 电视剧 / 少儿 / 综艺 / 动漫 / 纪录片 / 短剧 / 体育） | ✅ 自动隐藏无内容的分类 | ✅ 同左 |
 | 聚合搜索（多源并行、结果流式出现） | ✅ | ✅ |
 | 同名影片跨源聚合 + 详情内换源 | ✅ | ✅ |
+| **播放失败自动换源**（本集重试 2 次 → 切候选源 → 按片名补源） | ✅ 也可按 `S` 手动换 | ✅ 遥控器 `Menu` 键 |
+| **播放性能调优**（代理分片流式直通、hls.js/ExoPlayer 缓冲参数、卡顿看门狗） | ✅ | ✅ |
 | HLS / MP4 播放、倍速、快捷键 | ✅ | ✅ 遥控器方向键 |
 | 广告分片过滤（m3u8 `adjump` / 超短片头段） | ✅ | ⏳ 路线图 |
 | 直播 / IPTV（M3U、分组、收藏） | ✅ | ✅ |
@@ -105,12 +107,14 @@ APK 位置：`apps/androidtv/app/build/outputs/apk/debug/app-debug.apk`（debug 
 ### 测试
 
 ```bash
-npm test                     # 核心解析/聚合 50 项单测
+npm test                     # 核心解析/聚合/换源 + 桌面代理 153 项单测
 npm run test:dlna            # DLNA 发送端链路（SSDP → 设备描述 → SOAP）
-cd apps/androidtv && gradle testDebugUnitTest   # Kotlin 解析层 11 项单测
+cd apps/androidtv && gradle testDebugUnitTest   # Kotlin 解析层/换源/缩放 50 项单测
 ```
 
 端到端联调（本地假采集站 + 真实 HLS 视频）：见 [docs/build.md](docs/build.md#端到端联调)。
+
+换源链路的真机验证脚本在 `tools/e2e/failover.mjs`（CDP 驱动，桌面端需以 `--remote-debugging-port=9333` 启动）：它会搜索 → 起播 → 按 `S` 手动换源 → 屏蔽当前 CDN 域名，确认播放器自动切到别的源并继续播放。
 
 ## 关于内置源与内容
 

@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.libretv.tv.data.AppData
 import org.libretv.tv.data.AppSettings
 import org.libretv.tv.data.AppStore
@@ -23,6 +24,7 @@ import org.libretv.tv.data.HistoryEntry
 import org.libretv.tv.data.LiveChannel
 import org.libretv.tv.data.LiveSource
 import org.libretv.tv.data.Parsers
+import org.libretv.tv.data.PlaybackCandidate
 import org.libretv.tv.data.Repository
 import org.libretv.tv.data.SearchGroup
 import org.libretv.tv.data.SearchItem
@@ -47,6 +49,8 @@ sealed interface Screen {
         val episodes: List<String>,
         val startIndex: Int,
         val sourceName: String,
+        /** 同片源候选链（含当前源，当前源排第一）；失败时按顺序自动切换 */
+        val candidates: List<PlaybackCandidate> = emptyList(),
     ) : Screen
     data class LivePlayer(val channel: LiveChannel) : Screen
     data object Cast : Screen
@@ -83,6 +87,12 @@ data class CategoryUi(
     val supportedSources: Int = 0,
     val failedSources: Int = 0,
 )
+
+/** 单次详情请求的死线：超时即换下一个候选源，不让用户对着转圈等 */
+private const val DETAIL_TIMEOUT_MS = 9_000L
+
+/** 同时发起的候选详情请求上限（电视盒子并发能力有限） */
+private const val DETAIL_FANOUT = 3
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = AppStore(app)
@@ -328,13 +338,42 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         screen = Screen.Detail(group, item)
         detail = DetailUi(loading = true)
         viewModelScope.launch {
-            val source = _data.value.sources.firstOrNull { it.key == item.sourceKey }
-                ?: VodSource(item.sourceKey, item.sourceName, item.sourceUrl ?: "")
-            val result = runCatching { repo.detail(source, item.vodId) }
-            detail = result.fold(
-                onSuccess = { DetailUi(loading = false, detail = it) },
-                onFailure = { DetailUi(loading = false, error = it.message ?: "获取详情失败") },
-            )
+            val sources = _data.value.sources
+            val sourceOf: (SearchItem) -> VodSource = { entry ->
+                sources.firstOrNull { it.key == entry.sourceKey }
+                    ?: VodSource(entry.sourceKey, entry.sourceName, entry.sourceUrl ?: "")
+            }
+
+            // 当前源拿不到详情就换同片的其它源：常见于某采集站详情接口挂掉但搜索还活着，
+            // 用户看到的是「详情加载失败」，实际上同一部片子别的源完全能播
+            val candidates = PlaybackCandidate.build(group.items, sources, active = item.sourceKey to item.vodId)
+            val chain = if (candidates.isEmpty()) {
+                listOf(PlaybackCandidate(sourceOf(item), item.vodId, item.sourceName))
+            } else {
+                candidates
+            }
+
+            var lastError = "没有可用的片源"
+            for (candidate in chain) {
+                val target = group.items.firstOrNull {
+                    it.sourceKey == candidate.source.key && it.vodId == candidate.vodId
+                } ?: item
+                val result = withTimeoutOrNull(DETAIL_TIMEOUT_MS) {
+                    runCatching { repo.detail(sourceOf(target), target.vodId) }
+                }
+                val vod = result?.getOrNull()
+                if (vod != null && vod.episodes.isNotEmpty()) {
+                    if (target !== item) {
+                        // 换了源：详情页也要跟着切，否则播放按钮用的还是旧 item
+                        screen = Screen.Detail(group, target)
+                        showToast("已切换到「${target.sourceName}」")
+                    }
+                    detail = DetailUi(loading = false, detail = vod)
+                    return@launch
+                }
+                lastError = result?.exceptionOrNull()?.message ?: "「${target.sourceName}」没有可播放的线路"
+            }
+            detail = DetailUi(loading = false, error = lastError)
         }
     }
 
@@ -351,6 +390,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             episodes = vod.episodes,
             startIndex = index.coerceIn(0, (vod.episodes.size - 1).coerceAtLeast(0)),
             sourceName = current.item.sourceName,
+            // 聚合结果里同片源的其它条目就是天然的备份播放源
+            candidates = PlaybackCandidate.build(
+                items = current.group.items,
+                sources = _data.value.sources,
+                active = current.item.sourceKey to current.item.vodId,
+            ),
         )
     }
 
@@ -375,6 +420,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     episodes = vod.episodes,
                     startIndex = entry.episodeIndex.coerceIn(0, vod.episodes.size - 1),
                     sourceName = entry.sourceName,
+                    // 历史里只有一个源：先建单元素链，播放页失败时会按片名反查补充
+                    candidates = listOf(PlaybackCandidate(source, entry.vodId, entry.sourceName)),
                 )
             }.onFailure { showToast(it.message ?: "打开失败") }
         }
@@ -407,6 +454,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         episodes = vod.episodes,
                         startIndex = 0,
                         sourceName = source.name,
+                        candidates = listOf(PlaybackCandidate(source, fav.vodId, source.name)),
                     )
                 }
                 .onFailure { showToast(it.message ?: "打开失败") }
@@ -449,6 +497,65 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun saveProgressNow(player: Screen.Player) {
         // 具体位置由播放页在退出前调用 saveProgress 写入
     }
+
+    /**
+     * 播放失败时切换到下一个候选源（失败转移）。
+     *
+     * 候选链试完后，只要还有其它启用的源，就按片名反查一轮补充候选；
+     * 补出来的也全部失败才返回 null，避免无限循环。
+     * 返回 (新播放目标, 对齐后的集数)，调用方负责用它替换当前播放状态。
+     */
+    suspend fun failoverPlayback(
+        player: Screen.Player,
+        tried: Set<String>,
+        episodeIndex: Int,
+        discovered: Boolean,
+    ): FailoverResult? {
+        var chain = player.candidates
+        var searched = discovered
+
+        while (true) {
+            val untried = chain.filter { it.key !in tried }
+            if (untried.isEmpty()) {
+                if (searched) return null
+                searched = true
+                val extra = runCatching {
+                    repo.discoverCandidates(
+                        title = player.title,
+                        sources = _data.value.activeSources(),
+                        exclude = tried,
+                    )
+                }.getOrDefault(emptyList())
+                if (extra.isEmpty()) return null
+                chain = (chain + extra).distinctBy { it.key }
+                continue
+            }
+
+            val next = untried.first()
+            val detail = runCatching { repo.detail(next.source, next.vodId) }.getOrNull()
+            if (detail == null || detail.episodes.isEmpty()) continue
+
+            val aligned = episodeIndex.coerceIn(0, (detail.episodes.size - 1).coerceAtLeast(0))
+            val target = player.copy(
+                source = next.source,
+                vodId = next.vodId,
+                sourceName = next.sourceName,
+                title = detail.title ?: player.title,
+                cover = detail.cover ?: player.cover,
+                episodes = detail.episodes,
+                startIndex = aligned,
+                candidates = chain,
+            )
+            return FailoverResult(target, aligned, next, detail)
+        }
+    }
+
+    data class FailoverResult(
+        val target: Screen.Player,
+        val episodeIndex: Int,
+        val candidate: PlaybackCandidate,
+        val detail: VodDetail,
+    )
 
     fun removeHistory(id: String) {
         viewModelScope.launch { store.update { it.copy(history = it.history.filter { h -> h.id != id }) } }
@@ -495,10 +602,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         live = live.copy(loading = true, channels = emptyList(), statuses = emptyList())
         viewModelScope.launch {
+            // 多个直播源并行拉取：串行时每加一个源就多等一整轮超时，
+            // 4 个源里只要有一个慢源，整个直播页就会卡住十几秒
+            val fetched = sources.map { source ->
+                async {
+                    source to runCatching { repo.liveChannels(source, _data.value.settings.adultFilter) }
+                }
+            }.awaitAll()
+
             val collected = mutableListOf<LiveChannel>()
             val statuses = mutableListOf<Pair<String, String>>()
-            sources.forEach { source ->
-                runCatching { repo.liveChannels(source, _data.value.settings.adultFilter) }
+            fetched.forEach { (source, result) ->
+                result
                     .onSuccess { channels ->
                         collected += channels
                         statuses += source.name to "${channels.size} 频道"

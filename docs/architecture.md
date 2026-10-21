@@ -66,6 +66,26 @@
 
 非 HLS（mp4 直链）走同一代理，`<video>` 直接播放。
 
+### 播放性能与失败转移
+
+性能上有三处关键设计：
+
+1. **代理分片直通**：`/p` 拿到上游响应后立刻 `getReader()`，只有当第一块内容看起来像播放列表（前 64 字节含 `#EXTM3U`，容忍 BOM）时才整体读入改写；其余分片走 `pipeStream`，边收边发、尊重 `drain` 背压、连接关闭即 `reader.cancel()`。旧实现把整个分片读进 Buffer 再 `res.end()`，首字节要等上游写完。上限：播放列表/图片 16MB，流 1GB。
+2. **hls.js 参数**：`maxBufferLength 30` / `maxMaxBufferLength 90` / `backBufferLength 30` / `maxBufferSize 60MB`，`startLevel: -1`（自动选码率）；重试次数压到 1–2 次并配 `fragLoadingRetryDelay 500`，让失败快速暴露给换源逻辑，而不是无限重试卡住。
+3. **卡顿看门狗**：`waiting` 事件起 12 秒计时器，`playing` 清除；超时直接触发换源。TV 端同理（`STALL_SECONDS = 15`）。
+
+失败转移分两级，桌面与 TV 行为一致：
+
+```
+播放出错（hls 致命错误 / video error / 卡顿超时）
+   ├─ 本集恢复计数 < 2 ──▶ 重载当前集（reloadToken / LaunchedEffect 重来）
+   └─ 恢复不了 ──▶ failover()
+                     ├─ 候选链里还有没试过的源 ──▶ fetchDetail 对齐集数后切过去
+                     └─ 候选链空了 ──▶ discoverCandidates 按片名反查补一轮（只补一次）
+```
+
+候选链由 `packages/core/src/failover.ts` 的 `buildPlaybackCandidates` 生成，**按源轮转**而不是按结果顺序取满 8 条：搜「沙丘」时单个源可能命中 8 个版本，顺序取会让整条链全来自同一个站，而换源要解决的恰恰是该站整体挂掉。TV 端 `PlaybackCandidate.build` 是同规则的 Kotlin 实现。
+
 ### 投屏链路（发送端）
 
 ```
@@ -119,6 +139,16 @@ scale = min(逻辑宽度dp / 960, 逻辑高度dp / 540)  // 夹在 [0.35, 5]
 `MainActivity` 里用 `TvScaleSurface` 包住整棵树，并且 `android:configChanges` 补上 `density`，避免个别盒子在分辨率/密度切换时重建 Activity 闪一下。
 
 「自动缩放」的判据是**同一张卡片占屏宽的比例处处相同**，而不是某个固定像素值。`TvUiScaleTest` 里有一条专门的断言：同一个 128dp 卡片，在 720p@320、1080p@160/213/320、4K@160/320/640 上占屏宽都是 13.33%（= `128 × 2 / 1920`）。这条测试代替了无法在本机完成的模拟器目视验证。
+
+### 播放器调优与失败转移
+
+`data/Playback.kt` 统一构建 `ExoPlayer`，不散落在 UI 层：
+
+- `DefaultLoadControl`：`MIN_BUFFER_MS 1500` / `MAX_BUFFER_MS 30000` / `BUFFER_FOR_PLAYBACK_MS 1500` / `BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS 3000` / `BACK_BUFFER_MS 20000`，并 `setPrioritizeTimeOverSizeThresholds(true)`。起播只要 1.5 秒缓冲就出画面，长缓冲留给播放中兜底。
+- `DefaultHttpDataSource.Factory`：固定 `Net.UA`、`connectTimeout 12s` / `readTimeout 20s`、`allowCrossProtocolRedirects`、`Accept-Encoding: identity`（避免拿到 gzip 的分片流）。OkHttp 无 CORS 概念，也不需要回环代理。
+- `setHandleAudioBecomingNoisy(true)` 让拔耳机/切输出时自动暂停。
+
+失败转移与桌面端同构：`Player.Listener.onPlayerError` 和 15 秒缓冲看门狗都调 `AppViewModel.failoverPlayback(player, tried, episodeIndex, discovered)`，它返回 `FailoverResult`（新 `Screen.Player` + 对齐后的集数）；候选链空了会 `repo.discoverCandidates` 按片名补一轮，补过仍失败才报错。`openDetail` 也做了候选扇出：前 3 个候选并行拉详情，谁先成功就展示谁（`DETAIL_FANOUT = 3`、`DETAIL_TIMEOUT_MS = 9000`）。
 
 ### 投屏链路（接收端 DMR）
 

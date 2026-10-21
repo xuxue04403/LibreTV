@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  buildPlaybackCandidates,
   fetchDetail,
   historyId,
   type AggregatedGroup,
@@ -47,6 +48,15 @@ export function DetailPanel({
       };
     },
     [sources]
+  );
+
+  /** 同片源候选链（用于播放失败时自动换源），当前选中的源排第一 */
+  const candidates = useMemo(
+    () =>
+      buildPlaybackCandidates(group.items, sources, {
+        active: { sourceKey: selected.sourceKey, vodId: selected.vodId },
+      }),
+    [group.items, sources, selected.sourceKey, selected.vodId]
   );
 
   useEffect(() => {
@@ -115,6 +125,7 @@ export function DetailPanel({
                     cover: detail.videoInfo.cover ?? selected.pic,
                     episodes: detail.episodes,
                     startIndex: episodeIndex,
+                    candidates,
                   });
                 }}
               >
@@ -195,6 +206,7 @@ export function DetailPanel({
                     cover: detail.videoInfo.cover ?? selected.pic,
                     episodes: detail.episodes,
                     startIndex: i,
+                    candidates,
                   });
                 }}
                 title={url}

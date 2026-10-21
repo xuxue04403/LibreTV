@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { fetchDetail, formatRelativeTime, type HistoryEntry } from '@libretv/core';
+import { buildPlaybackCandidates, fetchDetail, formatRelativeTime, type HistoryEntry } from '@libretv/core';
 import { http } from '../lib/bridge';
 import { useAppStore } from '../lib/store';
 import { Icon } from '../components/Icons';
@@ -7,6 +7,17 @@ import { Poster } from '../components/Poster';
 import { useToast } from '../components/Toast';
 import { CategoryButtons, type CategoryKey } from './Category';
 import type { WatchTarget } from './Watch';
+
+/**
+ * 历史/收藏里只存了单个源，没有聚合结果可用。
+ * 这里先给出「只有当前源」的候选链，播放页会按片名在后台补齐其它源。
+ */
+function soloCandidate(source: { key: string; name: string; url: string; isAdult?: boolean }, vodId: string) {
+  return buildPlaybackCandidates(
+    [{ sourceKey: source.key, sourceName: source.name, vodId, name: '', sourceUrl: source.url }],
+    [source]
+  );
+}
 
 export function HomePage({
   onPlay,
@@ -49,6 +60,7 @@ export function HomePage({
           cover: detail.videoInfo.cover ?? entry.cover,
           episodes: detail.episodes,
           startIndex: Math.min(entry.episodeIndex, detail.episodes.length - 1),
+          candidates: soloCandidate(source, entry.vodId),
         });
       } catch (err) {
         toast.err(err instanceof Error ? err.message : '打开失败');
@@ -81,6 +93,7 @@ export function HomePage({
           cover: detail.videoInfo.cover ?? fav.cover,
           episodes: detail.episodes,
           startIndex: saved ? Math.min(saved.episodeIndex, detail.episodes.length - 1) : 0,
+          candidates: soloCandidate(source, fav.vodId),
         });
       } catch (err) {
         toast.err(err instanceof Error ? err.message : '打开失败');

@@ -1,22 +1,39 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
-import { episodeLabel, formatTime, historyId, type SourceConfig } from '@libretv/core';
-import { proxify } from '../lib/bridge';
+import {
+  candidateLabel,
+  candidateKey,
+  discoverCandidates,
+  episodeLabel,
+  fetchDetail,
+  formatTime,
+  historyId,
+  pickEpisodeIndex,
+  type PlaybackCandidate,
+} from '@libretv/core';
+import { http, proxify } from '../lib/bridge';
 import { useAppStore } from '../lib/store';
 import { useToast } from '../components/Toast';
 import { CastDialog } from '../components/CastDialog';
 import { Icon } from '../components/Icons';
 
+/** 正在播放的源；autoFailover 时播放失败会自动切到 candidates 里的下一个 */
 export interface WatchTarget {
-  source: SourceConfig;
+  source: { key: string; name: string; url: string; detail?: string; isAdult?: boolean };
   vodId: string;
   title: string;
   cover?: string;
   episodes: string[];
   startIndex: number;
+  /** 同片源候选链（含当前源，当前源排第一）；缺省时退化为「不自动换源」 */
+  candidates?: PlaybackCandidate[];
 }
 
 const SKIP_SECONDS = 10;
+/** 同一集内允许的自动重试次数（分片抖动通常一次就好，再失败就换源） */
+const MAX_RECOVERIES = 2;
+/** 连续缓冲多久判定为「卡死」，触发换源（毫秒） */
+const STALL_MS = 12_000;
 
 export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: () => void }) {
   const settings = useAppStore((s) => s.settings);
@@ -26,8 +43,18 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stallTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedRef = useRef(0);
+  const triedRef = useRef<Set<string>>(new Set());
+  /** 本集已尝试恢复的次数（不进 state，避免每次报错都触发重渲染） */
+  const recoverRef = useRef(0);
+  /** 是否已经按片名反查过补充候选（只查一次） */
+  const discoveredRef = useRef(false);
+  const sources = useAppStore((s) => s.sources);
 
+  /** 当前播放的候选（换源后指向新源） */
+  const [active, setActive] = useState<PlaybackCandidate | null>(null);
+  const [episodes, setEpisodes] = useState(target.episodes);
   const [index, setIndex] = useState(Math.max(0, Math.min(target.startIndex, target.episodes.length - 1)));
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
@@ -42,8 +69,22 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
   const [fullscreen, setFullscreen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [castOpen, setCastOpen] = useState(false);
+  const [failoverNote, setFailoverNote] = useState<string | null>(null);
+  // 递增即重载当前集：本集恢复失败后重来一次，而不是干等
+  const [reloadToken, setReloadToken] = useState(0);
 
-  const episodeUrl = target.episodes[index];
+  /** 候选链：换源时可能按片名反查追加，所以放 state；ref 供回调读取最新值 */
+  const [candidates, setCandidates] = useState<PlaybackCandidate[]>(target.candidates ?? []);
+  const candidatesRef = useRef(candidates);
+  candidatesRef.current = candidates;
+  const currentSource = active?.source ?? target.source;
+  const currentSourceName = active?.sourceName ?? target.source.name;
+  const episodeUrl = episodes[index];
+
+  // 首次进入时把当前源记为「已试过」，避免换源又切回刚失败的源
+  useEffect(() => {
+    triedRef.current.add(candidateKey({ sourceKey: target.source.key, vodId: target.vodId }));
+  }, [target.source.key, target.vodId]);
 
   /** 保存进度（同一影片去重置顶） */
   const persistProgress = useCallback(
@@ -51,24 +92,80 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
       if (!settings.resumePlayback) return;
       if (!Number.isFinite(position) || position <= 0) return;
       recordHistory({
-        id: historyId(target.source.key, target.vodId),
-        sourceKey: target.source.key,
-        vodId: target.vodId,
+        id: historyId(currentSource.key, active?.vodId ?? target.vodId),
+        sourceKey: currentSource.key,
+        vodId: active?.vodId ?? target.vodId,
         title: target.title,
         cover: target.cover,
-        sourceName: target.source.name,
+        sourceName: currentSourceName,
         episodeIndex: epIndex,
-        episodeCount: target.episodes.length,
-        episodeUrl: target.episodes[epIndex],
+        episodeCount: episodes.length,
+        episodeUrl: episodes[epIndex],
         position,
         duration: Number.isFinite(total) ? total : 0,
       });
       savedRef.current = position;
     },
-    [recordHistory, settings.resumePlayback, target]
+    [active?.vodId, currentSource, currentSourceName, episodes, recordHistory, settings.resumePlayback, target.cover, target.title, target.vodId]
+  );
+
+  /**
+   * 自动换源：把当前集数对齐到下一个候选源，重新加载。
+   *
+   * 候选链试完之后，只要还有其它源，就按片名反查一轮补充候选
+   * （从历史/收藏进来的场景手里只有一个源，不补就无路可走）。
+   * 补出来的候选也全部试完才认输，避免无限循环。
+   */
+  const failover = useCallback(
+    async (reason: string): Promise<boolean> => {
+      for (;;) {
+        const untried = candidatesRef.current.filter((candidate) => !triedRef.current.has(candidateKey(candidate)));
+        if (untried.length === 0) {
+          if (discoveredRef.current) return false;
+          discoveredRef.current = true;
+          setFailoverNote(`${reason}，正在查找其它片源…`);
+          const extra = await discoverCandidates(target.title, sources, http, {
+            exclude: triedRef.current,
+            timeoutMs: 8_000,
+          }).catch(() => [] as PlaybackCandidate[]);
+          if (extra.length === 0) {
+            setFailoverNote(null);
+            return false;
+          }
+          candidatesRef.current = [...candidatesRef.current, ...extra];
+          setCandidates(candidatesRef.current);
+          continue;
+        }
+
+        const next = untried[0];
+        triedRef.current.add(candidateKey(next));
+        setFailoverNote(`${reason}，正在切换到「${candidateLabel(next)}」…`);
+        setError(null);
+        setLoading(true);
+        try {
+          const parsed = await fetchDetail(next.source, next.vodId, http, { timeoutMs: 8_000 });
+          if (parsed.episodes.length === 0) throw new Error('该源无可用地址');
+          setActive(next);
+          setEpisodes(parsed.episodes);
+          setIndex(pickEpisodeIndex(index, parsed.episodes.length));
+          setFailoverNote(`已切换到「${candidateLabel(next)}」`);
+          setTimeout(() => setFailoverNote(null), 2600);
+          return true;
+        } catch {
+          setLoading(false);
+          // 这个源拿不到详情，继续试下一个
+        }
+      }
+    },
+    [index, sources, target.title]
   );
 
   // —— 初始化/切换集数 ——
+  // 换集或换源时重置恢复计数；reloadToken 触发的重载不算新尝试
+  useEffect(() => {
+    recoverRef.current = 0;
+  }, [episodeUrl, active]);
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !episodeUrl) return;
@@ -80,24 +177,59 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     const isHls = /\.m3u8(\?|$)/i.test(episodeUrl);
     const src = proxify(episodeUrl, { ad: settings.adFilter });
     let hls: Hls | null = null;
+    let disposed = false;
+
+    /**
+     * 出错时先在本集上重载恢复，恢复不了再换源。
+     *
+     * 必须真的重新加载：hls.js 报出致命网络错误后自身已停止加载，
+     * 光把计数加一、弹个提示，是等不到第二个错误事件的，界面会永久卡住。
+     */
+    const handleFatal = (message: string) => {
+      if (disposed) return;
+      if (recoverRef.current < MAX_RECOVERIES) {
+        recoverRef.current += 1;
+        setError(`${message}（第 ${recoverRef.current} 次尝试恢复）`);
+        setLoading(true);
+        setReloadToken((token) => token + 1);
+        return;
+      }
+      setError(message);
+      setLoading(false);
+      void failover(message);
+    };
 
     if (isHls) {
       if (Hls.isSupported()) {
-        hls = new Hls({ enableWorker: true, maxBufferLength: 30, backBufferLength: 60 });
+        hls = new Hls({
+          // 播放更顺的关键：起播只要 2 个分片，往前多看 30 秒
+          enableWorker: true,
+          lowLatencyMode: false,
+          maxBufferLength: 30,
+          maxMaxBufferLength: 90,
+          backBufferLength: 30,
+          maxBufferSize: 60 * 1000 * 1000,
+          // 分片失败快速失败并交给换源，而不是无限 startLoad 卡住
+          manifestLoadingMaxRetry: 1,
+          levelLoadingMaxRetry: 2,
+          fragLoadingMaxRetry: 2,
+          fragLoadingRetryDelay: 500,
+          startLevel: -1,
+        });
         hls.loadSource(src);
         hls.attachMedia(video);
         hls.on(Hls.Events.ERROR, (_evt, data) => {
           if (!data.fatal) return;
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-            setError('网络错误：分片加载失败，正在尝试恢复');
-            hls?.startLoad();
-          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-            setError('解码错误：正在尝试恢复');
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
             hls?.recoverMediaError();
-          } else {
-            setError('播放失败：该片源可能已失效，请返回换源');
-            setLoading(false);
+            handleFatal('解码错误');
+            return;
           }
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            handleFatal('网络错误：分片加载失败');
+            return;
+          }
+          handleFatal('播放失败：该片源可能已失效');
         });
         hlsRef.current = hls;
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
@@ -110,12 +242,19 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
       video.src = src;
     }
 
+    // 直链没有 hls.js 的错误事件，靠 video 元素自己的 error 事件触发换源
+    const onVideoError = () => {
+      if (disposed) return;
+      const code = video.error?.code;
+      handleFatal(code === MediaError.MEDIA_ERR_DECODE ? '解码错误' : '网络错误：无法加载视频');
+    };
+    video.addEventListener('error', onVideoError);
+
     const resume = settings.resumePlayback
-      ? useAppStore
-          .getState()
-          .history.find((h) => h.id === historyId(target.source.key, target.vodId))
+      ? useAppStore.getState().history.find((h) => h.id === historyId(currentSource.key, active?.vodId ?? target.vodId))
       : undefined;
     const onLoaded = () => {
+      if (disposed) return;
       setLoading(false);
       setDuration(video.duration || 0);
       if (resume && resume.episodeIndex === index && resume.position > 15 && resume.position < video.duration - 15) {
@@ -129,7 +268,9 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     video.addEventListener('loadedmetadata', onLoaded, { once: true });
 
     return () => {
+      disposed = true;
       video.removeEventListener('loadedmetadata', onLoaded);
+      video.removeEventListener('error', onVideoError);
       hls?.destroy();
       hlsRef.current = null;
       video.pause();
@@ -137,7 +278,7 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
       video.load();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [episodeUrl, index, settings.adFilter]);
+  }, [episodeUrl, index, settings.adFilter, active, reloadToken]);
 
   // —— 视频事件 ——
   useEffect(() => {
@@ -157,12 +298,30 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     const onEnded = () => {
       setPlaying(false);
       persistProgress(0, index, video.duration);
-      if (settings.autoplayNext && index + 1 < target.episodes.length) {
+      if (settings.autoplayNext && index + 1 < episodes.length) {
         setIndex((i) => i + 1);
       }
     };
-    const onWaiting = () => setLoading(true);
-    const onPlaying = () => setLoading(false);
+    const clearStall = () => {
+      if (stallTimer.current) {
+        clearTimeout(stallTimer.current);
+        stallTimer.current = null;
+      }
+    };
+    // 一直卡在 buffering 超过 STALL_MS 也要换源，否则用户只能看到无限转圈
+    const onWaiting = () => {
+      setLoading(true);
+      clearStall();
+      stallTimer.current = setTimeout(() => {
+        setLoading(false);
+        setError('加载超时');
+        void failover('加载超时');
+      }, STALL_MS);
+    };
+    const onPlaying = () => {
+      setLoading(false);
+      clearStall();
+    };
     video.addEventListener('timeupdate', onTime);
     video.addEventListener('play', onPlay);
     video.addEventListener('pause', onPause);
@@ -171,6 +330,7 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     video.addEventListener('waiting', onWaiting);
     video.addEventListener('playing', onPlaying);
     return () => {
+      clearStall();
       video.removeEventListener('timeupdate', onTime);
       video.removeEventListener('play', onPlay);
       video.removeEventListener('pause', onPause);
@@ -179,7 +339,7 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
       video.removeEventListener('waiting', onWaiting);
       video.removeEventListener('playing', onPlaying);
     };
-  }, [index, persistProgress, settings.autoplayNext, target.episodes.length]);
+  }, [episodes.length, failover, index, persistProgress, settings.autoplayNext]);
 
   // —— 退出时保存进度 ——
   useEffect(() => {
@@ -225,13 +385,23 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
 
   const changeEpisode = useCallback(
     (next: number) => {
-      if (next < 0 || next >= target.episodes.length) return;
+      if (next < 0 || next >= episodes.length) return;
       persistProgress(videoRef.current?.currentTime ?? 0, index, videoRef.current?.duration ?? 0);
+      // 换集不算失败：重置已试过的源，让新一集仍可以从当前源开始
+      triedRef.current.clear();
+      triedRef.current.add(candidateKey({ sourceKey: currentSource.key, vodId: active?.vodId ?? target.vodId }));
+      setError(null);
       setIndex(next);
       setDrawerOpen(false);
     },
-    [index, persistProgress, target.episodes.length]
+    [active?.vodId, currentSource.key, episodes.length, index, persistProgress, target.vodId]
   );
+
+  /** 手动换源（用户点错误面板上的按钮，或选集抽屉里的源徽章） */
+  const manualSwitch = useCallback(async () => {
+    const ok = await failover('手动切换');
+    if (!ok) toast.err('已经没有其它可用片源了');
+  }, [failover, toast]);
 
   const toggleFullscreen = useCallback(async () => {
     if (window.libretv) {
@@ -298,6 +468,10 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
         case 'M':
           toggleMute();
           break;
+        case 's':
+        case 'S':
+          void manualSwitch();
+          break;
         case 'Escape':
           if (document.fullscreenElement) void document.exitFullscreen();
           else onClose();
@@ -313,7 +487,7 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [changeEpisode, index, onClose, revealControls, seekBy, toggleFullscreen, toggleMute, togglePlay]);
+  }, [changeEpisode, index, manualSwitch, onClose, revealControls, seekBy, toggleFullscreen, toggleMute, togglePlay]);
 
   const playedPercent = duration > 0 ? (current / duration) * 100 : 0;
   const bufferedPercent = duration > 0 ? (buffered / duration) * 100 : 0;
@@ -323,6 +497,8 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     if (!video || !video.duration) return;
     video.currentTime = Math.max(0, Math.min(video.duration, video.duration * ratio));
   };
+
+  const remainingCandidates = candidates.filter((candidate) => !triedRef.current.has(candidateKey(candidate))).length;
 
   return (
     <div
@@ -348,12 +524,41 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
             <div>正在加载 {episodeLabel(episodeUrl, index)}…</div>
           </div>
         )}
+        {failoverNote && (
+          <div className="player-loading" style={{ background: 'transparent', pointerEvents: 'none' }}>
+            <div className="chip on" style={{ padding: '8px 14px', fontSize: 13 }}>
+              {failoverNote}
+            </div>
+          </div>
+        )}
         {error && (
           <div className="player-loading">
-            <div style={{ maxWidth: 460, textAlign: 'center', lineHeight: 1.7 }}>
+            <div style={{ maxWidth: 480, textAlign: 'center', lineHeight: 1.7 }}>
               <div style={{ fontSize: 15, marginBottom: 6 }}>{error}</div>
               <div style={{ color: '#8d97a8', fontSize: 12 }}>
-                可切换集数或返回列表换一个片源（Esc 返回）
+                {remainingCandidates > 0
+                  ? `还有 ${remainingCandidates} 个片源可尝试`
+                  : '可用片源都试过了，可切换集数或返回列表'}
+              </div>
+              <div className="row" style={{ justifyContent: 'center', gap: 10, marginTop: 14 }}>
+                <button className="btn primary" onClick={() => void manualSwitch()} disabled={remainingCandidates === 0}>
+                  换一个片源（S）
+                </button>
+                <button
+                  className="btn"
+                  onClick={() => {
+                    setError(null);
+                    setLoading(true);
+                    // 重试等于从头再来：忘了试过哪些源，可重新走一遍候选链
+                    triedRef.current.clear();
+                    triedRef.current.add(candidateKey({ sourceKey: currentSource.key, vodId: target.vodId }));
+                    discoveredRef.current = false;
+                    recoverRef.current = 0;
+                    setReloadToken((token) => token + 1);
+                  }}
+                >
+                  重试
+                </button>
               </div>
             </div>
           </div>
@@ -366,7 +571,8 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
           <div>
             <div className="player-title">{target.title}</div>
             <div className="player-sub">
-              {target.source.name} · {episodeLabel(episodeUrl, index)} · 共 {target.episodes.length} 集
+              {currentSourceName} · {episodeLabel(episodeUrl, index)} · 共 {episodes.length} 集
+              {candidates.length > 1 ? ` · ${candidates.length} 个片源` : ''}
             </div>
           </div>
           <div className="spacer" />
@@ -407,7 +613,7 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
             <button
               className="ctrl"
               onClick={() => changeEpisode(index + 1)}
-              disabled={index + 1 >= target.episodes.length}
+              disabled={index + 1 >= episodes.length}
               title="下一集（N）"
             >
               <Icon name="right" size={18} />
@@ -461,16 +667,51 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
               <div>
                 <div style={{ fontWeight: 600 }}>选集</div>
                 <div style={{ color: '#8d97a8', fontSize: 12 }}>
-                  {target.source.name} · 共 {target.episodes.length} 集
+                  {currentSourceName} · 共 {episodes.length} 集
                 </div>
               </div>
               <button className="ctrl" onClick={() => setDrawerOpen(false)}>
                 <Icon name="x" size={18} />
               </button>
             </div>
+            {candidates.length > 1 ? (
+              <div className="row" style={{ flexWrap: 'wrap', gap: 8, padding: '0 18px 10px' }}>
+                <span style={{ color: '#8d97a8', fontSize: 12 }}>片源</span>
+                {candidates.map((candidate) => {
+                  const isCurrent = candidateKey(
+                    active ?? { sourceKey: target.source.key, vodId: target.vodId }
+                  ) === candidateKey(candidate);
+                  const tried = triedRef.current.has(candidateKey(candidate));
+                  return (
+                    <button
+                      key={candidateKey(candidate)}
+                      className={`chip${isCurrent ? ' on' : ''}`}
+                      style={{ cursor: 'pointer', opacity: tried && !isCurrent ? 0.55 : 1 }}
+                      title={tried && !isCurrent ? '这一集已经试过，失败了' : '切换到这个片源'}
+                      onClick={async () => {
+                        if (isCurrent) return;
+                        const parsed = await fetchDetail(candidate.source, candidate.vodId, http, { timeoutMs: 8_000 });
+                        if (parsed.episodes.length === 0) {
+                          toast.err('该片源暂无可用地址');
+                          return;
+                        }
+                        triedRef.current.delete(candidateKey(candidate));
+                        setActive(candidate);
+                        setEpisodes(parsed.episodes);
+                        setIndex(Math.max(0, Math.min(index, parsed.episodes.length - 1)));
+                        setError(null);
+                        setDrawerOpen(false);
+                      }}
+                    >
+                      {candidateLabel(candidate)}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
             <div className="drawer-body">
               <div className="episodes" style={{ maxHeight: 'none' }}>
-                {target.episodes.map((url, i) => (
+                {episodes.map((url, i) => (
                   <button
                     key={`${url}-${i}`}
                     className={`ep${i === index ? ' active' : ''}`}

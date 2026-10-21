@@ -17,6 +17,7 @@ export * from './group';
 export * from './http';
 export * from './search';
 export * from './detail';
+export * from './failover';
 export * from './live';
 export * from './subscriptions';
 export * from './storage';

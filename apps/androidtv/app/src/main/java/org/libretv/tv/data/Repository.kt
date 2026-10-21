@@ -101,8 +101,55 @@ class Repository(private val net: Net = Net) {
         return pageDetail
     }
 
-    suspend fun liveChannels(source: LiveSource, adultFilter: Boolean = true): List<LiveChannel> {
-        val text = net.getText(source.url, mapOf("Accept" to "application/x-mpegURL, text/plain, */*"))
+    /**
+     * 按片名反查其它可用源。
+     *
+     * 从「观看记录」「收藏」进入播放时手里只有一个源，一旦它挂了就无路可走。
+     * 这里用片名再搜一轮，把其它源的同名影片补进候选链 —— 只在候选全部
+     * 失败后才调用，不影响正常起播速度。与桌面端 discoverCandidates 一致。
+     */
+    suspend fun discoverCandidates(
+        title: String,
+        sources: List<VodSource>,
+        exclude: Set<String> = emptySet(),
+        maxPages: Int = 1,
+        timeoutMs: Long = 8_000,
+    ): List<PlaybackCandidate> {
+        val keyword = Parsers.normalizeTitle(title).trim()
+        if (keyword.isEmpty() || sources.isEmpty()) return emptyList()
+
+        val outcomes: List<SourceOutcome> = coroutineScope {
+            sources.map { source ->
+                async { search(source, keyword, maxPages, timeoutMs) }
+            }.awaitAll()
+        }
+
+        val wanted = keyword.lowercase()
+        val items = outcomes
+            .filter { it.ok }
+            .flatMap { it.items }
+            .filter { item ->
+                if ("${item.sourceKey}:${item.vodId}" in exclude) return@filter false
+                val name = Parsers.normalizeTitle(item.name).lowercase()
+                name.isNotEmpty() && (name == wanted || name.contains(wanted) || wanted.contains(name))
+            }
+        return PlaybackCandidate.build(items, sources)
+    }
+
+    /**
+     * 依次尝试候选链，返回第一个能拿到播放地址的结果。
+     *
+     * onSkip 用来把「某个源失败」反馈到界面；回调异常不影响整体流程。
+     */
+    suspend fun firstPlayable(candidates: List<PlaybackCandidate>): Pair<PlaybackCandidate, VodDetail>? {
+        for (candidate in candidates) {
+            val detail = runCatching { detail(candidate.source, candidate.vodId) }.getOrNull()
+            if (detail != null && detail.episodes.isNotEmpty()) return candidate to detail
+        }
+        return null
+    }
+
+    suspend fun liveChannels(source: LiveSource, adultFilter: Boolean = true): List<LiveChannel> {        val text = net.getText(source.url, mapOf("Accept" to "application/x-mpegURL, text/plain, */*"))
         val parsed = Parsers.parseM3u(text, source.url)
         if (parsed.isEmpty()) throw IOException("未解析到可用频道")
         // 直播此前完全没有成人过滤：用户自加的 M3U 成人类目会原样露出

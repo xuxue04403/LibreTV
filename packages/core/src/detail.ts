@@ -44,6 +44,9 @@ export async function fetchDetail(
   }
 
   let resolved: VideoDetail | null = null;
+  // 记住第一次的网络/解析错误：两条路都失败时，报「连接超时」比笼统的
+  // 「未找到播放资源」有用得多 —— 后者会让用户以为片子下架了
+  let firstError: Error | null = null;
   try {
     const res = await http.request(api, {
       headers: cmsRequestHeaders(),
@@ -54,12 +57,12 @@ export async function fetchDetail(
       try {
         const detail = parseDetail(JSON.parse(res.text), source);
         if (detail.episodes.length > 0) resolved = detail;
-      } catch {
-        /* 列表接口无内容 → 继续尝试详情页 */
+      } catch (err) {
+        firstError = err instanceof Error ? err : new Error('解析失败');
       }
     }
-  } catch {
-    /* 网络失败也继续尝试详情页 */
+  } catch (err) {
+    firstError = err instanceof Error ? err : new Error('请求失败');
   }
 
   if (!resolved && /^https?:\/\//i.test(detailRoot)) {
@@ -71,11 +74,16 @@ export async function fetchDetail(
         signal: opts.signal,
       });
       if (res.ok) resolved = parseDetailPageHtml(res.text, source);
-    } catch {
-      /* 详情页失败则走下面的统一报错 */
+    } catch (err) {
+      firstError ??= err instanceof Error ? err : new Error('请求失败');
     }
   }
 
-  if (!resolved || resolved.episodes.length === 0) throw new HttpError('未找到播放资源', 404);
+  if (!resolved || resolved.episodes.length === 0) {
+    if (firstError) {
+      throw new HttpError(firstError.message, firstError instanceof HttpError ? firstError.status : 502);
+    }
+    throw new HttpError('未找到播放资源', 404);
+  }
   return resolved;
 }
