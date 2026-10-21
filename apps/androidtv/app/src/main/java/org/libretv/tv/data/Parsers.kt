@@ -154,11 +154,23 @@ object Parsers {
     fun normalizeStreamUrl(raw: String, baseUrl: String? = null): String? {
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) return null
-        return runCatching {
-            val url = java.net.URI(baseUrl ?: "").resolve(trimmed).toURL()
-            if (url.protocol != "http" && url.protocol != "https") null else url.toString()
-        }.getOrNull()
+        val base = baseUrl?.trim()?.takeIf { it.isNotEmpty() }
+
+        // java.net.URI 对含空格（以及控制字符）的 baseUrl 会抛 URISyntaxException，
+        // 之前被 runCatching 吞掉，导致整个源「未解析到可用频道」。
+        // 先做一次最小转义再解析，失败才退化为「只认绝对地址」。
+        if (base != null) {
+            val safeBase = base.replace(" ", "%20")
+            val fromBase = runCatching { java.net.URI(safeBase).resolve(trimmed).toURL().toString() }.getOrNull()
+            if (fromBase != null) return fromBase.takeIf { it.isHttpUrl() }
+        }
+
+        val direct = runCatching { java.net.URI(trimmed.replace(" ", "%20")).toURL().toString() }.getOrNull()
+        return direct?.takeIf { it.isHttpUrl() }
     }
+
+    private fun String.isHttpUrl(): Boolean =
+        startsWith("http://", ignoreCase = true) || startsWith("https://", ignoreCase = true)
 
     fun parseM3u(content: String, baseUrl: String? = null): List<LiveChannel> {
         val channels = mutableListOf<LiveChannel>()

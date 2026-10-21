@@ -14,6 +14,8 @@ import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.UUID
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
 /**
@@ -42,6 +44,16 @@ class DlnaServer(
         private const val UDN = "uuid:6d2f0f5a-1f2b-4f6e-9a1d-0c9b7a5e4d21"
         const val DEVICE_NAME = "LibreTV 电视"
 
+        private const val AVT_SERVICE = "urn:schemas-upnp-org:service:AVTransport:1"
+        private const val RCS_SERVICE = "urn:schemas-upnp-org:service:RenderingControl:1"
+        private const val CMS_SERVICE = "urn:schemas-upnp-org:service:ConnectionManager:1"
+
+        /** 请求体上限：SOAP 报文正常几 KB，给 64KB 足够，防止 Content-Length 打爆内存 */
+        private const val MAX_BODY_CHARS = 64 * 1024
+        private const val MAX_HEADERS = 64
+        private const val MAX_CLIENTS = 4
+        private const val CLIENT_TIMEOUT_MS = 5_000
+
         fun start(context: Context, onCast: (url: String, title: String) -> Unit): DlnaServer {
             val server = DlnaServer(context, onCast)
             server.start()
@@ -63,12 +75,19 @@ class DlnaServer(
     private var ssdpThread: Thread? = null
     private var httpThread: Thread? = null
 
+    /** 固定大小线程池：局域网异常连接不应让线程无限增长 */
+    private val workerPool: ExecutorService = Executors.newFixedThreadPool(MAX_CLIENTS)
+
     private var lastCastUrl: String = ""
     private var lastCastTitle: String = ""
 
     fun start() {
         if (running) return
-        val ip = localIpv4() ?: return
+        val ip = localIpv4()
+        if (ip == null) {
+            Log.w(TAG, "找不到局域网 IPv4 地址，DLNA 未启动")
+            return
+        }
         val server = ServerSocket(0).also { httpServer = it }
         val port = server.localPort
         address = "http://$ip:$port/description.xml"
@@ -82,11 +101,19 @@ class DlnaServer(
     }
 
     fun stop() {
+        val wasRunning = running
         running = false
         runCatching { httpServer?.close() }
         runCatching { ssdpSocket?.close() }
+        // 关闭 socket 后阻塞中的 readLine/receive 会抛异常退出，这里再唤醒一次
+        runCatching { ssdpSocket?.close() }
+        if (wasRunning) {
+            workerPool.shutdownNow()
+        }
         multicastLock?.let { if (it.isHeld) it.release() }
         multicastLock = null
+        ssdpSocket = null
+        httpServer = null
     }
 
     private fun acquireMulticastLock() {
@@ -102,39 +129,58 @@ class DlnaServer(
     private fun acceptLoop(server: ServerSocket) {
         while (running && !server.isClosed) {
             val client = runCatching { server.accept() }.getOrNull() ?: break
-            thread(isDaemon = true) { handleClient(client) }
+            // 固定大小线程池：局域网内异常连接不应让线程无限增长
+            runCatching {
+                workerPool.execute { handleClient(client) }
+            }.onFailure {
+                runCatching { client.close() }
+            }
         }
     }
 
     private fun handleClient(client: Socket) {
         client.use { socket ->
+            runCatching { socket.soTimeout = CLIENT_TIMEOUT_MS }
             val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
             val requestLine = reader.readLine() ?: return
             val headers = mutableMapOf<String, String>()
+            var headerCount = 0
             while (true) {
                 val line = reader.readLine() ?: break
                 if (line.isEmpty()) break
+                if (++headerCount > MAX_HEADERS) return
                 val idx = line.indexOf(':')
                 if (idx > 0) headers[line.substring(0, idx).trim().lowercase()] = line.substring(idx + 1).trim()
             }
             val method = requestLine.substringBefore(' ')
             val path = requestLine.substringAfter(' ').substringBefore(' ')
 
-            val body = if (headers["content-length"]?.toIntOrNull()?.let { it > 0 } == true) {
-                val length = headers["content-length"]!!.toInt()
-                val buffer = CharArray(length)
-                var read = 0
-                while (read < length) {
-                    val r = reader.read(buffer, read, length - read)
-                    if (r <= 0) break
-                    read += r
-                }
-                String(buffer, 0, read)
-            } else ""
+            val body = readBody(reader, headers)
 
-            val response = route(method, path, body)
+            val response = route(method, path, body, headers)
             writeResponse(socket.getOutputStream(), response.first, response.second)
         }
+    }
+
+    /**
+     * 读取请求体。Content-Length 来自网络，必须设上限：
+     * 否则一个 `Content-Length: 1000000000` 就能让电视直接 OOM。
+     */
+    private fun readBody(reader: BufferedReader, headers: Map<String, String>): String {
+        val declared = headers["content-length"]?.toIntOrNull() ?: return ""
+        if (declared <= 0) return ""
+        if (declared > MAX_BODY_CHARS) {
+            Log.w(TAG, "请求体过大，拒绝处理：$declared")
+            return ""
+        }
+        val buffer = CharArray(declared)
+        var read = 0
+        while (read < declared) {
+            val r = reader.read(buffer, read, declared - read)
+            if (r <= 0) break
+            read += r
+        }
+        return String(buffer, 0, read)
     }
 
     private fun writeResponse(out: OutputStream, status: String, body: String) {
@@ -152,22 +198,54 @@ class DlnaServer(
         out.flush()
     }
 
-    private fun route(method: String, path: String, body: String): Pair<String, String> = when {
+    private fun route(
+        method: String,
+        path: String,
+        body: String,
+        headers: Map<String, String>,
+    ): Pair<String, String> = when {
         path.startsWith("/description.xml") -> "200 OK" to descriptionXml()
         path.startsWith("/AVTransport/scpd.xml") -> "200 OK" to AVT_SCPD
         path.startsWith("/RenderingControl/scpd.xml") -> "200 OK" to RCS_SCPD
         path.startsWith("/ConnectionManager/scpd.xml") -> "200 OK" to CMS_SCPD
-        path.startsWith("/AVTransport/control") -> "200 OK" to handleAvTransport(body)
-        path.startsWith("/RenderingControl/control") -> "200 OK" to handleRenderingControl(body)
-        path.startsWith("/ConnectionManager/control") -> "200 OK" to handleConnectionManager(body)
+        path.startsWith("/AVTransport/control") ->
+            "200 OK" to handleAvTransport(resolveAction(headers, body), body)
+        path.startsWith("/RenderingControl/control") ->
+            "200 OK" to handleRenderingControl(resolveAction(headers, body), body)
+        path.startsWith("/ConnectionManager/control") ->
+            "200 OK" to handleConnectionManager(resolveAction(headers, body), body)
         method == "HEAD" -> "200 OK" to ""
         else -> "404 Not Found" to "not found"
     }
 
+    /**
+     * 解析 SOAP 动作名。
+     *
+     * 动作名**不在** body 的某个 `<Action>` 标签里，而是：
+     * 1) HTTP 头 `SOAPACTION: "urn:schemas-upnp-org:service:AVTransport:1#Play"`
+     * 2) body 中 `<s:Body>` 下的第一个元素，如 `<u:Play xmlns:u="...">`
+     *
+     * 之前只看 body 里不存在的 `Action` 标签，导致动作恒为空、
+     * SetAVTransportURI 永不执行——手机能发现设备但点投屏毫无反应。
+     */
+    private fun resolveAction(headers: Map<String, String>, body: String): String {
+        val fromHeader = headers["soapaction"]
+            ?.trim()
+            ?.trim('"')
+            ?.substringAfterLast('#')
+            ?.trim()
+        if (!fromHeader.isNullOrEmpty()) return fromHeader
+
+        val bodyTag = Regex("""<(?:[\w-]+:)?Body[^>]*>\s*<([\w-]+:)?([\w]+)""", RegexOption.IGNORE_CASE)
+            .find(body)
+            ?.groupValues
+            ?.getOrNull(2)
+        return bodyTag ?: ""
+    }
+
     // —— SOAP 动作实现 ——
 
-    private fun handleAvTransport(body: String): String {
-        val action = extractTag(body, "u:Action") ?: extractTag(body, "Action") ?: ""
+    private fun handleAvTransport(action: String, body: String): String {
         val currentUri = extractTag(body, "CurrentURI").orEmpty()
         val metadata = extractTag(body, "CurrentURIMetaData").orEmpty()
         return when (action) {
@@ -177,80 +255,87 @@ class DlnaServer(
                     lastCastTitle = extractTag(metadata, "title") ?: ""
                     onCast(currentUri, lastCastTitle)
                 }
-                soapResponse(action, "")
+                soapResponse(AVT_SERVICE, action, "")
             }
             "SetNextAVTransportURI", "Stop", "Pause", "Next", "Previous" ->
-                soapResponse(action, "")
-            "Play" -> soapResponse(action, "")
-            "Seek" -> soapResponse(action, "")
+                soapResponse(AVT_SERVICE, action, "")
+            "Play" -> soapResponse(AVT_SERVICE, action, "")
+            "Seek" -> soapResponse(AVT_SERVICE, action, "")
             "GetTransportInfo" -> soapResponse(
+                AVT_SERVICE,
                 action,
                 "<InstanceID>0</InstanceID><CurrentTransportState>PLAYING</CurrentTransportState>" +
                     "<CurrentTransportStatus>OK</CurrentTransportStatus><CurrentSpeed>1</CurrentSpeed>"
             )
             "GetPositionInfo" -> soapResponse(
+                AVT_SERVICE,
                 action,
                 "<Track>1</Track><TrackDuration>00:00:00</TrackDuration><TrackMetaData></TrackMetaData>" +
                     "<TrackURI>${xmlEscape(lastCastUrl)}</TrackURI><RelTime>00:00:00</RelTime>" +
                     "<AbsTime>00:00:00</AbsTime><RelCount>0</RelCount><AbsCount>0</AbsCount>"
             )
             "GetMediaInfo" -> soapResponse(
+                AVT_SERVICE,
                 action,
                 "<NrTracks>0</NrTracks><MediaDuration>00:00:00</MediaDuration><CurrentURI>${xmlEscape(lastCastUrl)}</CurrentURI>" +
                     "<CurrentURIMetaData></CurrentURIMetaData><NextURI></NextURI><NextURIMetaData></NextURIMetaData>" +
                     "<PlayMedium>NETWORK</PlayMedium><RecordMedium>NOT_IMPLEMENTED</RecordMedium><WriteStatus>NOT_IMPLEMENTED</WriteStatus>"
             )
             "GetTransportSettings" -> soapResponse(
+                AVT_SERVICE,
                 action,
                 "<PlayMode>NORMAL</PlayMode><RecQualityMode>NOT_IMPLEMENTED</RecQualityMode>"
             )
-            "GetCurrentTransportActions" -> soapResponse(action, "<Actions>Play,Stop,Pause,Seek</Actions>")
+            "GetCurrentTransportActions" -> soapResponse(AVT_SERVICE, action, "<Actions>Play,Stop,Pause,Seek</Actions>")
             "GetDeviceCapabilities" -> soapResponse(
+                AVT_SERVICE,
                 action,
                 "<PlayMedia>NETWORK</PlayMedia><RecMedia>NOT_IMPLEMENTED</RecMedia><RecQualityModes>NOT_IMPLEMENTED</RecQualityModes>"
             )
-            else -> soapResponse(action, "")
+            else -> soapResponse(AVT_SERVICE, action, "")
         }
     }
 
-    private fun handleRenderingControl(body: String): String {
-        val action = extractTag(body, "u:Action") ?: extractTag(body, "Action") ?: ""
+    private fun handleRenderingControl(action: String, @Suppress("UNUSED_PARAMETER") body: String): String {
         return when (action) {
             "GetVolume" -> soapResponse(
+                RCS_SERVICE,
                 action,
                 "<CurrentVolume>50</CurrentVolume>",
             )
-            "SetVolume", "SetMute", "SelectPreset" -> soapResponse(action, "")
-            "GetMute" -> soapResponse(action, "<CurrentMute>0</CurrentMute>")
-            "ListPresets" -> soapResponse(action, "<CurrentPresetNameList>FactoryDefaults</CurrentPresetNameList>")
-            else -> soapResponse(action, "")
+            "SetVolume", "SetMute", "SelectPreset" -> soapResponse(RCS_SERVICE, action, "")
+            "GetMute" -> soapResponse(RCS_SERVICE, action, "<CurrentMute>0</CurrentMute>")
+            "ListPresets" -> soapResponse(RCS_SERVICE, action, "<CurrentPresetNameList>FactoryDefaults</CurrentPresetNameList>")
+            else -> soapResponse(RCS_SERVICE, action, "")
         }
     }
 
-    private fun handleConnectionManager(body: String): String {
-        val action = extractTag(body, "u:Action") ?: extractTag(body, "Action") ?: ""
+    private fun handleConnectionManager(action: String, @Suppress("UNUSED_PARAMETER") body: String): String {
         return when (action) {
             "GetProtocolInfo" -> soapResponse(
+                CMS_SERVICE,
                 action,
                 "<Source></Source><Sink>http-get:*:video/mp4:*,http-get:*:video/x-matroska:*," +
                     "http-get:*:application/vnd.apple.mpegurl:*,http-get:*:video/mp2t:*,http-get:*:*:*</Sink>"
             )
-            "GetCurrentConnectionIDs" -> soapResponse(action, "<ConnectionIDs>0</ConnectionIDs>")
+            "GetCurrentConnectionIDs" -> soapResponse(CMS_SERVICE, action, "<ConnectionIDs>0</ConnectionIDs>")
             "GetCurrentConnectionInfo" -> soapResponse(
+                CMS_SERVICE,
                 action,
                 "<RcsID>0</RcsID><AVTransportID>0</AVTransportID><ProtocolInfo></ProtocolInfo>" +
                     "<PeerConnectionManager></PeerConnectionManager><PeerConnectionID>-1</PeerConnectionID>" +
                     "<Direction>Input</Direction><Status>OK</Status>"
             )
-            else -> soapResponse(action, "")
+            else -> soapResponse(CMS_SERVICE, action, "")
         }
     }
 
-    private fun soapResponse(action: String, payload: String): String =
+    /** 响应的 serviceType 必须与实际被调用的服务一致，否则部分控制点会判为非法响应 */
+    private fun soapResponse(service: String, action: String, payload: String): String =
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>" +
             "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" " +
             "s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">" +
-            "<s:Body><u:${action}Response xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">" +
+            "<s:Body><u:${action}Response xmlns:u=\"$service\">" +
             payload +
             "</u:${action}Response></s:Body></s:Envelope>"
 

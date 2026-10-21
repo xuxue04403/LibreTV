@@ -15,6 +15,10 @@
     <uses-feature
         android:name="android.hardware.touchscreen"
         android:required="false" />
+    <!-- 很多电视盒子走有线：Wi-Fi 权限不能限制可安装范围 -->
+    <uses-feature
+        android:name="android.hardware.wifi"
+        android:required="false" />
 
     <application
         android:name=".LibreTvApp"

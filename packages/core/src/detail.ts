@@ -36,7 +36,7 @@ export async function fetchDetail(
   const api = `${base}?ac=videolist&ids=${encodeURIComponent(id)}`;
 
   // 详情页根地址：显式 detail 优先，其次 baseUrl 参数，最后用接口地址的 origin 推导
-  let detailRoot = '';
+  let detailRoot: string;
   try {
     detailRoot = (source.detail || opts.baseUrl || new URL(source.url).origin).replace(/\/+$/, '');
   } catch {

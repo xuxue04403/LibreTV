@@ -68,6 +68,7 @@ export function CategoryPage({
           key: category,
           http,
           pages: targetPage,
+          filterAdult: adultFilter,
           timeoutMs: 12_000,
           signal: controller.signal,
         });
@@ -108,7 +109,7 @@ export function CategoryPage({
         if (myRun === runId.current) setLoading(false);
       }
     },
-    [category, label, sources, toast]
+    [adultFilter, category, label, sources, toast]
   );
 
   useEffect(() => {

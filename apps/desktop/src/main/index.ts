@@ -1,11 +1,14 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { startMediaProxy, type MediaProxy } from './proxy';
+import { startMediaProxy, assertAllowedTarget, type MediaProxy } from './proxy';
 import { castToDevice, discoverDevices, stopCast, type DlnaDevice } from './dlna';
 
 const DEFAULT_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+/** IPC 抓取（元数据接口）的响应上限；大文件走媒体代理的流式路径 */
+const MAX_IPC_BODY_BYTES = 16 * 1024 * 1024;
 
 let win: BrowserWindow | null = null;
 let proxy: MediaProxy | null = null;
@@ -32,7 +35,8 @@ function createWindow(): void {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      // preload 只用 electron 模块，开沙箱不需要额外放宽
+      sandbox: true,
       spellcheck: false,
     },
   });
@@ -144,20 +148,43 @@ ipcMain.handle(
     options?: { headers?: Record<string, string>; timeoutMs?: number; method?: string; body?: string }
   ) => {
     const started = Date.now();
+    const fail = (status: number, error: string) => ({
+      ok: false,
+      status,
+      url,
+      headers: {} as Record<string, string>,
+      text: '',
+      bytes: new Uint8Array(),
+      ms: Date.now() - started,
+      error,
+    });
+
+    // 与媒体代理同一套边界：渲染层不能借这条 IPC 探测内网或做任意方法请求
+    let target: URL;
+    try {
+      target = await assertAllowedTarget(url, process.env.LTV_ALLOW_PRIVATE_MEDIA === '1');
+    } catch (err) {
+      return fail(400, err instanceof Error ? err.message : '地址不可用');
+    }
+    const method = (options?.method ?? 'GET').toUpperCase();
+    if (method !== 'GET' && method !== 'POST') return fail(405, '不支持的请求方法');
+
     const headers: Record<string, string> = {
       'User-Agent': DEFAULT_UA,
       Accept: 'application/json, text/plain, */*',
       ...(options?.headers ?? {}),
     };
     try {
-      const res = await fetch(url, {
-        method: options?.method ?? 'GET',
+      const res = await fetch(target.href, {
+        method,
         headers,
         body: options?.body,
         redirect: 'follow',
         signal: AbortSignal.timeout(Math.min(60_000, Math.max(1000, options?.timeoutMs ?? 12_000))),
       });
       const buf = new Uint8Array(await res.arrayBuffer());
+      // 元数据接口正常几十 KB；给 16MB 上限，大文件请走媒体代理
+      if (buf.byteLength > MAX_IPC_BODY_BYTES) return fail(413, '响应体过大');
       const headerMap: Record<string, string> = {};
       res.headers.forEach((v, k) => {
         headerMap[k.toLowerCase()] = v;
@@ -174,16 +201,7 @@ ipcMain.handle(
     } catch (err) {
       const message = err instanceof Error ? err.message : '网络请求失败';
       const timeout = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
-      return {
-        ok: false,
-        status: timeout ? 408 : 0,
-        url,
-        headers: {},
-        text: '',
-        bytes: new Uint8Array(),
-        ms: Date.now() - started,
-        error: timeout ? '请求超时' : message,
-      };
+      return fail(timeout ? 408 : 0, timeout ? '请求超时' : message);
     }
   }
 );
@@ -208,7 +226,8 @@ ipcMain.handle('shell:open-external', async (_event, url: string) => {
 ipcMain.handle('dialog:save-text', async (_event, defaultName: string, content: string) => {
   if (!win) return { ok: false as const, canceled: true };
   const result = await dialog.showSaveDialog(win, {
-    defaultPath: defaultName,
+    // 文件名只取 basename：渲染层不能借此把文件写到任意目录
+    defaultPath: path.basename(String(defaultName || 'libretv-export.json')),
     filters: [{ name: 'JSON', extensions: ['json'] }],
   });
   if (result.canceled || !result.filePath) return { ok: false as const, canceled: true };
@@ -227,6 +246,11 @@ ipcMain.handle('dlna:discover', async () => {
 
 ipcMain.handle('dlna:cast', async (_event, device: DlnaDevice, url: string, title: string) => {
   try {
+    // 渲染层传来的 device 不可全信：控制地址必须与设备描述同源，且设备描述本身要能被解析
+    const deviceUrl = new URL(device.location);
+    const control = new URL(device.controlUrl);
+    if (control.origin !== deviceUrl.origin) throw new Error('控制地址与设备不同源');
+    if (!/^https?:\/\//i.test(url)) throw new Error('投屏地址无效');
     await castToDevice(device, url, title);
     return { ok: true as const };
   } catch (err) {
@@ -281,6 +305,7 @@ if (!gotLock) {
   });
 
   app.on('before-quit', () => {
+    // closeAllConnections 才能让 keep-alive 下的 server.close 立即回调，否则会挂住退出
     void proxy?.close();
   });
 }

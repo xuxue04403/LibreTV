@@ -7,7 +7,6 @@ import {
   serializeSnapshot,
   buildSnapshot,
   type AppSettings,
-  type LiveSourceConfig,
   type SourceConfig,
 } from '@libretv/core';
 import { appInfo, http } from '../lib/bridge';

@@ -5,7 +5,7 @@
  * 所以不能写死 1=电影。这里以「分类名 → 统一桶」的方式建立映射，再回查该源自己的 type_id。
  */
 
-import { cmsRequestHeaders, parseSearchList } from './cms';
+import { cmsRequestHeaders, filterAdultResults, parseSearchList } from './cms';
 import { HttpError, type HttpClient } from './http';
 import type { SearchResultItem, SourceConfig } from './types';
 export type CategoryKey = 'movie' | 'tv' | 'variety' | 'anime' | 'kids' | 'doc' | 'short' | 'sports' | 'other';
@@ -232,6 +232,8 @@ export interface CategoryBrowseOptions {
   pages?: number;
   /** 单源最多并行抓取的子分类数（默认 6） */
   typeLimit?: number;
+  /** 是否过滤成人分类内容（默认 true，与搜索保持一致） */
+  filterAdult?: boolean;
   timeoutMs?: number;
   signal?: AbortSignal;
   onSource?: (outcome: CategorySourceOutcome) => void;
@@ -257,6 +259,7 @@ async function categoriesOf(
 export async function browseCategory(opts: CategoryBrowseOptions): Promise<CategoryBrowseResult> {
   const pages = Math.min(20, Math.max(1, opts.pages ?? 1));
   const typeLimit = Math.min(20, Math.max(1, opts.typeLimit ?? 6));
+  const filterAdult = opts.filterAdult ?? true;
   const timeoutMs = opts.timeoutMs ?? 12_000;
 
   interface SourceCollected {
@@ -301,7 +304,8 @@ export async function browseCategory(opts: CategoryBrowseOptions): Promise<Categ
           })
         );
 
-        const list = batches.flat();
+        // 「伦理片」这类名字带「片」，会被归档到电影桶，因此必须在分类浏览里也做成人过滤
+        const list = filterAdultResults(batches.flat(), filterAdult);
         return finish({ ok: true, supported: true, count: list.length }, list);
       } catch (err) {
         const timedOut = err instanceof HttpError && err.status === 408;

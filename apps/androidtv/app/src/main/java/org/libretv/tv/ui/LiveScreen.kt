@@ -84,7 +84,7 @@ fun LiveScreen(vm: AppViewModel, data: AppData) {
 
     Row(Modifier.fillMaxSize().padding(ScreenPadding)) {
         Column(Modifier.width(226.dp)) {
-            SectionHeader("分组", "${live.groups.size - 1} 个")
+            SectionHeader("分组", if (live.groups.isEmpty()) "" else "${live.groups.size - 1} 个")
             LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
                 items(live.groups) { group ->
                     val count = if (group == "全部") live.channels.size else live.channels.count { (it.group ?: "未分组") == group }
@@ -253,10 +253,18 @@ fun LivePlayerScreen(vm: AppViewModel, channel: LiveChannel, onExit: () -> Unit)
     var overlay by remember { mutableStateOf(true) }
     val focusRequester = remember { FocusRequester() }
 
-    val exo = remember {
+    // 播放器与频道 URL 绑定：切台时必须重建，否则会复用已 release 的实例
+    val exo = remember(channel.url) {
         ExoPlayer.Builder(context).build().apply {
             playWhenReady = true
             setHandleAudioBecomingNoisy(true)
+            setAudioAttributes(
+                androidx.media3.common.AudioAttributes.Builder()
+                    .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
+                    .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                    .build(),
+                true,
+            )
         }
     }
 
@@ -296,10 +304,8 @@ fun LivePlayerScreen(vm: AppViewModel, channel: LiveChannel, onExit: () -> Unit)
                         overlay = true
                         true
                     }
-                    Key.Back -> {
-                        onExit()
-                        true
-                    }
+                    // 返回键交给 Activity 的 BackHandler，避免 KeyDown 消费 + KeyUp 不消费
+                    // 导致 BackHandler 再触发一次、一次退两级
                     else -> {
                         overlay = true
                         false

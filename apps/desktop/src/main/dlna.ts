@@ -10,6 +10,7 @@
  */
 
 import dgram from 'node:dgram';
+import net from 'node:net';
 
 const SSDP_HOST = '239.255.255.250';
 const SSDP_PORT = 1900;
@@ -63,6 +64,8 @@ export function parseDeviceDescription(xml: string, location: string): DlnaDevic
     } catch {
       continue;
     }
+    // controlURL 必须是同源路径：允许任意绝对地址等于允许设备把 SOAP 引到别的主机
+    if (new URL(controlUrl).origin !== new URL(location).origin) continue;
     return {
       name: nameMatch ? decodeXml(nameMatch[1]) : new URL(location).hostname,
       location,
@@ -82,10 +85,34 @@ async function describe(location: string): Promise<DlnaDevice | null> {
   }
 }
 
+/** 只接受与本机同网段的 SSDP 回包，避免被局域网外的伪造响应引到别的网段 */
+function isSameSubnet(address: string, local: string | null): boolean {
+  if (!local) return true;
+  if (net.isIPv4(address) && net.isIPv4(local)) {
+    const a = address.split('.');
+    const b = local.split('.');
+    return a[0] === b[0] && a[1] === b[1];
+  }
+  return false;
+}
+
+/** 单飞：投屏面板挂载即探测、刷新按钮可连点，不能每次都新开 socket */
+let inflight: Promise<DlnaDevice[]> | null = null;
+
 /** SSDP 搜索：返回局域网内可投屏的设备 */
 export async function discoverDevices(options: DiscoverOptions = {}): Promise<DlnaDevice[]> {
+  if (inflight && !options.locations?.length) return inflight;
+  const task = discoverOnce(options).finally(() => {
+    inflight = null;
+  });
+  if (!options.locations?.length) inflight = task;
+  return task;
+}
+
+async function discoverOnce(options: DiscoverOptions = {}): Promise<DlnaDevice[]> {
   const timeoutMs = options.timeoutMs ?? 2200;
   const locations = new Set<string>(options.locations ?? []);
+  let localAddress: string | null = null;
 
   await new Promise<void>((resolve) => {
     const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
@@ -105,17 +132,18 @@ export async function discoverDevices(options: DiscoverOptions = {}): Promise<Dl
     socket.on('message', (msg, rinfo) => {
       const text = msg.toString('utf8');
       const location = /^location:\s*(.+)$/im.exec(text)?.[1]?.trim();
-      if (location && /^https?:\/\//i.test(location)) {
-        locations.add(location);
-        // 回包不带端口时补上来源端口（极少数设备如此）
-        void rinfo;
-      }
+      if (!location || !/^https?:\/\//i.test(location)) return;
+      // 只接受本机网段的响应：否则任意主机都能把自己伪装成渲染器，
+      // 后续 SOAP 会被引到它指定的主机（SSRF）
+      if (!isSameSubnet(rinfo.address, localAddress)) return;
+      locations.add(location);
     });
 
     socket.on('error', () => finish());
     socket.bind(() => {
       try {
         socket.setBroadcast(true);
+        localAddress = socket.address().address;
       } catch {
         /* 部分网卡不支持广播 */
       }

@@ -7,6 +7,8 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -154,20 +156,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         loadCategory(key)
     }
 
+    /** 记录进入播放页之前的页面，返回时原路退回而不是一律回搜索页 */
+    private var backTarget: Screen = Screen.Home
+
+    /** 分类加载任务：切分类时取消上一轮，避免旧结果覆盖新结果 */
+    private var categoryJob: Job? = null
+
     /** 按分类拉取各源内容（分类页与首页分类入口共用） */
     fun loadCategory(key: CategoryKey) {
         val sources = _data.value.activeSources()
+        backTarget = Screen.Home
         category = CategoryUi(key = key, loading = sources.isNotEmpty())
         if (sources.isEmpty()) {
             showToast("还没有启用任何点播源")
             return
         }
-        viewModelScope.launch {
+        // 快速切分类时取消上一轮：否则旧协程回来会覆盖新分类的结果
+        categoryJob?.cancel()
+        categoryJob = viewModelScope.launch {
+            // 并行抓取：串行时单源 14s 超时，8 个源要等近两分钟
+            val results = sources.map { source ->
+                async { repo.browseCategory(source, key, adultFilter = _data.value.settings.adultFilter) }
+            }.awaitAll()
             val items = mutableListOf<SearchItem>()
             var supported = 0
             var failed = 0
-            sources.forEach { source ->
-                val (ok, list, _) = repo.browseCategory(source, key)
+            for (result in results) {
+                val (ok, list, _) = result
                 if (ok) {
                     supported++
                     items += list
@@ -190,10 +205,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         screen = when (val current = screen) {
             is Screen.Player -> {
                 saveProgressNow(current)
-                Screen.Search
+                // 从分类页/首页/详情进的播放器，应退回原页面而不是搜索页
+                when (val origin = backTarget) {
+                    is Screen.Detail -> origin
+                    is Screen.Category -> origin
+                    is Screen.Player, is Screen.CastPlayer, is Screen.LivePlayer -> Screen.Home
+                    else -> origin
+                }
             }
             is Screen.LivePlayer -> Screen.Live
-            is Screen.Detail -> Screen.Search
+            is Screen.Detail -> backTarget.takeIf { it is Screen.Category || it is Screen.Search } ?: Screen.Search
             is Screen.Category -> Screen.Home
             is Screen.Cast -> Screen.Home
             is Screen.CastPlayer -> Screen.Home
@@ -243,6 +264,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun openDetail(group: SearchGroup, item: SearchItem) {
+        // 记住来源页：详情页与播放页返回时按原路径退回
+        if (screen !is Screen.Detail) backTarget = screen
         screen = Screen.Detail(group, item)
         detail = DetailUi(loading = true)
         viewModelScope.launch {
@@ -337,9 +360,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         index: Int,
         positionMs: Long,
         durationMs: Long,
+        finished: Boolean = false,
     ) {
         if (!_data.value.settings.resumePlayback) return
         if (positionMs <= 0) return
+        // 看完的一集记为「已完成」，下次续播从头开始；未看完的才记具体位置
+        val effectivePosition = if (finished) 0L else positionMs
         val id = "${player.source.key}:${player.vodId}"
         val entry = HistoryEntry(
             id = id,
@@ -348,9 +374,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             title = player.title,
             cover = player.cover,
             sourceName = player.sourceName,
-            episodeIndex = index,
+            episodeIndex = if (finished) (index + 1).coerceAtMost(player.episodes.size) else index,
             episodeCount = player.episodes.size,
-            positionMs = positionMs,
+            positionMs = effectivePosition,
             durationMs = durationMs,
             updatedAt = System.currentTimeMillis(),
         )
@@ -376,6 +402,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggleFavorite(item: SearchItem, title: String?, cover: String?) {
         val id = "${item.sourceKey}:${item.vodId}"
+        // 是否已收藏要在 update 之前算：update 是异步回写 DataStore，
+        // 之后的 _data.value 仍是旧快照，提示语会反掉
+        val wasFavorite = _data.value.favorites.any { it.id == id }
         viewModelScope.launch {
             store.update { data ->
                 val exists = data.favorites.any { it.id == id }
@@ -393,7 +422,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     ) + data.favorites
                 )
             }
-            showToast(if (_data.value.favorites.any { it.id == id }) "已收藏" else "已取消收藏")
+            showToast(if (wasFavorite) "已取消收藏" else "已收藏")
         }
     }
 

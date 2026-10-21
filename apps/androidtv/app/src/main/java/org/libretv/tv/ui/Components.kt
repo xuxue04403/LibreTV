@@ -4,6 +4,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -165,6 +166,7 @@ fun Poster(
 
 @Composable
 fun SectionHeader(title: String, hint: String? = null, modifier: Modifier = Modifier) {
+    // 参数顺序符合 Compose 约定：modifier 是第一个可选参数（lint ModifierParameter）
     Row(
         modifier = modifier.padding(top = 26.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -186,17 +188,43 @@ fun SectionHeader(title: String, hint: String? = null, modifier: Modifier = Modi
 @Composable
 fun Chip(text: String, active: Boolean = false, onClick: (() -> Unit)? = null) {
     val shape = RoundedCornerShape(999.dp)
+    // 遥控器上必须能看出焦点在哪：之前只有 clickable 没有焦点态，换源/建议全靠猜
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
     Box(
         Modifier
             .clip(shape)
-            .background(if (active) Color(0xFF3A1D12) else Panel2)
-            .border(1.dp, if (active) Accent else Line, shape)
-            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
+            .background(
+                when {
+                    focused -> Panel
+                    active -> Color(0xFF3A1D12)
+                    else -> Panel2
+                }
+            )
+            .border(
+                when {
+                    focused -> 2.dp
+                    active -> 1.dp
+                    else -> 1.dp
+                },
+                if (focused || active) Accent else Line,
+                shape,
+            )
+            .then(
+                if (onClick != null) {
+                    Modifier.focusable(interactionSource = interaction).clickable(
+                        interactionSource = interaction,
+                        indication = null,
+                    ) { onClick() }
+                } else {
+                    Modifier
+                }
+            )
             .padding(horizontal = 12.dp, vertical = 6.dp)
     ) {
         Text(
             text = text,
-            color = if (active) Color(0xFFFFC4B0) else TextMuted,
+            color = if (focused || active) Color(0xFFFFC4B0) else TextMuted,
             fontSize = MaterialTheme.typography.bodySmall.fontSize,
             maxLines = 1,
         )

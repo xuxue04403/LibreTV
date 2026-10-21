@@ -86,6 +86,14 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
         ExoPlayer.Builder(context).build().apply {
             playWhenReady = true
             setHandleAudioBecomingNoisy(true)
+            // 申请音频焦点：电视上不申请会和其他 App 混音，回桌面后仍继续出声
+            setAudioAttributes(
+                androidx.media3.common.AudioAttributes.Builder()
+                    .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
+                    .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                    .build(),
+                true,
+            )
         }
     }
 
@@ -124,10 +132,13 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                 buffering = playbackState == Player.STATE_BUFFERING || playbackState == Player.STATE_IDLE
                 if (playbackState == Player.STATE_ENDED) {
                     val next = currentIndex + 1
+                    val total = exo.duration.coerceAtLeast(0)
                     if (vm.data.value.settings.autoplayNext && next < target.episodes.size) {
+                        // 连播前把当前集记为「已看完」：位置 = 时长，但下次进入应从头播而不是跳到片尾
+                        vm.saveProgress(target, currentIndex, total, total, finished = true)
                         index = next
                     } else {
-                        vm.saveProgress(target, currentIndex, exo.duration.coerceAtLeast(0), exo.duration.coerceAtLeast(0))
+                        vm.saveProgress(target, currentIndex, total, total, finished = true)
                     }
                 }
             }
@@ -174,6 +185,16 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
             .focusable()
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                // 选集抽屉或错误面板可见时，把方向键/OK 让给里面的卡片，否则它们永远拿不到焦点
+                if (drawerVisible || error != null) {
+                    return@onPreviewKeyEvent when (event.key) {
+                        Key.DirectionDown -> {
+                            drawerVisible = false
+                            true
+                        }
+                        else -> false
+                    }
+                }
                 when (event.key) {
                     Key.DirectionCenter, Key.Enter, Key.Spacebar -> {
                         if (exo.isPlaying) exo.pause() else exo.play()
@@ -195,10 +216,6 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                         controlsVisible = true
                         true
                     }
-                    Key.DirectionDown -> {
-                        drawerVisible = false
-                        true
-                    }
                     Key.MediaPlayPause, Key.MediaPlay, Key.MediaPause -> {
                         if (exo.isPlaying) exo.pause() else exo.play()
                         true
@@ -211,11 +228,8 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                         if (index > 0) index -= 1
                         true
                     }
-                    Key.Back -> {
-                        vm.saveProgress(target, currentIndex, exo.currentPosition.coerceAtLeast(0), exo.duration.coerceAtLeast(0))
-                        onExit()
-                        true
-                    }
+                    // 返回键不在这里消费：交给 Activity 的 BackHandler 统一处理，
+                    // 否则 KeyDown 消费 + KeyUp 不消费会让 BackHandler 再触发一次，一次退两级
                     else -> false
                 }
             },

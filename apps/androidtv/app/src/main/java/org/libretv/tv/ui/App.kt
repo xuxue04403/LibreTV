@@ -113,13 +113,21 @@ private fun ToastHost(vm: AppViewModel) {
 @Composable
 private fun CastPlayerScreen(target: Screen.CastPlayer, onExit: () -> Unit) {
     val context = LocalContext.current
-    val exo = remember {
+    // key 用投屏地址：第二次投屏必须重建播放器，否则 remember{} 会复用上一个实例继续播旧视频
+    val exo = remember(target.url) {
         ExoPlayer.Builder(context).build().apply {
             playWhenReady = true
             setHandleAudioBecomingNoisy(true)
+            setAudioAttributes(
+                androidx.media3.common.AudioAttributes.Builder()
+                    .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
+                    .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                    .build(),
+                true,
+            )
         }
     }
-    androidx.compose.runtime.DisposableEffect(Unit) {
+    androidx.compose.runtime.DisposableEffect(target.url) {
         exo.setMediaItem(MediaItem.fromUri(target.url))
         exo.prepare()
         onDispose { exo.release() }

@@ -1,5 +1,7 @@
 package org.libretv.tv.data
 
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.launch
@@ -105,8 +107,8 @@ class Repository(private val net: Net = Net) {
         return channels.map { it.copy(sourceKey = source.key, sourceName = source.name) }
     }
 
-    /** 分类表缓存（6 小时内复用，切分类不重复打上游） */
-    private val categoryCache = HashMap<String, Pair<Long, List<SourceCategory>>>()
+    /** 分类表缓存（6 小时内复用，切分类不重复打上游）。分类页会并行抓多个源，必须并发安全 */
+    private val categoryCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, List<SourceCategory>>>()
 
     private suspend fun categoriesOf(source: VodSource): List<SourceCategory> {
         val cached = categoryCache[source.url]
@@ -120,12 +122,16 @@ class Repository(private val net: Net = Net) {
     /**
      * 按分类浏览：拉分类表 → 找叶子 type_id → 并行抓第一页。
      * 返回 (是否支持该分类, 条目, 说明)。
+     *
+     * adultFilter 默认开启：与搜索保持一致。「伦理片」名字带「片」会被归入电影桶，
+     * 不过滤的话首页分类会直接露出成人内容。
      */
     suspend fun browseCategory(
         source: VodSource,
         key: CategoryKey,
         typeLimit: Int = 6,
         timeoutMs: Long = 14_000,
+        adultFilter: Boolean = true,
     ): Triple<Boolean, List<SearchItem>, String?> {
         val started = System.currentTimeMillis()
         return try {
@@ -133,16 +139,17 @@ class Repository(private val net: Net = Net) {
                 val categories = categoriesOf(source)
                 val ids = Categories.typeIds(categories, key, typeLimit)
                 if (ids.isEmpty()) return@withTimeoutOrNull Triple(false, emptyList(), null)
+                val base = source.url.trimEnd('/')
+                // 子分类并行抓取：父分类不聚合子分类内容
                 val lists = ids.map { typeId ->
-                    val base = source.url.trimEnd('/')
-                    runCatching {
-                        Parsers.parseSearchList(
-                            net.getText("$base?ac=videolist&t=$typeId&pg=1"),
-                            source,
-                        )
-                    }.getOrDefault(emptyList())
-                }
-                Triple(true, lists.flatten().distinctBy { it.vodId }, null)
+                    async {
+                        runCatching {
+                            Parsers.parseSearchList(net.getText("$base?ac=videolist&t=$typeId&pg=1"), source)
+                        }.getOrDefault(emptyList())
+                    }
+                }.awaitAll()
+                val merged = Parsers.filterAdult(lists.flatten().distinctBy { it.vodId }, adultFilter)
+                Triple(true, merged, null)
             }
             result ?: Triple(false, emptyList(), "请求超时（>${timeoutMs / 1000}s）")
         } catch (err: Exception) {

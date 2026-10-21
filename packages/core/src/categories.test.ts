@@ -209,4 +209,34 @@ describe('browseCategory', () => {
     expect(result.items).toHaveLength(1);
     expect(result.outcomes.find((o) => o.sourceKey === 'k2')?.ok).toBe(false);
   });
+
+  it('分类浏览默认过滤成人分类内容', async () => {
+    clearCategoryCache();
+    setCachedCategories(source.url, [
+      { id: '1', name: '电影片' },
+      { id: '34', name: '伦理片', parentId: '1' },
+      { id: '6', name: '动作片', parentId: '1' },
+    ]);
+    const http: HttpClient = {
+      async request(url) {
+        const typeId = /[?&]t=(\d+)/.exec(url)?.[1];
+        if (typeId === '34') {
+          return res({ list: [{ vod_id: 34, vod_name: '成人内容', type_name: '伦理片' }] });
+        }
+        return res({ list: [{ vod_id: 6, vod_name: '动作电影', type_name: '动作片' }] });
+      },
+    };
+    // 伦理片名字带「片」会归入电影桶，必须在分类浏览里同样被过滤掉
+    const filtered = await browseCategory({ sources: [source], key: 'movie', http });
+    expect(filtered.items.map((i) => i.vodId)).toEqual(['6']);
+
+    clearCategoryCache();
+    setCachedCategories(source.url, [
+      { id: '1', name: '电影片' },
+      { id: '34', name: '伦理片', parentId: '1' },
+      { id: '6', name: '动作片', parentId: '1' },
+    ]);
+    const unfiltered = await browseCategory({ sources: [source], key: 'movie', http, filterAdult: false });
+    expect(unfiltered.items).toHaveLength(2);
+  });
 });

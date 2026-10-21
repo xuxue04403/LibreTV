@@ -10,6 +10,12 @@ directories:
 files:
   - out/**
   - package.json
+  # 依赖已被 vite 打进 renderer bundle，node_modules 只剩 hls.js/mpegts.js 的
+  # 源文件与 source map（实测占 20MB+），全部排除
+  - '!node_modules/**'
+  - '!**/*.map'
+  - '!**/*.ts'
+  - '!**/*.md'
 
 extraMetadata:
   main: out/main/index.js

@@ -11,15 +11,23 @@
   ],
   "scripts": {
     "test": "vitest run",
+    "test:watch": "vitest",
     "test:dlna": "node tools/mock-dlna/test.mjs",
     "test:all": "npm run test && npm run test:dlna",
+    "lint": "eslint packages/core/src apps/desktop/src --ext .ts,.tsx",
     "typecheck": "npm run typecheck -w @libretv/core && npm run typecheck -w @libretv/desktop",
     "dev:desktop": "npm run dev -w @libretv/desktop",
     "build:desktop": "npm run build -w @libretv/desktop",
     "dist:desktop": "npm run dist -w @libretv/desktop"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.7",
+    "globals": "^17.13.0",
     "typescript": "^5.7.2",
+    "typescript-eslint": "^8.72.0",
     "vitest": "^2.1.8"
   },
   "allowScripts": {
