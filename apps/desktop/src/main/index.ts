@@ -12,6 +12,11 @@ let proxy: MediaProxy | null = null;
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL;
 
+/** 窗口/任务栏图标：与上游 LibreTV 同一套 artwork（打包后放在 resources/icon.png） */
+const appIcon = app.isPackaged
+  ? path.join(process.resourcesPath, 'icon.png')
+  : path.join(__dirname, '../../resources/icon.png');
+
 function createWindow(): void {
   win = new BrowserWindow({
     width: 1360,
@@ -19,6 +24,7 @@ function createWindow(): void {
     minWidth: 1024,
     minHeight: 640,
     show: false,
+    icon: appIcon,
     backgroundColor: '#0a0c10',
     autoHideMenuBar: true,
     title: 'LibreTV',

@@ -3,6 +3,7 @@ import { initBridge } from './lib/bridge';
 import { useAppStore } from './lib/store';
 import { ToastProvider } from './components/Toast';
 import { Icon, type IconName } from './components/Icons';
+import logo from './assets/logo.png';
 import { HomePage } from './pages/Home';
 import { SearchPage } from './pages/Search';
 import { LivePage } from './pages/Live';
@@ -91,7 +92,9 @@ export function App() {
     <ToastProvider>
       <div className="app">
         <aside className="rail">
-          <div className="brand">LT</div>
+          <div className="brand" title="LibreTV">
+            <img src={logo} alt="LibreTV" />
+          </div>
           {NAV.map((item) => (
             <button
               key={item.id}

@@ -1,5 +1,6 @@
 appId: org.libretv.desktop
 productName: LibreTV
+electronVersion: 33.4.11
 copyright: AGPL-3.0-or-later · 基于 LibreSpark/LibreTV
 
 directories:
@@ -12,6 +13,10 @@ files:
 
 extraMetadata:
   main: out/main/index.js
+
+extraResources:
+  - from: resources/icon.png
+    to: icon.png
 
 asar: true
 

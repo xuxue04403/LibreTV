@@ -1,6 +1,7 @@
 package org.libretv.tv.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,6 +31,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import org.libretv.tv.Screen
@@ -60,15 +62,13 @@ fun NavRail(current: Screen, onSelect: (Screen) -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Box(
-            Modifier
-                .size(46.dp)
-                .clip(RoundedCornerShape(13.dp))
-                .background(Brush.linearGradient(listOf(Color(0xFFFFB199), Accent))),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text("LT", color = Color(0xFF1A0D07), fontWeight = FontWeight.ExtraBold, fontSize = MaterialTheme.typography.titleMedium.fontSize)
-        }
+        Image(
+            painter = painterResource(id = org.libretv.tv.R.drawable.logo),
+            contentDescription = "LibreTV",
+            modifier = Modifier
+                .size(48.dp)
+                .clip(RoundedCornerShape(13.dp)),
+        )
         Spacer(Modifier.height(18.dp))
 
         items.forEach { item ->
