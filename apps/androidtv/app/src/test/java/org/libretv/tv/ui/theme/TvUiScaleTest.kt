@@ -89,4 +89,36 @@ class TvUiScaleTest {
             assertEquals("${w}x${h}dp", expected, tvUiScale(w, h), 0.01f)
         }
     }
+
+    /**
+     * 「跟着分辨率自动缩放」的本质：同一个 128dp 卡片，无论屏幕是 720p 还是 4K、
+     * 无论厂商把 densityDpi 报成多少，占屏宽的比例都必须一样。
+     *
+     * 渲染宽度 = dp × (dpi/160) × scale，于是占宽比 = 渲染宽度 / 像素宽。
+     */
+    @Test
+    fun `同一张卡片在任何分辨率下占屏宽比例一致`() {
+        val cardDp = 128f
+        // (像素宽, 像素高, 上报 dpi)
+        val screens = listOf(
+            Triple(1280, 720, 320),   // 720p 标准
+            Triple(1920, 1080, 320),  // 1080p 标准
+            Triple(1920, 1080, 160),  // 1080p 误报 160
+            Triple(1920, 1080, 213),  // 1080p 误报 213
+            Triple(3840, 2160, 640),  // 4K 标准
+            Triple(3840, 2160, 320),  // 4K 常见误报
+            Triple(3840, 2160, 160),  // 4K 廉价盒子误报
+        )
+        val expected = 128f * 2f * 1f / 1920f // 1080p @320 基准：0.1333…
+
+        for ((pxW, pxH, dpi) in screens) {
+            val baseDensity = dpi / 160f
+            val widthDp = pxW / baseDensity
+            val heightDp = pxH / baseDensity
+            val scale = tvUiScale(widthDp, heightDp)
+            val renderedPx = cardDp * baseDensity * scale
+            val fraction = renderedPx / pxW
+            assertEquals("${pxW}x$pxH@${dpi}dpi", expected, fraction, 0.008f)
+        }
+    }
 }
