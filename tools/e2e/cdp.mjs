@@ -112,7 +112,9 @@ export async function shot(session, path) {
   return path;
 }
 
-if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
+// 只有直接运行本文件才走 CLI；被 import 时（含 `node -e`）不进这段
+const entry = process.argv[1] ? `file:///${process.argv[1].replace(/\\/g, '/')}` : '';
+if (entry && import.meta.url === entry) {
   const [op, ...rest] = process.argv.slice(2);
   const session = await connect();
   try {
