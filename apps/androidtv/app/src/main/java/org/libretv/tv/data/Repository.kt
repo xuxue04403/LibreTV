@@ -105,6 +105,54 @@ class Repository(private val net: Net = Net) {
         return channels.map { it.copy(sourceKey = source.key, sourceName = source.name) }
     }
 
+    /** 分类表缓存（6 小时内复用，切分类不重复打上游） */
+    private val categoryCache = HashMap<String, Pair<Long, List<SourceCategory>>>()
+
+    private suspend fun categoriesOf(source: VodSource): List<SourceCategory> {
+        val cached = categoryCache[source.url]
+        if (cached != null && System.currentTimeMillis() - cached.first < 6 * 60 * 60 * 1000L) return cached.second
+        val base = source.url.trimEnd('/')
+        val categories = Categories.parse(net.getText("$base?ac=list&pg=1"))
+        categoryCache[source.url] = System.currentTimeMillis() to categories
+        return categories
+    }
+
+    /**
+     * 按分类浏览：拉分类表 → 找叶子 type_id → 并行抓第一页。
+     * 返回 (是否支持该分类, 条目, 说明)。
+     */
+    suspend fun browseCategory(
+        source: VodSource,
+        key: CategoryKey,
+        typeLimit: Int = 6,
+        timeoutMs: Long = 14_000,
+    ): Triple<Boolean, List<SearchItem>, String?> {
+        val started = System.currentTimeMillis()
+        return try {
+            val result = withTimeoutOrNull(timeoutMs) {
+                val categories = categoriesOf(source)
+                val ids = Categories.typeIds(categories, key, typeLimit)
+                if (ids.isEmpty()) return@withTimeoutOrNull Triple(false, emptyList(), null)
+                val lists = ids.map { typeId ->
+                    val base = source.url.trimEnd('/')
+                    runCatching {
+                        Parsers.parseSearchList(
+                            net.getText("$base?ac=videolist&t=$typeId&pg=1"),
+                            source,
+                        )
+                    }.getOrDefault(emptyList())
+                }
+                Triple(true, lists.flatten().distinctBy { it.vodId }, null)
+            }
+            result ?: Triple(false, emptyList(), "请求超时（>${timeoutMs / 1000}s）")
+        } catch (err: Exception) {
+            Triple(false, emptyList(), err.message ?: "失败")
+        }.also {
+            // 便于日志排查：单源耗时
+            System.currentTimeMillis() - started
+        }
+    }
+
     suspend fun importSubscription(url: String): ParsedSubscription {
         val text = net.getText(url)
         return Subscriptions.parse(text, url)

@@ -66,6 +66,7 @@ fun LibretvApp(vm: AppViewModel) {
                         Screen.Live -> LiveScreen(vm, data)
                         Screen.Settings -> SettingsScreen(vm, data)
                         Screen.Cast -> CastScreen()
+                        is Screen.Category -> CategoryScreen(vm, data)
                         is Screen.Detail -> DetailScreen(vm, screen, data)
                         else -> Unit
                     }

@@ -8,9 +8,10 @@ import { HomePage } from './pages/Home';
 import { SearchPage } from './pages/Search';
 import { LivePage } from './pages/Live';
 import { SettingsPage } from './pages/Settings';
+import { CategoryPage, type CategoryKey } from './pages/Category';
 import { WatchPage, type WatchTarget } from './pages/Watch';
 
-type View = 'home' | 'search' | 'live' | 'settings';
+type View = 'home' | 'search' | 'live' | 'settings' | 'category';
 
 const NAV: { id: View; icon: IconName; label: string }[] = [
   { id: 'home', icon: 'home', label: '首页' },
@@ -22,6 +23,7 @@ const NAV: { id: View; icon: IconName; label: string }[] = [
 export function App() {
   const [ready, setReady] = useState(false);
   const [view, setView] = useState<View>('home');
+  const [category, setCategory] = useState<CategoryKey>('movie');
   const [keyword, setKeyword] = useState('');
   const [input, setInput] = useState('');
   const [watch, setWatch] = useState<WatchTarget | null>(null);
@@ -98,7 +100,7 @@ export function App() {
           {NAV.map((item) => (
             <button
               key={item.id}
-              className={`rail-btn${view === item.id ? ' active' : ''}`}
+              className={`rail-btn${(view === item.id || (view === 'category' && item.id === 'home')) ? ' active' : ''}`}
               title={`${item.label}（Ctrl+${NAV.indexOf(item) + 1}）`}
               onClick={() => setView(item.id)}
             >
@@ -140,7 +142,23 @@ export function App() {
 
           <div className="content">
             {view === 'home' ? (
-              <HomePage onPlay={setWatch} onOpenSettings={() => setView('settings')} onSearch={startSearch} />
+              <HomePage
+                onPlay={setWatch}
+                onOpenSettings={() => setView('settings')}
+                onSearch={startSearch}
+                onCategory={(key) => {
+                  setCategory(key);
+                  setView('category');
+                }}
+              />
+            ) : null}
+            {view === 'category' ? (
+              <CategoryPage
+                category={category}
+                onCategoryChange={setCategory}
+                onPlay={setWatch}
+                onOpenSettings={() => setView('settings')}
+              />
             ) : null}
             {view === 'search' ? (
               <SearchPage keyword={keyword} onPlay={setWatch} onOpenSettings={() => setView('settings')} />

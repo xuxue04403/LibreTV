@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import org.libretv.tv.AppViewModel
 import org.libretv.tv.Screen
 import org.libretv.tv.data.AppData
+import org.libretv.tv.data.CategoryKey
 import org.libretv.tv.data.HistoryEntry
 import org.libretv.tv.data.LiveFavoriteEntry
 import org.libretv.tv.data.FavoriteEntry
@@ -54,6 +55,10 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         item { HomeHero(data, onSearch = { vm.go(Screen.Search) }, onSettings = { vm.go(Screen.Settings) }, onCast = { vm.go(Screen.Cast) }, firstFocus) }
+
+        // 分类入口：首页顶部一排，进屋就能选「电影 / 电视剧 / 少儿 / 综艺 …」
+        item { SectionHeader("分类浏览", "按源站分类直接打开") }
+        item { CategoryRow(vm) }
 
         if (data.history.isNotEmpty()) {
             item { SectionHeader("继续观看", "${data.history.size} 条记录") }
@@ -115,6 +120,42 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
                 StatCard("直播源", "${data.activeLiveSources().size}/${data.liveSources.size}", Modifier.width(190.dp))
                 StatCard("观看记录", "${data.history.size}", Modifier.width(190.dp))
                 StatCard("收藏", "${data.favorites.size + data.liveFavorites.size}", Modifier.width(190.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun CategoryRow(vm: AppViewModel) {
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        items(CategoryKey.home) { key ->
+            TvCard(
+                onClick = { vm.selectCategory(key) },
+                modifier = Modifier.width(128.dp),
+                containerColor = Panel,
+                shape = RoundedCornerShape(12.dp),
+                focusedScale = 1.06f,
+            ) { focused ->
+                Row(
+                    Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier
+                            .size(7.dp)
+                            .background(
+                                if (focused) Accent else Color(0xFFFFB199),
+                                androidx.compose.foundation.shape.CircleShape,
+                            )
+                    )
+                    Spacer(Modifier.width(9.dp))
+                    Text(
+                        key.label,
+                        color = if (focused) Accent else TextPrimary,
+                        fontSize = MaterialTheme.typography.bodyMedium.fontSize,
+                        maxLines = 1,
+                    )
+                }
             }
         }
     }

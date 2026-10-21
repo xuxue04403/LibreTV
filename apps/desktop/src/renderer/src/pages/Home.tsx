@@ -5,16 +5,19 @@ import { useAppStore } from '../lib/store';
 import { Icon } from '../components/Icons';
 import { Poster } from '../components/Poster';
 import { useToast } from '../components/Toast';
+import { CategoryButtons, type CategoryKey } from './Category';
 import type { WatchTarget } from './Watch';
 
 export function HomePage({
   onPlay,
   onOpenSettings,
   onSearch,
+  onCategory,
 }: {
   onPlay: (target: WatchTarget) => void;
   onOpenSettings: () => void;
   onSearch: (keyword: string) => void;
+  onCategory: (key: CategoryKey) => void;
 }) {
   const sources = useAppStore((s) => s.sources);
   const selectedKeys = useAppStore((s) => s.selectedKeys);
@@ -134,6 +137,12 @@ export function HomePage({
           ))}
         </div>
       ) : null}
+
+      <div className="section-title">
+        <span>按分类浏览</span>
+        <span className="hint">从各源当前分类拉取，可直接打开</span>
+      </div>
+      <CategoryButtons onSelect={onCategory} />
 
       <div className="section-title">
         <span>继续观看</span>

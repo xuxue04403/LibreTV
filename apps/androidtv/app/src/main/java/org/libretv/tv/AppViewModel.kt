@@ -15,6 +15,7 @@ import kotlinx.coroutines.launch
 import org.libretv.tv.data.AppData
 import org.libretv.tv.data.AppSettings
 import org.libretv.tv.data.AppStore
+import org.libretv.tv.data.CategoryKey
 import org.libretv.tv.data.Defaults
 import org.libretv.tv.data.HistoryEntry
 import org.libretv.tv.data.LiveChannel
@@ -34,6 +35,7 @@ sealed interface Screen {
     data object Search : Screen
     data object Live : Screen
     data object Settings : Screen
+    data class Category(val key: CategoryKey) : Screen
     data class Detail(val group: SearchGroup, val item: SearchItem) : Screen
     data class Player(
         val source: VodSource,
@@ -72,6 +74,14 @@ data class LiveUi(
     val keyword: String = "",
 )
 
+data class CategoryUi(
+    val key: CategoryKey = CategoryKey.MOVIE,
+    val loading: Boolean = false,
+    val groups: List<SearchGroup> = emptyList(),
+    val supportedSources: Int = 0,
+    val failedSources: Int = 0,
+)
+
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = AppStore(app)
     private val repo = Repository()
@@ -86,6 +96,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var detail by mutableStateOf<DetailUi?>(null)
         private set
     var live by mutableStateOf(LiveUi())
+        private set
+    var category by mutableStateOf(CategoryUi())
         private set
     var toast by mutableStateOf<String?>(null)
         private set
@@ -128,8 +140,49 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (target is Screen.Live && live.channels.isEmpty() && !live.loading) {
             loadLive()
         }
+        if (target is Screen.Category) {
+            loadCategory(target.key)
+        }
         if (target is Screen.Cast) {
             // 投屏接收页由 UI 层驱动
+        }
+    }
+
+    /** 切换分类并重新拉取 */
+    fun selectCategory(key: CategoryKey) {
+        screen = Screen.Category(key)
+        loadCategory(key)
+    }
+
+    /** 按分类拉取各源内容（分类页与首页分类入口共用） */
+    fun loadCategory(key: CategoryKey) {
+        val sources = _data.value.activeSources()
+        category = CategoryUi(key = key, loading = sources.isNotEmpty())
+        if (sources.isEmpty()) {
+            showToast("还没有启用任何点播源")
+            return
+        }
+        viewModelScope.launch {
+            val items = mutableListOf<SearchItem>()
+            var supported = 0
+            var failed = 0
+            sources.forEach { source ->
+                val (ok, list, _) = repo.browseCategory(source, key)
+                if (ok) {
+                    supported++
+                    items += list
+                } else {
+                    failed++
+                }
+            }
+            category = CategoryUi(
+                key = key,
+                loading = false,
+                groups = Parsers.group(items.distinctBy { "${it.sourceKey}:${it.vodId}" }),
+                supportedSources = supported,
+                failedSources = failed,
+            )
+            if (items.isEmpty()) showToast("当前源没有返回「${key.label}」内容")
         }
     }
 
@@ -141,6 +194,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             is Screen.LivePlayer -> Screen.Live
             is Screen.Detail -> Screen.Search
+            is Screen.Category -> Screen.Home
             is Screen.Cast -> Screen.Home
             is Screen.CastPlayer -> Screen.Home
             else -> Screen.Home

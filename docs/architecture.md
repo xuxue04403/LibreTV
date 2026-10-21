@@ -34,6 +34,7 @@
 | `live.ts` | M3U 订阅加载、XMLTV 解析、当前/下一档节目 | `src/app/api/live/*`、`src/lib/xmltv.ts` |
 | `subscriptions.ts` | LibreTV-SourceList / TVBOX 配置解析（宽容 JSON） | `src/lib/source-list.ts`、`tvbox-parser.ts` |
 | `group.ts` | 同名影片跨源聚合、结果去重 | 上游页面层逻辑 |
+| `categories.ts` | 分类表解析、分类桶归并、按分类聚合浏览 | 上游无此能力（新增） |
 | `storage.ts` | 历史/收藏的纯函数式更新、快照导入导出 | `src/lib/store.ts` 部分 |
 | `http.ts` | `HttpClient` 接口 + fetch 实现 + gzip 解码 | 新增（替代服务端抓取） |
 
@@ -117,6 +118,19 @@ AppStore（DataStore Preferences，整份 AppData 以 JSON 存储）
 - 自研实现，不依赖已停止维护的 Cling；
 - 需要 `WifiManager.MulticastLock`（已申请 `CHANGE_WIFI_MULTICAST_STATE`），否则收不到组播；
 - 设备名「LibreTV 电视」，固定 UDN 保证手机端记住设备。
+
+## 分类浏览
+
+首页顶部的分类入口（电影 / 电视剧 / 少儿 / 综艺 / 动漫 / 纪录片 / 短剧 / 体育）不依赖任何中心化分类服务，全部现算：
+
+1. 拉各源的分类表：`GET {api}?ac=list&pg=1`，响应里的 `class[]` 给出该源自己的 `type_id / type_name / type_pid`（缓存 6 小时）；
+2. 把分类名映射到统一分类桶（`classifyCategoryName`）。判定顺序有意义——「少儿动画」必须命中「少儿」而不是「动漫」，「纪录电影」必须命中「纪录片」而不是「电影」，因此专属桶排在通用桶之前；
+3. 取该桶对应的 `type_id`：**优先叶子分类**。
+
+第 3 步是踩过坑的：Apple CMS 的父分类**不聚合**子分类内容。以量子资源为例，`?ac=videotlist&t=1`（电影片）只返回 `type_id` 恰好为 1 的那 1 条，动作片(6)、喜剧片(7)、科幻片(9) 各自独立。若直接按父分类查询，分类页会几乎空白（实测只有 1 部片）。因此实现改为：识别出该桶下所有叶子分类并行抓取；只有当某源确实没有子分类时才回退到父分类本身。
+
+对 4 个内置源做「电影」分类实测：从 1 部变为 342 部。
+分类页支持「加载更多」（追加页并去重），聚合规则与搜索页一致（同名同年合并、显示多源角标）。
 
 ## 数据模型
 
