@@ -120,3 +120,5 @@ cd apps/androidtv && gradle testDebugUnitTest   # Kotlin 解析层 11 项单测
 ## 许可证
 
 AGPL-3.0-or-later。上游 LibreTV 同许可，本仓库作为衍生作品同样以 AGPL 发布，详见 [LICENSE](LICENSE)。
+
+应用图标沿用上游 LibreTV 的 artwork（`public/icons/icon-512.png`，AGPL-3.0-or-later）：桌面端侧栏品牌位、窗口/任务栏图标与安装包图标，Android TV 的启动图标与 Leanback 横幅均由这套 artwork 生成。
