@@ -140,7 +140,7 @@ export function HomePage({
 
       <div className="section-title">
         <span>按分类浏览</span>
-        <span className="hint">从各源当前分类拉取，可直接打开</span>
+        <span className="hint">只显示所选源有内容的分类</span>
       </div>
       <CategoryButtons onSelect={onCategory} />
 

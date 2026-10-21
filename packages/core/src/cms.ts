@@ -148,22 +148,89 @@ export function parseDetailPageHtml(
   };
 }
 
-/** 敏感分类过滤（成人内容过滤，关键词与上游保持一致） */
+/**
+ * 成人分类关键词（与上游保持一致，并按实测补充）。
+ *
+ * 只用于匹配**分类名**（type_name）。实测发现部分采集站把成人内容放在
+ * 「剧情片」「短剧」这类正常分类下，靠分类名拦不住，因此另有
+ * ADULT_TITLE_KEYWORDS 负责标题兜底。
+ */
 export const ADULT_KEYWORDS = [
   '伦理片', '福利', '倫理片', '福利片', '日本伦理', '日本福利', '日本福利片', '日本伦理片', '擦边短剧', '擦边',
   '韩国伦理', '里番动漫', '门事件', '萝莉少女', '制服诱惑', '国产传媒',
   'cosplay', '黑丝诱惑', '无码', '日本无码', '有码', '日本有码', 'SWAG',
-  '网红主播', '色情片', '同性片', '福利视频', '无码高清', '有码高清', '91视频', '自拍偷拍', 'mini传媒', '福利片',
+  '网红主播', '色情片', '同性片', '福利视频', '无码高清', '有码高清', '91视频', '自拍偷拍', 'mini传媒',
 ];
 
-export function isAdultContent(typeName: string | undefined): boolean {
-  if (!typeName) return false;
-  return ADULT_KEYWORDS.some((k) => typeName.includes(k));
+/**
+ * 成人**标题**关键词 —— 分类名正常但片名露骨的情况。
+ *
+ * 实测依据（2026-10，4 个内置源）：
+ * - 「无码」命中「我的23岁之无码青春」→ type_name 是「爱情片」
+ * - 「麻豆」命中「麻豆小镇」→ 「台湾剧」
+ * - 「黑料」命中「黑料局中局」→ 「短剧」
+ * - 「情色片」命中「情色片编年史」→ 「电影解说」
+ *
+ * 这里刻意避开容易误伤的正经词：`黑料`/`麻豆`/`星空`/`天美`/`果冻`/`蜜桃`
+ * 在真实数据里大量出现在「福利院的阳光」「麻豆小镇」「吞噬星空」这类
+ * 正常内容中，因此**不纳入**，避免把儿童/家庭题材也过滤掉。
+ */
+export const ADULT_TITLE_KEYWORDS = [
+  '无码', '無碼', '有码', '里番', '裏番', '三级片', '三級片', 'A片', 'a片',
+  '情色片', '色情片', '成人片', '限制级', '限制級', '自拍偷拍', '偷拍自拍',
+  '国产自拍', '国产传媒', '传媒出品', '门事件', '門事件', '裸聊', '催情',
+  '午夜剧场', '午夜神器', '伦理电影', '倫理電影',
+  // 2026-10 二轮实测补充：A/B 对比「成人过滤开/关」时，开启后仍漏出 13 条，
+  // 几乎全部集中在「情色/色情」这一根词上（情色自白 / 情色大亨 / 水手服情色饲育 /
+  // 姐妹情色 / 反情色 / 情色自拍 …），而词表里当时只有「情色片」。
+  // 「情色」「色情」在中文影视标题里几乎只用于成人语义，可以安全提升为标题词。
+  //
+  // 刻意**不加**英文 `sex` / `porn`：真实数据里有「Sex and the City」（欲望都市）、
+  // 「Zack and Miri make a porno」这类正经西片，加了会把它们误杀。
+  '情色', '色情', '成人视频', '成人电影',
+];
+
+/**
+ * 分类名的**误伤排除**：这些词里包含成人关键词，但本身是正经内容。
+ *
+ * 实测证据：`福利` 是分类关键词，但「福利院的阳光」这类家庭/公益题材
+ * 在真实采集站里确实存在，不能被误杀。
+ */
+const ADULT_TYPE_EXCEPTIONS = /福利院|福利社|少年福利|儿童福利|社会福利/u;
+
+/**
+ * 判断是否为成人内容。
+ *
+ * 三个来源（命中任一即屏蔽）：
+ * 1. 来源被标记为成人源（订阅里的 `isAdult`）——此前字段存在但从未被使用；
+ * 2. 分类名命中 ADULT_KEYWORDS（先排除误伤词）；
+ * 3. 标题命中 ADULT_TITLE_KEYWORDS（兜住「正常分类 + 露骨片名」的漏网）。
+ */
+export function isAdultContent(
+  typeName: string | undefined,
+  name?: string,
+  sourceIsAdult?: boolean
+): boolean {
+  if (sourceIsAdult) return true;
+  if (typeName) {
+    const lower = typeName.toLowerCase();
+    if (!ADULT_TYPE_EXCEPTIONS.test(typeName) && ADULT_KEYWORDS.some((k) => lower.includes(k.toLowerCase()))) {
+      return true;
+    }
+  }
+  if (name) {
+    const lower = name.toLowerCase();
+    if (ADULT_TITLE_KEYWORDS.some((k) => lower.includes(k.toLowerCase()))) return true;
+  }
+  return false;
 }
 
-export function filterAdultResults<T extends { typeName?: string }>(items: T[], enabled: boolean): T[] {
+export function filterAdultResults<T extends { typeName?: string; name?: string; isAdult?: boolean }>(
+  items: T[],
+  enabled: boolean
+): T[] {
   if (!enabled) return items;
-  return items.filter((item) => !isAdultContent(item.typeName));
+  return items.filter((item) => !isAdultContent(item.typeName, item.name, item.isAdult));
 }
 
 /**

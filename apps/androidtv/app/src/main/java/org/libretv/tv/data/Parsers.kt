@@ -38,6 +38,7 @@ object Parsers {
                 area = vod.str("vod_area"),
                 remarks = vod.str("vod_remarks"),
                 sourceUrl = source.url,
+                isAdult = source.isAdult,
             )
         }
     }
@@ -111,20 +112,68 @@ object Parsers {
         return tokens.size > 1 && tokens.all { normalizedName.contains(it) }
     }
 
+    /** 成人分类关键词（与桌面端 packages/core/src/cms.ts 的 ADULT_KEYWORDS 对齐） */
     private val ADULT_KEYWORDS = listOf(
-        "伦理片", "福利", "倫理片", "福利片", "日本伦理", "日本福利", "擦边短剧", "擦边", "韩国伦理",
-        "里番动漫", "门事件", "制服诱惑", "国产传媒", "cosplay", "黑丝诱惑", "无码", "有码",
-        "SWAG", "网红主播", "色情片", "同性片", "91视频", "自拍偷拍", "mini传媒",
+        "伦理片", "福利", "倫理片", "福利片", "日本伦理", "日本福利", "日本福利片", "日本伦理片",
+        "擦边短剧", "擦边", "韩国伦理", "里番动漫", "门事件", "萝莉少女", "制服诱惑", "国产传媒",
+        "cosplay", "黑丝诱惑", "无码", "日本无码", "有码", "日本有码", "SWAG", "网红主播",
+        "色情片", "同性片", "福利视频", "无码高清", "有码高清", "91视频", "自拍偷拍", "mini传媒",
     )
 
-    fun isAdult(typeName: String?): Boolean =
-        typeName != null && ADULT_KEYWORDS.any { typeName.contains(it, ignoreCase = true) }
+    /**
+     * 成人**标题**关键词：兜住「分类正常、片名露骨」的漏网。
+     * 依据同桌面端实测（「我的23岁之无码青春」在爱情片、「黑料局中局」在短剧）。
+     * 刻意不含 `黑料`/`麻豆`/`星空`/`天美`/`果冻`/`蜜桃`，它们在真实数据里大量是正经内容。
+     */
+    private val ADULT_TITLE_KEYWORDS = listOf(
+        "无码", "無碼", "有码", "里番", "裏番", "三级片", "三級片", "A片",
+        "情色片", "色情片", "成人片", "限制级", "限制級", "自拍偷拍", "偷拍自拍",
+        "国产自拍", "国产传媒", "传媒出品", "门事件", "門事件", "裸聊", "催情",
+        "午夜剧场", "午夜神器", "伦理电影", "倫理電影",
+        // 与 TS 侧对齐：A/B 实测中开启过滤后仍漏出的 13 条全部集中在「情色」根词上。
+        // 刻意不加英文 sex / porn（会误杀 Sex and the City 这类西片）。
+        "情色", "色情", "成人视频", "成人电影",
+    )
+
+    /** 分类名误伤排除：「福利院的阳光」这类正经内容不能被杀 */
+    private val ADULT_TYPE_EXCEPTIONS = Regex("福利院|福利社|少年福利|儿童福利|社会福利")
+
+    /** 频道成人类目关键词（直播此前完全没有过滤） */
+    private val ADULT_LIVE_KEYWORDS = listOf(
+        "成人", "18+", "18禁", "限制级", "色情", "情色", "伦理", "午夜", "深夜福利",
+        "裸", "无码", "有码", "自慰", "约炮", "sex", "xxx", "porn", "adult", "erotic",
+        "playboy", "brazzers",
+    )
+
+    /**
+     * 是否成人内容。三个来源命中任一即屏蔽：
+     * 1. 来源被标记为成人源；2. 分类名命中；3. 标题命中标题词表。
+     */
+    fun isAdult(typeName: String?, name: String? = null, sourceIsAdult: Boolean = false): Boolean {
+        if (sourceIsAdult) return true
+        if (typeName != null && !ADULT_TYPE_EXCEPTIONS.containsMatchIn(typeName)) {
+            if (ADULT_KEYWORDS.any { typeName.contains(it, ignoreCase = true) }) return true
+        }
+        if (name != null && ADULT_TITLE_KEYWORDS.any { name.contains(it, ignoreCase = true) }) return true
+        return false
+    }
+
+    fun isAdultChannel(name: String?, group: String?, tvgId: String?): Boolean {
+        val haystack = "${group.orEmpty()} ${name.orEmpty()} ${tvgId.orEmpty()}"
+        if (haystack.isBlank()) return false
+        return ADULT_LIVE_KEYWORDS.any { haystack.contains(it, ignoreCase = true) }
+    }
 
     fun filterRelevant(items: List<SearchItem>, keyword: String): List<SearchItem> =
         items.filter { isRelevant(it.name, keyword) }
 
     fun filterAdult(items: List<SearchItem>, enabled: Boolean): List<SearchItem> =
-        if (!enabled) items else items.filter { !isAdult(it.typeName) }
+        if (!enabled) items else items.filter { !isAdult(it.typeName, it.name, it.isAdult) }
+
+    /** 直播频道过滤：分组名、台名、tvg-id 任一命中即剔除 */
+    fun filterAdultChannels(channels: List<LiveChannel>, enabled: Boolean): List<LiveChannel> =
+        if (!enabled) channels
+        else channels.filter { !isAdultChannel(it.name, it.group, it.tvgId) }
 
     /** 同名同年的聚合键（与桌面端 groupSearchResults 一致） */
     fun groupKey(item: SearchItem): String {

@@ -57,6 +57,7 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
         item { HomeHero(data, onSearch = { vm.go(Screen.Search) }, onSettings = { vm.go(Screen.Settings) }, onCast = { vm.go(Screen.Cast) }, firstFocus) }
 
         // 分类入口：首页顶部一排，进屋就能选「电影 / 电视剧 / 少儿 / 综艺 …」
+        // 只显示真的有内容的分类：点了进空页面比看不到入口更糟
         item { SectionHeader("分类浏览", "按源站分类直接打开") }
         item { CategoryRow(vm) }
 
@@ -127,8 +128,23 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
 
 @Composable
 private fun CategoryRow(vm: AppViewModel) {
+    // 进首页即探测各分类是否有内容；看到的是「已过滤后的入口」而不是全量
+    LaunchedEffect(Unit) { vm.probeCategories() }
+
+    val available = vm.availableCategories
+    val keys = available ?: CategoryKey.home
+    if (keys.isEmpty()) {
+        Text(
+            "所选源暂未返回任何分类内容，可直接搜索片名",
+            color = TextMuted,
+            fontSize = MaterialTheme.typography.bodySmall.fontSize,
+            modifier = Modifier.padding(vertical = 6.dp),
+        )
+        return
+    }
+
     LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        items(CategoryKey.home) { key ->
+        items(keys) { key ->
             TvCard(
                 onClick = { vm.selectCategory(key) },
                 modifier = Modifier.width(128.dp),

@@ -35,6 +35,8 @@ data class SearchItem(
     val area: String? = null,
     val remarks: String? = null,
     val sourceUrl: String? = null,
+    /** 订阅里标记为成人源的条目：此前解析后就丢弃了，导致该标记形同虚设 */
+    val isAdult: Boolean = false,
 )
 
 /** 同名影片跨源聚合卡片 */

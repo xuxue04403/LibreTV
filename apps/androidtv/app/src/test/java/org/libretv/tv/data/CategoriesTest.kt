@@ -79,10 +79,13 @@ class CategoriesTest {
     }
 
     @Test
-    fun `首页分类不含其他且顺序固定`() {
+    fun `首页分类不含其他，且电影电视剧排最前`() {
         assertEquals(
-            listOf("少儿", "纪录片", "动漫", "综艺", "短剧", "电视剧", "体育", "电影"),
+            listOf("电影", "电视剧", "少儿", "综艺", "动漫", "纪录片", "短剧", "体育"),
             CategoryKey.home.map { it.label },
         )
+        // 展示顺序与判定顺序解耦：enum 声明顺序仍让专属桶先短路
+        assertEquals(CategoryKey.KIDS, Categories.classify("少儿动画"))
+        assertEquals(CategoryKey.DOC, Categories.classify("纪录电影"))
     }
 }

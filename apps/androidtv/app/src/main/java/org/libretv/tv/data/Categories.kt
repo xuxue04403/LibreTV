@@ -16,8 +16,14 @@ enum class CategoryKey(val label: String, val keywords: List<String>) {
     OTHER("其他", emptyList());
 
     companion object {
-        /** 首页展示顺序（不含「其他」） */
-        val home: List<CategoryKey> = listOf(KIDS, DOC, ANIME, VARIETY, SHORT, TV, SPORTS, MOVIE)
+        /**
+         * 首页展示顺序（不含「其他」）。
+         *
+         * 与判定顺序解耦：`enum` 的声明顺序决定 [Categories.classify] 的短路顺序
+         * （专属桶必须排前面，否则「少儿动画」会被「动漫」抢走），
+         * 而用户最先想看的是电影和电视剧，所以这里单独定义展示顺序。
+         */
+        val home: List<CategoryKey> = listOf(MOVIE, TV, KIDS, VARIETY, ANIME, DOC, SHORT, SPORTS)
     }
 }
 

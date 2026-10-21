@@ -8,6 +8,7 @@ import org.libretv.tv.cast.CastRuntime
 import org.libretv.tv.cast.DlnaServer
 import org.libretv.tv.ui.LibretvApp
 import org.libretv.tv.ui.theme.LibreTvTheme
+import org.libretv.tv.ui.theme.TvScaleSurface
 
 class MainActivity : ComponentActivity() {
     private var dlna: DlnaServer? = null
@@ -18,8 +19,12 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             LibreTvTheme {
-                val vm: AppViewModel = viewModel()
-                LibretvApp(vm)
+                // 不同电视上报的 densityDpi 差异很大（720p 盒子常报 160/213），
+                // 不归一化就会「不随分辨率缩放」，这里统一拉回 960×540dp 设计基准
+                TvScaleSurface {
+                    val vm: AppViewModel = viewModel()
+                    LibretvApp(vm)
+                }
             }
         }
     }

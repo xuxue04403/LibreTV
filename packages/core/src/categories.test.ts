@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   browseCategory,
+  CATEGORY_BUCKETS,
   categoryLabel,
   classifyCategoryName,
   fetchSourceCategories,
@@ -8,6 +9,7 @@ import {
   matchTypeId,
   matchTypeIds,
   parseSourceCategories,
+  probeCategories,
   setCachedCategories,
   clearCategoryCache,
 } from './categories';
@@ -45,10 +47,29 @@ describe('classifyCategoryName', () => {
     expect(classifyCategoryName('')).toBe('other');
   });
 
-  it('首页分类入口不含「其他」且顺序稳定', () => {
-    expect(HOME_CATEGORIES.map((c) => c.key)).toEqual(['kids', 'doc', 'anime', 'variety', 'short', 'tv', 'sports', 'movie']);
+  it('首页分类入口不含「其他」，且电影电视剧排在最前', () => {
+    expect(HOME_CATEGORIES.map((c) => c.key)).toEqual([
+      'movie',
+      'tv',
+      'kids',
+      'variety',
+      'anime',
+      'doc',
+      'short',
+      'sports',
+    ]);
     expect(categoryLabel('tv')).toBe('电视剧');
     expect(categoryLabel('movie')).toBe('电影');
+  });
+
+  it('展示顺序与判定顺序解耦：判定仍让专属桶优先', () => {
+    // 展示顺序里电影排第一，但「少儿动画」这类名字仍必须先命中少儿桶
+    expect(HOME_CATEGORIES[0]?.key).toBe('movie');
+    expect(classifyCategoryName('少儿动画')).toBe('kids');
+    expect(classifyCategoryName('纪录电影')).toBe('doc');
+    expect(CATEGORY_BUCKETS.findIndex((b) => b.key === 'kids')).toBeLessThan(
+      CATEGORY_BUCKETS.findIndex((b) => b.key === 'movie')
+    );
   });
 });
 
@@ -238,5 +259,103 @@ describe('browseCategory', () => {
     ]);
     const unfiltered = await browseCategory({ sources: [source], key: 'movie', http, filterAdult: false });
     expect(unfiltered.items).toHaveLength(2);
+  });
+});
+
+describe('probeCategories（首页隐藏空分类）', () => {
+  function makeHttp(byType: Record<string, string[]>): HttpClient {
+    return {
+      async request(url) {
+        if (url.includes('ac=list')) {
+          return res({
+            class: [
+              { type_id: 1, type_name: '电影' },
+              { type_id: 2, type_name: '连续剧' },
+              { type_id: 5, type_name: '少儿' },
+            ],
+          });
+        }
+        const typeId = /[?&]t=(\d+)/.exec(url)?.[1] ?? '';
+        const names = byType[typeId] ?? [];
+        return res({
+          pagecount: 1,
+          list: names.map((name, i) => ({ vod_id: Number(`${typeId}${i}`), vod_name: name, type_name: '' })),
+        });
+      },
+    };
+  }
+
+  it('只把确有内容的分类标记为可用', async () => {
+    clearCategoryCache();
+    // 「少儿」分类在源里存在但一条内容都没有 -> 首页应当隐藏
+    const http = makeHttp({ '1': ['一部电影'], '2': ['一部电视剧'], '5': [] });
+    const results = await probeCategories({
+      sources: [source],
+      http,
+      keys: ['movie', 'tv', 'kids'],
+    });
+    expect(results.map((r) => [r.key, r.available])).toEqual([
+      ['movie', true],
+      ['tv', true],
+      ['kids', false],
+    ]);
+    expect(results.find((r) => r.key === 'kids')?.hits).toBe(0);
+    expect(results.find((r) => r.key === 'movie')?.sample?.name).toBe('一部电影');
+  });
+
+  it('按 HOME 顺序返回全部默认分类', async () => {
+    clearCategoryCache();
+    const http = makeHttp({ '1': ['x'], '2': ['y'], '5': ['z'] });
+    const results = await probeCategories({ sources: [source], http });
+    expect(results.map((r) => r.key)).toEqual(HOME_CATEGORIES.map((c) => c.key));
+  });
+
+  it('每个分类完成时就回调，便于边探测边点亮入口', async () => {
+    clearCategoryCache();
+    const seen: string[] = [];
+    const http = makeHttp({ '1': ['x'] });
+    await probeCategories({
+      sources: [source],
+      http,
+      keys: ['movie', 'kids'],
+      onProbe: (r) => seen.push(`${r.key}:${r.available}`),
+    });
+    expect(seen.sort()).toEqual(['kids:false', 'movie:true']);
+  });
+
+  it('单个分类抛错时按不可用处理，不影响其他分类', async () => {
+    clearCategoryCache();
+    const http: HttpClient = {
+      async request(url) {
+        if (url.includes('ac=list')) return res('', 500);
+        return res({ list: [] });
+      },
+    };
+    const results = await probeCategories({ sources: [source], http, keys: ['movie', 'tv'] });
+    expect(results.every((r) => !r.available)).toBe(true);
+    expect(results).toHaveLength(2);
+  });
+
+  it('成人内容算作空分类（过滤后无线索即隐藏入口）', async () => {
+    clearCategoryCache();
+    setCachedCategories(source.url, [
+      { id: '1', name: '电影片' },
+      { id: '34', name: '伦理片', parentId: '1' },
+    ]);
+    const http: HttpClient = {
+      async request(url) {
+        if (url.includes('ac=list')) {
+          return res({ class: [{ type_id: 1, type_name: '电影片' }, { type_id: 34, type_name: '伦理片' }] });
+        }
+        const typeId = /[?&]t=(\d+)/.exec(url)?.[1];
+        if (typeId === '34') {
+          return res({ list: [{ vod_id: 34, vod_name: '成人内容', type_name: '伦理片' }] });
+        }
+        return res({ list: [] });
+      },
+    };
+    const results = await probeCategories({ sources: [source], http, keys: ['movie'] });
+    // 唯一的条目被成人过滤拦下，电影分类实际为空
+    expect(results[0].available).toBe(false);
   });
 });

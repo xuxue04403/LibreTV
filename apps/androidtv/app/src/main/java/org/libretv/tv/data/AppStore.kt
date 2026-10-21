@@ -21,6 +21,7 @@ private val Context.appDataStore: DataStore<Preferences> by preferencesDataStore
  */
 class AppStore(private val context: Context) {
     private val key = stringPreferencesKey("app-data")
+    private val availabilityKey = stringPreferencesKey("category-availability")
 
     val data: Flow<AppData> = context.appDataStore.data.map { prefs -> decode(prefs[key]) }
 
@@ -41,6 +42,27 @@ class AppStore(private val context: Context) {
     suspend fun replace(data: AppData) {
         context.appDataStore.edit { prefs ->
             prefs[key] = LooseJson.encodeToString(data)
+        }
+    }
+
+    /**
+     * 分类可用性缓存，格式 `源签名\tk1,k2,k3`。
+     *
+     * 探测要打 8 个分类 × 每个源（约 8 秒），冷启动时先按上次结论渲染，
+     * 避免首页入口「先全显示、再消失一个」的抖动。
+     */
+    suspend fun categoryAvailability(signature: String): List<String>? {
+        val raw = context.appDataStore.data.first()[availabilityKey] ?: return null
+        val sep = raw.indexOf('\t')
+        if (sep <= 0) return null
+        if (raw.substring(0, sep) != signature) return null
+        val tail = raw.substring(sep + 1)
+        return if (tail.isBlank()) emptyList() else tail.split(',')
+    }
+
+    suspend fun saveCategoryAvailability(signature: String, keys: List<String>) {
+        context.appDataStore.edit { prefs ->
+            prefs[availabilityKey] = signature + "\t" + keys.joinToString(",")
         }
     }
 }

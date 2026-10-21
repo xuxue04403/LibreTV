@@ -32,9 +32,10 @@
 
         <activity
             android:name=".MainActivity"
-            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density"
             android:exported="true"
             android:launchMode="singleTask"
+            android:resizeableActivity="true"
             android:screenOrientation="landscape"
             android:theme="@style/Theme.LibreTV">
             <intent-filter>

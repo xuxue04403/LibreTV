@@ -3,6 +3,7 @@ import {
   browseCategory,
   groupSearchResults,
   HOME_CATEGORIES,
+  probeCategories,
   type AggregatedGroup,
   type CategoryKey,
   type CategorySourceOutcome,
@@ -46,6 +47,15 @@ export function CategoryPage({
   const runId = useRef(0);
 
   const label = HOME_CATEGORIES.find((c) => c.key === category)?.label ?? '分类';
+
+  // 切换条只列出有内容的分类，与首页一致
+  const availableCategories = useAvailableCategories();
+  const switchable = useMemo(() => {
+    if (!availableCategories) return HOME_CATEGORIES;
+    return HOME_CATEGORIES.filter(
+      (bucket) => availableCategories.includes(bucket.key) || bucket.key === category
+    );
+  }, [availableCategories, category]);
 
   const load = useCallback(
     async (targetPage: number, append: boolean) => {
@@ -139,7 +149,8 @@ export function CategoryPage({
       </div>
 
       <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
-        {HOME_CATEGORIES.map((bucket) => (
+        {/* 只列出有内容的分类：与首页保持一致，避免把用户带到空分类页 */}
+        {switchable.map((bucket) => (
           <button
             key={bucket.key}
             className={`chip${bucket.key === category ? ' on' : ''}`}
@@ -225,11 +236,123 @@ export { HOME_CATEGORIES };
 export type { CategoryKey };
 export type { AggregatedGroup };
 
-/** 供首页复用的分类按钮行 */
+/**
+ * 分类可用性探测（首页与分类页共用）。
+ *
+ * 探测要打 8 个分类 × 每个源，首次约 8 秒。为了不让首页按钮先全显示再少一个，
+ * 结果按「源签名」落到 localStorage：下次启动直接按上次结论渲染，后台再刷新。
+ */
+const AVAILABILITY_KEY = 'libretv-category-availability-v1';
+
+interface CachedAvailability {
+  signature: string;
+  keys: CategoryKey[];
+  at: number;
+}
+
+function readCachedAvailability(signature: string): CategoryKey[] | undefined {
+  try {
+    const raw = localStorage.getItem(AVAILABILITY_KEY);
+    if (!raw) return undefined;
+    const parsed = JSON.parse(raw) as CachedAvailability;
+    if (parsed.signature !== signature || !Array.isArray(parsed.keys)) return undefined;
+    // 24 小时内的结论直接用；更久的只当占位，等本轮探测覆盖
+    return parsed.keys;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeCachedAvailability(signature: string, keys: CategoryKey[]): void {
+  try {
+    const payload: CachedAvailability = { signature, keys, at: Date.now() };
+    localStorage.setItem(AVAILABILITY_KEY, JSON.stringify(payload));
+  } catch {
+    /* 配额满或被禁用时忽略，探测结果本身还会用 */
+  }
+}
+
+export function useAvailableCategories(): CategoryKey[] | undefined {
+  const allSources = useAppStore((s) => s.sources);
+  const selectedKeys = useAppStore((s) => s.selectedKeys);
+  const adultFilter = useAppStore((s) => s.settings.adultFilter);
+  const sources = useMemo(
+    () => allSources.filter((s) => selectedKeys.includes(s.key)),
+    [allSources, selectedKeys]
+  );
+  const sourceSignature = `${sources
+    .map((s) => s.key)
+    .sort()
+    .join(',')}|${adultFilter ? 1 : 0}`;
+
+  // 存的是「属于哪个签名」的结果：签名一变就自然失效，不用手动清空
+  const [probed, setProbed] = useState<{ signature: string; keys: CategoryKey[] } | undefined>(undefined);
+
+  useEffect(() => {
+    if (sources.length === 0) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    void probeCategories({
+      sources,
+      http,
+      filterAdult: adultFilter,
+      timeoutMs: 12_000,
+      signal: controller.signal,
+    })
+      .then((results) => {
+        if (cancelled) return;
+        const keys = results.filter((r) => r.available).map((r) => r.key);
+        setProbed({ signature: sourceSignature, keys });
+        writeCachedAvailability(sourceSignature, keys);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // 探测失败就退回显示全部，不要把入口全藏起来
+        setProbed({ signature: sourceSignature, keys: HOME_CATEGORIES.map((c) => c.key) });
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceSignature]);
+
+  if (sources.length === 0) return [];
+  // 本轮结果 > 上次落盘的结论 > undefined（探测中，UI 先按全量渲染）
+  if (probed?.signature === sourceSignature) return probed.keys;
+  return readCachedAvailability(sourceSignature);
+}
+
+/** 供首页复用的分类按钮行：只显示真的抓得到内容的分类 */
 export function CategoryButtons({ onSelect }: { onSelect: (key: CategoryKey) => void }) {
+  const available = useAvailableCategories();
+
+  if (available === undefined) {
+    // 探测中先摆全部（避免布局跳动），完成后收敛到有内容的那些
+    return (
+      <div className="category-bar">
+        {HOME_CATEGORIES.map((bucket) => (
+          <button key={bucket.key} className="category-btn" onClick={() => onSelect(bucket.key)}>
+            <span className="category-dot" />
+            {bucket.label}
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  const shown = HOME_CATEGORIES.filter((b) => available.includes(b.key));
+  if (shown.length === 0) {
+    return (
+      <div className="category-bar">
+        <span className="hint">所选源暂未返回任何分类内容，可直接搜索片名</span>
+      </div>
+    );
+  }
+
   return (
     <div className="category-bar">
-      {HOME_CATEGORIES.map((bucket) => (
+      {shown.map((bucket) => (
         <button key={bucket.key} className="category-btn" onClick={() => onSelect(bucket.key)}>
           <span className="category-dot" />
           {bucket.label}

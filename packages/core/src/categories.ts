@@ -33,8 +33,27 @@ export const CATEGORY_BUCKETS: CategoryBucket[] = [
   { key: 'other', label: '其他', keywords: [] },
 ];
 
-/** 首页分类入口的展示顺序（去掉「其他」） */
-export const HOME_CATEGORIES: CategoryBucket[] = CATEGORY_BUCKETS.filter((bucket) => bucket.key !== 'other');
+/**
+ * 首页分类入口的**展示顺序**，与上面的判定顺序解耦。
+ *
+ * 判定顺序（CATEGORY_BUCKETS）必须让专属桶优先，否则「少儿动画」会被「动漫」抢走；
+ * 但用户最先想看的是电影和电视剧，所以展示顺序单独定义。
+ */
+export const HOME_CATEGORY_ORDER: CategoryKey[] = [
+  'movie',
+  'tv',
+  'kids',
+  'variety',
+  'anime',
+  'doc',
+  'short',
+  'sports',
+];
+
+/** 首页分类入口（按展示顺序，去掉「其他」） */
+export const HOME_CATEGORIES: CategoryBucket[] = HOME_CATEGORY_ORDER.map(
+  (key) => CATEGORY_BUCKETS.find((bucket) => bucket.key === key)
+).filter((bucket): bucket is CategoryBucket => Boolean(bucket));
 
 /** 采集站的一条分类 */
 export interface SourceCategory {
@@ -345,4 +364,107 @@ export async function browseCategory(opts: CategoryBrowseOptions): Promise<Categ
     outcomes,
     supportedSources: outcomes.filter((outcome) => outcome.supported).length,
   };
+}
+
+/** 单个分类的可用性探测结果 */
+export interface CategoryAvailability {
+  key: CategoryKey;
+  /** 该分类在所选源里是否至少有一个源返回了内容 */
+  available: boolean;
+  /** 参与判定的源数量 */
+  sources: number;
+  /** 有内容的源数量 */
+  hits: number;
+  /** 首个可用条目（用于可选的首屏预览） */
+  sample?: SearchResultItem;
+}
+
+export interface ProbeCategoriesOptions {
+  sources: SourceConfig[];
+  http: HttpClient;
+  /** 只探测这些分类（默认 HOME_CATEGORY_ORDER 全部） */
+  keys?: CategoryKey[];
+  /** 每个分类只取 1 页、每源最多 1 个子分类，控制开销 */
+  typeLimit?: number;
+  filterAdult?: boolean;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  /** 每个分类探测完成时回调（UI 可以边探测边点亮按钮） */
+  onProbe?: (result: CategoryAvailability) => void;
+}
+
+/**
+ * 探测哪些分类真的有内容。
+ *
+ * 首页不该摆出「少儿」这种在所选源里一条都没有的入口：点进去只会看到空页面。
+ * 这里每个分类只抓 1 页、每源最多 1 个子分类，4 个源 8 个分类约 32 个请求，
+ * 并发执行后在几秒内完成；分类表本身有 6 小时缓存，二次进入几乎零开销。
+ */
+export async function probeCategories(opts: ProbeCategoriesOptions): Promise<CategoryAvailability[]> {
+  const keys = opts.keys ?? HOME_CATEGORY_ORDER;
+  const filterAdult = opts.filterAdult ?? true;
+  const typeLimit = opts.typeLimit ?? 1;
+
+  // 结果缓存：首页反复挂载时不必每次重打 32 个请求。键里带上源地址、分类集合与过滤开关。
+  const cacheKey = `${keys.join(',')}|${filterAdult ? 1 : 0}|${typeLimit}|${opts.sources
+    .map((source) => source.url)
+    .join(',')}`;
+  const cached = probeCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < PROBE_TTL_MS) return cached.results;
+
+  const results = await Promise.all(
+    keys.map(async (key): Promise<CategoryAvailability> => {
+      try {
+        const result = await browseCategory({
+          sources: opts.sources,
+          key,
+          http: opts.http,
+          pages: 1,
+          typeLimit,
+          filterAdult,
+          timeoutMs: opts.timeoutMs ?? 10_000,
+          signal: opts.signal,
+        });
+        const hits = result.outcomes.filter((o) => o.supported && o.count > 0).length;
+        const availability: CategoryAvailability = {
+          key,
+          available: result.items.length > 0,
+          sources: result.outcomes.length,
+          hits,
+          sample: result.items[0],
+        };
+        try {
+          opts.onProbe?.(availability);
+        } catch {
+          /* 回调异常不影响整体 */
+        }
+        return availability;
+      } catch {
+        const availability: CategoryAvailability = {
+          key,
+          available: false,
+          sources: opts.sources.length,
+          hits: 0,
+        };
+        try {
+          opts.onProbe?.(availability);
+        } catch {
+          /* ignore */
+        }
+        return availability;
+      }
+    })
+  );
+  // 被取消的探测不写缓存，避免把「全空」结论固化下来
+  if (!opts.signal?.aborted) probeCache.set(cacheKey, { at: Date.now(), results });
+  return results;
+}
+
+/** 探测结果缓存：10 分钟。分类内容变化不快，没必要每次回首页都重探一遍 */
+const PROBE_TTL_MS = 10 * 60 * 1000;
+const probeCache = new Map<string, { at: number; results: CategoryAvailability[] }>();
+
+/** 清空探测缓存（切换源、改设置时调用） */
+export function clearProbeCache(): void {
+  probeCache.clear();
 }

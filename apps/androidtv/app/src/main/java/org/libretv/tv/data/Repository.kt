@@ -2,6 +2,7 @@ package org.libretv.tv.data
 
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.launch
@@ -100,10 +101,12 @@ class Repository(private val net: Net = Net) {
         return pageDetail
     }
 
-    suspend fun liveChannels(source: LiveSource): List<LiveChannel> {
+    suspend fun liveChannels(source: LiveSource, adultFilter: Boolean = true): List<LiveChannel> {
         val text = net.getText(source.url, mapOf("Accept" to "application/x-mpegURL, text/plain, */*"))
-        val channels = Parsers.parseM3u(text, source.url)
-        if (channels.isEmpty()) throw IOException("未解析到可用频道")
+        val parsed = Parsers.parseM3u(text, source.url)
+        if (parsed.isEmpty()) throw IOException("未解析到可用频道")
+        // 直播此前完全没有成人过滤：用户自加的 M3U 成人类目会原样露出
+        val channels = Parsers.filterAdultChannels(parsed, adultFilter)
         return channels.map { it.copy(sourceKey = source.key, sourceName = source.name) }
     }
 
@@ -163,6 +166,30 @@ class Repository(private val net: Net = Net) {
     suspend fun importSubscription(url: String): ParsedSubscription {
         val text = net.getText(url)
         return Subscriptions.parse(text, url)
+    }
+
+    /**
+     * 探测哪些分类真的有内容（首页只显示有内容的分类入口）。
+     *
+     * 每个分类只抓 1 页、每源最多 1 个子分类，开销可控；分类表本身有 6 小时缓存，
+     * 二次进入首页几乎零开销。结果按 [CategoryKey.home] 的行程序返回。
+     */
+    suspend fun probeCategories(
+        sources: List<VodSource>,
+        adultFilter: Boolean = true,
+        typeLimit: Int = 1,
+        timeoutMs: Long = 12_000,
+    ): Map<CategoryKey, Int> = coroutineScope {
+        CategoryKey.home.map { key ->
+            async {
+                var hits = 0
+                for (source in sources) {
+                    val (ok, list, _) = browseCategory(source, key, typeLimit, timeoutMs, adultFilter)
+                    if (ok && list.isNotEmpty()) hits++
+                }
+                key to hits
+            }
+        }.awaitAll().toMap()
     }
 
     private fun originOf(url: String): String? = runCatching {

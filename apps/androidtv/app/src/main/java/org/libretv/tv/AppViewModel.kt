@@ -106,6 +106,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var importing by mutableStateOf(false)
         private set
 
+    /**
+     * 有内容的分类（首页只摆这些入口）。
+     * null = 还没探测过（此时先按全量显示，避免布局抖动）。
+     */
+    var availableCategories by mutableStateOf<List<CategoryKey>?>(null)
+        private set
+    private var probeJob: Job? = null
+    private var probedSourceSignature: String = ""
+
     private var searchJob: Job? = null
 
     init {
@@ -114,6 +123,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             store.data
                 .catch { emit(AppData()) }
                 .collect { _data.value = it }
+        }
+        // 先按上次落盘的结论摆好首页入口，真正的探测由 HomeScreen 触发
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(300) // 等首帧 seed/collect 落定，拿到 activeSources
+            runCatching { restoreCategoryAvailability() }
         }
     }
 
@@ -154,6 +168,51 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun selectCategory(key: CategoryKey) {
         screen = Screen.Category(key)
         loadCategory(key)
+    }
+
+    /**
+     * 探测有内容的分类（首页分类入口只显示这些）。
+     *
+     * 用户反馈「少儿分类无任何影片时应该把入口藏起来」——点进去空页面体验很差。
+     * 探测本身要打 8 个分类 × 每个源（约 8 秒），所以结果按源签名落到 DataStore，
+     * 下次启动直接按上次结论渲染，后台再刷新，避免首页按钮先全显示再少一个。
+     */
+    fun probeCategories(force: Boolean = false) {
+        val sources = _data.value.activeSources()
+        if (sources.isEmpty()) {
+            availableCategories = emptyList()
+            return
+        }
+        val signature = sources.map { it.key }.sorted().joinToString(",") +
+            "|" + _data.value.settings.adultFilter
+        if (!force && signature == probedSourceSignature && probeJob?.isActive != true) return
+        probedSourceSignature = signature
+        probeJob?.cancel()
+        probeJob = viewModelScope.launch {
+            val hits = runCatching {
+                repo.probeCategories(sources, _data.value.settings.adultFilter)
+            }.getOrNull()
+            val keys = if (hits == null) {
+                // 探测整体失败就退回显示全部，不能把入口全藏起来
+                CategoryKey.home
+            } else {
+                CategoryKey.home.filter { (hits[it] ?: 0) > 0 }
+            }
+            availableCategories = keys
+            if (hits != null) store.saveCategoryAvailability(signature, keys.map { it.name })
+        }
+    }
+
+    /** 启动时先按上次落盘的结论摆好入口（真正的最新结论由 [probeCategories] 覆盖） */
+    private suspend fun restoreCategoryAvailability() {
+        val sources = _data.value.activeSources()
+        if (sources.isEmpty()) return
+        val signature = sources.map { it.key }.sorted().joinToString(",") +
+            "|" + _data.value.settings.adultFilter
+        val cached = store.categoryAvailability(signature) ?: return
+        val keys = cached.mapNotNull { name -> CategoryKey.entries.find { it.name == name } }
+        // 只用于首屏展示：不写 probedSourceSignature，否则会把后续真实探测挡掉
+        if (keys.isNotEmpty()) availableCategories = keys
     }
 
     /** 记录进入播放页之前的页面，返回时原路退回而不是一律回搜索页 */
@@ -439,7 +498,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val collected = mutableListOf<LiveChannel>()
             val statuses = mutableListOf<Pair<String, String>>()
             sources.forEach { source ->
-                runCatching { repo.liveChannels(source) }
+                runCatching { repo.liveChannels(source, _data.value.settings.adultFilter) }
                     .onSuccess { channels ->
                         collected += channels
                         statuses += source.name to "${channels.size} 频道"

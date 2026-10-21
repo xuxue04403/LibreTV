@@ -62,9 +62,11 @@ function createWindow(): void {
   // 构建冒烟：LTV_SMOKE=<png 路径> 时加载完成后截图并退出（CI / 本地验证用）
   // LTV_SMOKE_SEED：写入 localStorage 的 zustand 快照（JSON 字符串），用于预置数据源
   // LTV_SMOKE_JS：截图前执行的页面脚本（例如触发搜索、点击卡片）
+  // LTV_SMOKE_DELAY：截图前的等待毫秒数（默认 2000），慢异步页面可调大
   const smokeShot = process.env.LTV_SMOKE;
   const smokeSeed = process.env.LTV_SMOKE_SEED;
   const smokeJs = process.env.LTV_SMOKE_JS;
+  const smokeDelay = Math.max(0, Number(process.env.LTV_SMOKE_DELAY ?? 2000) || 0);
   if (smokeShot) {
     let seeded = false;
     win.webContents.on('console-message', (_event, level, message) => {
@@ -84,7 +86,7 @@ function createWindow(): void {
           win?.webContents.reload();
           return;
         }
-        await new Promise((r) => setTimeout(r, 2000));
+        await new Promise((r) => setTimeout(r, smokeDelay));
         if (smokeJs) {
           try {
             await win?.webContents.executeJavaScript(smokeJs);

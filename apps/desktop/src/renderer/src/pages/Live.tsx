@@ -4,6 +4,7 @@ import mpegts from 'mpegts.js';
 import {
   fetchEpg,
   fetchLivePlaylist,
+  filterAdultChannels,
   filterChannels,
   type LiveChannel,
   type LivePlaylist,
@@ -36,6 +37,7 @@ export function LivePage({ onOpenSettings }: { onOpenSettings: () => void }) {
   );
   const liveFavorites = useAppStore((s) => s.liveFavorites);
   const toggleLiveFavorite = useAppStore((s) => s.toggleLiveFavorite);
+  const adultFilter = useAppStore((s) => s.settings.adultFilter);
   const toast = useToast();
 
   const [channels, setChannels] = useState<ChannelItem[]>([]);
@@ -67,8 +69,11 @@ export function LivePage({ onOpenSettings }: { onOpenSettings: () => void }) {
       const source = liveSources[i];
       if (result.status === 'fulfilled') {
         const { playlist } = result.value;
-        states.push({ sourceKey: source.key, sourceName: source.name, ok: true, channels: playlist.channels.length });
-        for (const ch of playlist.channels) {
+        // 直播此前完全没有成人过滤：用户自加的 M3U 里成人类目会原样露出，
+        // 与点播侧的开关语义不一致。这里复用同一个开关。
+        const safeChannels = filterAdultChannels(playlist.channels, adultFilter);
+        states.push({ sourceKey: source.key, sourceName: source.name, ok: true, channels: safeChannels.length });
+        for (const ch of safeChannels) {
           all.push({
             ...ch,
             sourceKey: source.key,
@@ -91,12 +96,12 @@ export function LivePage({ onOpenSettings }: { onOpenSettings: () => void }) {
     setStatus(states);
     setLoading(false);
     if (all.length === 0) toast.err('所有直播源都没有解析到频道');
-  }, [liveSources, toast]);
+  }, [liveSources, toast, adultFilter]);
 
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveSources.map((s) => s.key).join(',')]);
+  }, [liveSources.map((s) => s.key).join(','), adultFilter]);
 
   const groups = useMemo(() => {
     const seen = new Set<string>();

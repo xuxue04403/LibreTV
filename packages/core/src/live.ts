@@ -35,12 +35,39 @@ export async function fetchLivePlaylist(
     groups: collectGroups(channels),
     epgUrl: parseM3uEpgUrl(res.text, url),
   };
-}
-
-/** #EXTM3U 之后的 `#PLAYLIST:名称` 或首行注释里取订阅名 */
+}/** #EXTM3U 之后的 `#PLAYLIST:名称` 或首行注释里取订阅名 */
 function readPlaylistName(content: string): string | undefined {
   const m = /^#PLAYLIST:(.+)$/m.exec(content);
   return m ? m[1].trim() : undefined;
+}
+
+/**
+ * 直播订阅里的成人类目/频道关键词。
+ *
+ * IPTV 列表里成人频道通常以分组名或台名出现（如「成人」「18+」「午夜」
+ * 「Hot」「XXX」），此前直播链路**完全没有过滤**，与点播的开关不一致。
+ * 这里刻意不用过宽的词（如单独的「情」）以免误伤正常频道。
+ */
+export const ADULT_LIVE_KEYWORDS = [
+  '成人', '18+', '18禁', '限制级', '色情', '情色', '伦理', '午夜', '深夜福利',
+  '裸', '无码', '有码', '自慰', '约炮', 'sex', 'xxx', 'porn', 'adult', 'erotic',
+  'hot adult', 'playboy', 'brazzers',
+];
+
+/** 频道是否属于成人内容（先看分组名，再看台名；都转小写比较） */
+export function isAdultChannel(channel: { name?: string; group?: string; rawName?: string }): boolean {
+  const haystack = `${channel.group || ''} ${channel.name || ''} ${channel.rawName || ''}`.toLowerCase();
+  if (!haystack.trim()) return false;
+  return ADULT_LIVE_KEYWORDS.some((k) => haystack.includes(k.toLowerCase()));
+}
+
+/** 过滤成人频道（与点播的 adultFilter 共用同一个开关语义） */
+export function filterAdultChannels<T extends { name?: string; group?: string; rawName?: string }>(
+  channels: T[],
+  enabled: boolean
+): T[] {
+  if (!enabled) return channels;
+  return channels.filter((ch) => !isAdultChannel(ch));
 }
 
 /** 频道列表过滤：按分组 + 关键词（名称/原始台名）；保留调用方的扩展字段 */
