@@ -109,12 +109,13 @@ export function HomePage({
   return (
     <>
       <div className="hero">
-        <h1>把影院留在桌面</h1>
-        <p>
-          LibreTV 桌面端把采集聚合、解析与广告过滤全部放在本机运行：无需服务器、无需密码，
-          搜索直接并行查询你添加的采集站，播放走本地代理以绕开跨域与防盗链。
-        </p>
-        <div className="row">
+        <div className="hero-copy">
+          <h1>把影院留在桌面</h1>
+          <p>
+            采集聚合、解析与广告过滤全部在本机运行：无需服务器、无需密码，播放走本地代理以绕开跨域与防盗链。
+          </p>
+        </div>
+        <div className="hero-actions">
           <button className="btn primary" onClick={() => onSearch(recentSearches[0] ?? '')}>
             <Icon name="search" size={16} />
             开始搜索
@@ -141,7 +142,7 @@ export function HomePage({
       </div>
 
       {recentSearches.length > 0 ? (
-        <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginTop: 16 }}>
+        <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
           <span style={{ color: '#8d97a8', fontSize: 12 }}>最近搜索</span>
           {recentSearches.slice(0, 8).map((kw) => (
             <button key={kw} className="chip" style={{ cursor: 'pointer' }} onClick={() => onSearch(kw)}>

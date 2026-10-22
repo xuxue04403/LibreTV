@@ -760,15 +760,31 @@ textarea.input {
   color: #c5f3dd;
 }
 
+/* 首页横幅：左文案 + 右操作/统计，两列并排后高度从 204px 收到 ~120px */
 .hero {
   position: relative;
-  border-radius: 18px;
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  flex-wrap: wrap;
+  border-radius: 16px;
   border: 1px solid var(--line);
-  padding: 26px 28px;
+  padding: 18px 22px;
   background:
     radial-gradient(600px 220px at 88% 0%, rgba(255, 107, 61, 0.22), transparent 70%),
     linear-gradient(120deg, #161b24, #0e1218);
   overflow: hidden;
+}
+.hero-copy {
+  flex: 1 1 340px;
+  min-width: 0;
+}
+.hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 /* 首页分类入口：横向胶囊按钮，hover 上浮 + 橙色描边 */
@@ -806,21 +822,22 @@ textarea.input {
   flex: none;
 }
 .hero h1 {
-  margin: 0 0 8px;
-  font-size: 26px;
-  letter-spacing: 0.3px;
+  margin: 0 0 6px;
+  font-size: 21px;
+  letter-spacing: 0.2px;
 }
 .hero p {
-  margin: 0 0 16px;
+  margin: 0;
   color: #a9b3c3;
-  font-size: 13px;
-  line-height: 1.7;
+  font-size: 12.5px;
+  line-height: 1.65;
   max-width: 620px;
 }
 .hero-stats {
   display: flex;
-  gap: 22px;
-  margin-top: 6px;
+  gap: 20px;
+  padding-left: 18px;
+  border-left: 1px solid rgba(255, 255, 255, 0.07);
 }
 .stat .n {
   font-size: 20px;

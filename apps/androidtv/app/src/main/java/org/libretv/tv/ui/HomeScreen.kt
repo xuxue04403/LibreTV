@@ -207,53 +207,65 @@ private fun HomeHero(
     onCast: () -> Unit,
     firstFocus: FocusRequester,
 ) {
+    // 横幅高度从 232dp 收到 152dp：原来是标题 / 说明 / 按钮 / 统计四行竖排，
+    // 在 540dp 的设计高度里吃掉 43%，下面「分类浏览」要滚一屏才看得到。
+    // 改成左右两栏——左边只说清这是什么，右边全是可操作项，一行就够。
     Box(
         Modifier
             .fillMaxWidth()
-            .height(232.dp)
-            .clip(RoundedCornerShape(20.dp))
+            .height(152.dp)
+            .clip(RoundedCornerShape(18.dp))
             .background(
                 Brush.horizontalGradient(
                     0f to Color(0xFF171C26),
                     1f to Color(0xFF0E1218),
                 )
             )
-            .padding(horizontal = 34.dp, vertical = 26.dp),
+            .padding(horizontal = 28.dp),
     ) {
         Box(
             Modifier
-                .size(320.dp)
+                .size(280.dp)
                 .align(Alignment.CenterEnd)
                 .background(
                     Brush.radialGradient(
-                        listOf(Color(0x66FF6B3D), Color.Transparent)
+                        listOf(Color(0x55FF6B3D), Color.Transparent)
                     )
                 )
         )
-        Column {
-            Text(
-                "LibreTV · 电视版",
-                color = TextPrimary,
-                fontSize = MaterialTheme.typography.headlineLarge.fontSize,
-                fontWeight = FontWeight.Bold,
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "搜索聚合、解析与播放全部在本机完成：无需服务器，手机投屏可直接接收。",
-                color = TextMuted,
-                fontSize = MaterialTheme.typography.bodyMedium.fontSize,
-            )
-            Spacer(Modifier.height(20.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                TvButton("开始搜索", onSearch, primary = true, focusRequester = firstFocus)
-                TvButton("数据源设置", onSettings)
-                TvButton("投屏接收", onCast)
+        Row(
+            Modifier.fillMaxSize(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(24.dp),
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "LibreTV · 电视版",
+                    color = TextPrimary,
+                    fontSize = MaterialTheme.typography.headlineMedium.fontSize,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "搜索聚合、解析与播放全部在本机完成",
+                    color = TextMuted,
+                    fontSize = MaterialTheme.typography.bodyMedium.fontSize,
+                    maxLines = 2,
+                )
             }
-            Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(22.dp)) {
-                HeroStat("${data.activeSources().size}", "启用点播源")
-                HeroStat("${data.activeLiveSources().size}", "启用直播源")
-                HeroStat("${data.history.size}", "观看记录")
+            Column(horizontalAlignment = Alignment.End) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    TvButton("开始搜索", onSearch, primary = true, focusRequester = firstFocus)
+                    TvButton("数据源设置", onSettings)
+                    TvButton("投屏接收", onCast)
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                    HeroStat("${data.activeSources().size}", "点播源")
+                    HeroStat("${data.activeLiveSources().size}", "直播源")
+                    HeroStat("${data.history.size}", "记录")
+                }
             }
         }
     }

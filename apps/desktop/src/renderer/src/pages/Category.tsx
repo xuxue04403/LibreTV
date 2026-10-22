@@ -325,7 +325,28 @@ export function useAvailableCategories(): CategoryKey[] | undefined {
 
 /** 供首页复用的分类按钮行：只显示真的抓得到内容的分类 */
 export function CategoryButtons({ onSelect }: { onSelect: (key: CategoryKey) => void }) {
+  const allSources = useAppStore((s) => s.sources);
+  const selectedKeys = useAppStore((s) => s.selectedKeys);
   const available = useAvailableCategories();
+
+  if (allSources.length === 0) {
+    // 「一个源都没有」和「源没有这个分类」是两件事：前者要去设置里加源，
+    // 说成「暂未返回任何分类内容」会把用户引到错误的方向
+    return (
+      <div className="category-bar">
+        <span className="hint">还没有点播源，先在「设置 → 点播源」里添加一个采集站</span>
+      </div>
+    );
+  }
+
+  if (allSources.every((s) => !selectedKeys.includes(s.key))) {
+    // 同上：源都在，但全被停用了。这也不是「源没有内容」
+    return (
+      <div className="category-bar">
+        <span className="hint">所有点播源都已停用，在「设置 → 点播源」里打开开关即可</span>
+      </div>
+    );
+  }
 
   if (available === undefined) {
     // 探测中先摆全部（避免布局跳动），完成后收敛到有内容的那些
