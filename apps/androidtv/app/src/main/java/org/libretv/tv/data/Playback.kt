@@ -19,25 +19,20 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 @UnstableApi
 object Playback {
 
-    /** 起播最小缓冲：比默认 2.5s 略低，点开就出画面 */
-    private const val MIN_BUFFER_MS = 1_500
-    /** 起播后继续攒到这么多，弱网时不容易立刻卡 */
-    private const val MAX_BUFFER_MS = 30_000
-    /** 单次播放就预读这么多，超过就停（内存有限的盒子不能无限预读） */
-    private const val BUFFER_FOR_PLAYBACK_MS = 1_500
-    private const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 3_000
-    /** 允许回退缓存：电视上拖回看过的片段不必重新拉 */
-    private const val BACK_BUFFER_MS = 20_000
-
     fun build(context: Context): ExoPlayer {
+        // 参数本身放在 PlaybackTuning 里，由单测保证不违反 Media3 的三条硬约束
+        // （违反会在 build() 时抛 IllegalArgumentException，表现为按播放就闪退）
+        check(PlaybackTuning.violations().isEmpty()) {
+            "ExoPlayer 缓冲参数不合法: " + PlaybackTuning.violations().joinToString("; ")
+        }
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                MIN_BUFFER_MS,
-                MAX_BUFFER_MS,
-                BUFFER_FOR_PLAYBACK_MS,
-                BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
+                PlaybackTuning.MIN_BUFFER_MS,
+                PlaybackTuning.MAX_BUFFER_MS,
+                PlaybackTuning.BUFFER_FOR_PLAYBACK_MS,
+                PlaybackTuning.BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
             )
-            .setBackBuffer(BACK_BUFFER_MS, true)
+            .setBackBuffer(PlaybackTuning.BACK_BUFFER_MS, true)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 

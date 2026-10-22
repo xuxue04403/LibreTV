@@ -185,7 +185,8 @@ adb -s emulator-5556 shell am start -n org.libretv.tv/.MainActivity
 
 `data/Playback.kt` 统一构建 `ExoPlayer`，不散落在 UI 层（点播 `PlayerScreen` 与直播 `LivePlayerScreen` 共用同一个构建器）：
 
-- `DefaultLoadControl`：`MIN_BUFFER_MS 1500` / `MAX_BUFFER_MS 30000` / `BUFFER_FOR_PLAYBACK_MS 1500` / `BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS 3000` / `BACK_BUFFER_MS 20000`，并 `setPrioritizeTimeOverSizeThresholds(true)`。起播只要 1.5 秒缓冲就出画面，长缓冲留给播放中兜底。
+- `DefaultLoadControl`：参数集中在 `data/PlaybackTuning.kt`，当前 `MIN_BUFFER_MS 2500` / `MAX_BUFFER_MS 30000` / `BUFFER_FOR_PLAYBACK_MS 1200` / `BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS 2000` / `BACK_BUFFER_MS 20000`，并 `setPrioritizeTimeOverSizeThresholds(true)`。起播门槛（1.2s）低于「卡顿后恢复」门槛（2s），首播更快而恢复更稳。
+- **这些数字不能随手改**：Media3 有三条硬约束——`maxBufferMs >= minBufferMs`、`minBufferMs >= bufferForPlaybackMs`、`minBufferMs >= bufferForPlaybackAfterRebufferMs`。违反任意一条，`DefaultLoadControl.build()` 会抛 `IllegalArgumentException`，而它发生在 Compose 的帧回调里，**用户看到的就是「按播放整个 App 闪退」**，编译器与 lint 都查不出来。曾经 `MIN_BUFFER_MS 1500` 配 `AFTER_REBUFFER 3000` 就踩过，装上 APK 一点播放必崩。现在约束由 `PlaybackTuning.violations()` 表达（返回全部违规项而非撞第一条就抛），`PlaybackTuningTest` 守着当前参数合法、且拿历史坏值能复现违规；`Playback.build()` 里另有一道 `check` 兜底。
 - `DefaultHttpDataSource.Factory`：固定 `Net.UA`、`connectTimeout 12s` / `readTimeout 20s`、`allowCrossProtocolRedirects`、`Accept-Encoding: identity`（避免拿到 gzip 的分片流）。OkHttp 无 CORS 概念，也不需要回环代理。
 - `setHandleAudioBecomingNoisy(true)` 让拔耳机/切输出时自动暂停。
 
