@@ -67,6 +67,8 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
   const [error, setError] = useState<string | null>(null);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
+  /** 全屏真实状态（ref 供事件回调与卸载清理读取，避免闭包拿到旧值） */
+  const fullscreenRef = useRef(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [castOpen, setCastOpen] = useState(false);
   const [failoverNote, setFailoverNote] = useState<string | null>(null);
@@ -403,18 +405,59 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     if (!ok) toast.err('已经没有其它可用片源了');
   }, [failover, toast]);
 
+  /** 把窗口全屏切换到指定状态（同时更新 ref / state） */
+  const applyFullscreen = useCallback(
+    async (value: boolean): Promise<void> => {
+      fullscreenRef.current = value;
+      setFullscreen(value);
+      if (window.libretv) {
+        await window.libretv.setFullscreen(value);
+        return;
+      }
+      // 浏览器里预览时的兜底：Electron 走窗口全屏，网页版只能走元素全屏
+      try {
+        if (value && !document.fullscreenElement) await document.documentElement.requestFullscreen();
+        else if (!value && document.fullscreenElement) await document.exitFullscreen();
+      } catch {
+        // 浏览器拒绝全屏（非用户手势等）时保持原状即可
+      }
+    },
+    []
+  );
+
   const toggleFullscreen = useCallback(async () => {
-    if (window.libretv) {
-      const on = await window.libretv.toggleFullscreen();
+    await applyFullscreen(!fullscreenRef.current);
+  }, [applyFullscreen]);
+
+  // 进播放页先对齐一次真实状态，并订阅主进程回推（F11 / 菜单栏的全屏不经过这里的按钮）
+  useEffect(() => {
+    let alive = true;
+    void window.libretv?.isFullscreen().then((on) => {
+      if (!alive) return;
+      fullscreenRef.current = on;
       setFullscreen(on);
-    } else if (document.fullscreenElement) {
-      await document.exitFullscreen();
-      setFullscreen(false);
-    } else {
-      await document.documentElement.requestFullscreen();
-      setFullscreen(true);
-    }
+    });
+    const off = window.libretv?.onFullscreenChange((on) => {
+      fullscreenRef.current = on;
+      setFullscreen(on);
+    });
+    return () => {
+      alive = false;
+      off?.();
+    };
   }, []);
+
+  // 退出播放页时把窗口还原：全屏通常是播放页里开的，退出播放还停在满屏
+  // 会让人找不到窗口边框（也关不掉），只能在首页再按一次 F11。
+  useEffect(
+    () => () => {
+      if (!fullscreenRef.current) return;
+      fullscreenRef.current = false;
+      if (window.libretv) void window.libretv.setFullscreen(false);
+      else if (document.fullscreenElement) void document.exitFullscreen();
+    },
+    []
+  );
 
   const toggleMute = useCallback(() => {
     const video = videoRef.current;
@@ -473,7 +516,9 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
           void manualSwitch();
           break;
         case 'Escape':
-          if (document.fullscreenElement) void document.exitFullscreen();
+          // 先退全屏再退播放：全屏下按 Esc 的直觉是「退出全屏」，
+          // 原来直接关播放页会把窗口留在全屏里。
+          if (fullscreenRef.current || document.fullscreenElement) void applyFullscreen(false);
           else onClose();
           break;
         case 'n':
@@ -487,7 +532,7 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [changeEpisode, index, manualSwitch, onClose, revealControls, seekBy, toggleFullscreen, toggleMute, togglePlay]);
+  }, [applyFullscreen, changeEpisode, index, manualSwitch, onClose, revealControls, seekBy, toggleFullscreen, toggleMute, togglePlay]);
 
   const playedPercent = duration > 0 ? (current / duration) * 100 : 0;
   const bufferedPercent = duration > 0 ? (buffered / duration) * 100 : 0;
@@ -643,7 +688,11 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
             <button className="btn ghost" onClick={changeRate} title="倍速">
               {rate.toFixed(2).replace(/0$/, '')}x
             </button>
-            <button className="ctrl" onClick={() => void toggleFullscreen()} title="全屏（F）">
+            <button
+              className="ctrl"
+              onClick={() => void toggleFullscreen()}
+              title={fullscreen ? '退出全屏（F）' : '全屏（F）'}
+            >
               <Icon name={fullscreen ? 'minimize' : 'maximize'} size={18} />
             </button>
           </div>

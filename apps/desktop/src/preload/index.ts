@@ -63,6 +63,19 @@ const bridge = {
   streamCancel: (streamId: number): Promise<void> => ipcRenderer.invoke('http:stream:cancel', streamId),
   toggleFullscreen: (): Promise<boolean> => ipcRenderer.invoke('window:toggle-fullscreen'),
   setFullscreen: (value: boolean): Promise<boolean> => ipcRenderer.invoke('window:set-fullscreen', value),
+  isFullscreen: (): Promise<boolean> => ipcRenderer.invoke('window:is-fullscreen'),
+  /**
+   * 订阅窗口全屏状态变化。
+   *
+   * 用户按 F11 / 走菜单栏的全屏不经过应用内的按钮，渲染层的图标会失真，
+   * 所以由主进程在 enter/leave-full-screen 时回推，返回取消订阅函数。
+   */
+  onFullscreenChange: (callback: (value: boolean) => void): (() => void) => {
+    const channel = 'window:fullscreen-changed';
+    const listener = (_event: unknown, value: boolean): void => callback(value);
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
+  },
   minimize: (): Promise<void> => ipcRenderer.invoke('window:minimize'),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('shell:open-external', url),
   saveText: (name: string, content: string): Promise<{ ok: boolean; path?: string; canceled?: boolean }> =>

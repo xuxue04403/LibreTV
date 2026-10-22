@@ -14,6 +14,7 @@ import type {
   LiveSourceConfig,
   SourceConfig,
 } from './types';
+import { normalizeTitle } from './cms';
 
 export const DEFAULT_SETTINGS: AppSettings = {
   adultFilter: true,
@@ -43,15 +44,49 @@ export function historyId(sourceKey: string, vodId: string): string {
   return `${sourceKey}:${vodId}`;
 }
 
-/** 写入/更新观看进度：按 id 去重、移到最前、裁剪上限 */
+/**
+ * 观看记录的分组键：同一部影片只留一条记录。
+ *
+ * 记录本身的 `id` 是 `${sourceKey}:${vodId}`（续播要靠它定位到具体哪个源），
+ * 但「继续观看」是按影片排的：同一部片子先从非凡资源播、后从量子资源播，
+ * 按 id 去重就会留下两张一模一样的卡片。所以去重改按归一化片名做。
+ *
+ * 只按片名、不带年份：同名不同年的翻拍片会被合并，但采集站返回的标题
+ * 里往往带年份或副标题（如「沙丘2」），实际很少撞上；相比之下
+ * 「同一部片子出现两条记录」是用户第一眼就能看到的错误。
+ */
+export function historyGroupKey(title: string): string {
+  return normalizeTitle(title);
+}
+
+/** 写入/更新观看进度：按「影片」去重（跨源）、移到最前、裁剪上限 */
 export function upsertHistory(
   list: HistoryEntry[],
   entry: Omit<HistoryEntry, 'updatedAt'> & { updatedAt?: number },
   limit = HISTORY_LIMIT
 ): HistoryEntry[] {
   const item: HistoryEntry = { ...entry, updatedAt: entry.updatedAt ?? Date.now() };
-  const rest = list.filter((h) => h.id !== item.id);
+  const groupKey = historyGroupKey(item.title);
+  const rest = list.filter((h) => h.id !== item.id && historyGroupKey(h.title) !== groupKey);
   return [item, ...rest].slice(0, limit);
+}
+
+/**
+ * 清理历史里已有的重复记录（老版本按 id 去重留下的）。
+ *
+ * 列表按时间倒序，同名只保留最靠前的那条（也就是最近播放的），
+ * 幂等，可以在每次启动时跑一遍。
+ */
+export function dedupeHistory(list: HistoryEntry[]): HistoryEntry[] {
+  const seen = new Set<string>();
+  const out: HistoryEntry[] = [];
+  for (const h of list) {
+    const key = historyGroupKey(h.title);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(h);
+  }
+  return out;
 }
 
 /** 取续播信息：同一影片返回上次的集数与位置 */
@@ -62,6 +97,17 @@ export function findResumePoint(
 ): HistoryEntry | undefined {
   const id = historyId(sourceKey, vodId);
   return list.find((h) => h.id === id);
+}
+
+/**
+ * 按片名查续播（跨源）。
+ *
+ * 详情页一次只能选中一个源，而上次可能是在另一个源上播的；
+ * 按 id 查不到时用它兜底，否则「继续播放」按钮不会出现。
+ */
+export function findResumeByTitle(list: HistoryEntry[], title: string): HistoryEntry | undefined {
+  const key = historyGroupKey(title);
+  return list.find((h) => historyGroupKey(h.title) === key);
 }
 
 /** 收藏开关：已存在则移除，否则置顶插入 */

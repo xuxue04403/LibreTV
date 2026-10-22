@@ -46,7 +46,15 @@ import org.libretv.tv.ui.theme.TextPrimary
 @Composable
 fun HomeScreen(vm: AppViewModel, data: AppData) {
     val firstFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { firstFocus.requestFocus() } }
+    // 首屏焦点落在「开始搜索」上。必须重试：组合第一次跑时目标节点还没挂载，
+    // requestFocus() 会抛「FocusRequester is not initialized」，被 runCatching 吞掉之后
+    // 焦点就默认落到第一个可聚焦项（左侧导航栏的「首页」），看起来像没有选中项。
+    LaunchedEffect(Unit) {
+        repeat(4) { attempt ->
+            if (attempt > 0) kotlinx.coroutines.delay(80L)
+            if (runCatching { firstFocus.requestFocus() }.isSuccess) return@LaunchedEffect
+        }
+    }
 
     LazyColumn(
         modifier = Modifier

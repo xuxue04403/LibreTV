@@ -127,6 +127,22 @@ renderer 选设备 ──▶ main: dlna:cast
 
 注意：投屏推送的是**原始上游地址**（不是回环代理地址），否则电视无法访问 `127.0.0.1`。
 
+### 全屏与播放页的关系
+
+桌面端的全屏走 `BrowserWindow.setFullScreen()`（不是元素全屏），所以 `document.fullscreenElement` 恒为 `null`，判断全屏只能用 `win.isFullScreen()`。三个约束：
+
+1. **状态以主进程为准**：预加载脚本暴露 `isFullscreen()` 与 `onFullscreenChange(cb)`，主进程在 `enter-full-screen` / `leave-full-screen` 时回推。用户按 F11 或走菜单栏不经过应用内按钮，没有这条回推图标就会失真。
+2. **Esc 先退全屏再退播放**：否则全屏下按 Esc 会把播放页关掉、窗口留在满屏，用户找不到边框。
+3. **离开播放页要还原窗口**：全屏通常是播放页里开的，卸载时若仍在全屏就调 `setFullscreen(false)`；否则回到首页还在满屏。
+
+### 观看记录的跨源去重
+
+`HistoryEntry.id` 是 `源key:vodId`（与上游一致），只按 id 去重的话，同一部片子从两个采集源各播一次就会留两条同名卡片 —— 首页「继续观看」第一眼就能看出来。
+
+改为**按片名去重**：`packages/core/src/storage.ts` 的 `historyGroupKey(title) = normalizeTitle(title)`（`normalizeTitle` 复用 CMS 的标题归一化：去空白、标点、符号并小写），`upsertHistory` 同时按 id 与片名排他；TV 端 `AppViewModel.saveProgress` 用 `Parsers.normalizeTitle` 实现同一语义。
+
+老数据在启动时清理一次（桌面 `App.tsx` 的 `dedupeHistory()`、TV `dedupeStoredHistory()`），两者都幂等。续播查找相应加兜底：先按 id 精确命中，找不到再按片名找（`findResumeByTitle` / `Parsers.normalizeTitle` 比较），这样换源后也能接着看。**不带年份**是刻意的：采集站标题常带副标题（`流浪地球 2` vs `流浪地球2 4K`），带年份会把同一部片子拆成两条。
+
 ### 内置默认源
 
 `defaults/sources.json` 是唯一事实来源：桌面端通过 Vite alias `@defaults` 在构建期内联，Android TV 在 `preBuild` 阶段复制到 `assets/default-sources.json`。首次启动写入本地状态并置 `defaultsSeeded=true`；之后即使用户删光也不会自动加回，直到手动「恢复默认源」。
@@ -283,7 +299,7 @@ interface AppData {
   selectedKeys: string[]
   liveSources: LiveSourceConfig[]  // key/name/url/epg
   liveSelectedKeys: string[]
-  history: HistoryEntry[]          // 按 id 去重置顶，上限 200 / 100
+  history: HistoryEntry[]          // 按片名去重置顶，上限 200 / 100
   favorites: FavoriteEntry[]
   liveFavorites: LiveFavoriteEntry[]
   defaultsSeeded: boolean          // TV 端为 seeded

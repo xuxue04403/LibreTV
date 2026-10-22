@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware';
 import { DEFAULT_LIVE_SOURCES, DEFAULT_SOURCES } from './defaults';
 import {
   DEFAULT_SETTINGS,
+  dedupeHistory as dedupeHistoryList,
   stableKey,
   toggleFavorite as toggleFavoriteList,
   toggleLiveFavorite as toggleLiveFavoriteList,
@@ -40,6 +41,8 @@ export interface AppState {
   removeLiveSource: (key: string) => void;
   toggleLiveSource: (key: string) => void;
   recordHistory: (entry: Omit<HistoryEntry, 'updatedAt'>) => void;
+  /** 清掉老版本按 id 去重留下的同名重复记录（启动时跑一次即可） */
+  dedupeHistory: () => void;
   toggleFavorite: (entry: Omit<FavoriteEntry, 'createdAt'>) => void;
   toggleLiveFavorite: (entry: Omit<LiveFavoriteEntry, 'createdAt'>) => void;
   addRecentSearch: (keyword: string) => void;
@@ -149,6 +152,13 @@ export const useAppStore = create<AppState>()(
 
       recordHistory: (entry) =>
         set((s) => ({ history: upsertHistory(s.history, entry) })),
+
+      dedupeHistory: () =>
+        set((s) => {
+          const next = dedupeHistoryList(s.history);
+          // 没有变化就不要触发重渲染
+          return next.length === s.history.length ? s : { history: next };
+        }),
 
       toggleFavorite: (entry) =>
         set((s) => ({ favorites: toggleFavoriteList(s.favorites, entry) })),

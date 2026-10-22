@@ -53,6 +53,10 @@ function createWindow(): void {
 
   win.once('ready-to-show', () => win?.show());
 
+  // 全屏状态回推：F11 / 菜单栏切换不经过渲染层的按钮，靠事件让图标与状态跟上
+  win.on('enter-full-screen', () => win?.webContents.send('window:fullscreen-changed', true));
+  win.on('leave-full-screen', () => win?.webContents.send('window:fullscreen-changed', false));
+
   // 站外链接交给系统浏览器，不在应用内开新窗口
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
@@ -325,6 +329,7 @@ ipcMain.handle('window:set-fullscreen', (_event, value: boolean) => {
   win?.setFullScreen(Boolean(value));
   return Boolean(value);
 });
+ipcMain.handle('window:is-fullscreen', () => win?.isFullScreen() ?? false);
 
 ipcMain.handle('window:minimize', () => win?.minimize());
 

@@ -23,6 +23,7 @@ import org.libretv.tv.data.AppSettings
 import org.libretv.tv.data.AppStore
 import org.libretv.tv.data.CategoryKey
 import org.libretv.tv.data.Defaults
+import org.libretv.tv.data.HistoryDedupe
 import org.libretv.tv.data.HistoryEntry
 import org.libretv.tv.data.LiveChannel
 import org.libretv.tv.data.LiveSource
@@ -146,6 +147,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     init {
         viewModelScope.launch {
             seedIfNeeded()
+            dedupeStoredHistory()
             store.data
                 .catch { emit(AppData()) }
                 .collect { _data.value = it }
@@ -158,8 +160,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // —— 首次启动：导入内置默认源 ——
-    private suspend fun seedIfNeeded() {
-        val current = store.current()
+    private suspend fun seedIfNeeded() {        val current = store.current()
         if (current.seeded) return
         val (vod, liveSources) = Defaults.load(getApplication())
         store.update {
@@ -170,6 +171,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 liveSelected = (it.liveSelected + liveSources.map { s -> s.key }).distinct(),
                 seeded = true,
             )
+        }
+    }
+
+    /**
+     * 清理老版本按「源 + vodId」去重留下的重复观看记录。
+     *
+     * 同一部片子从两个源各播一次会留两条同名卡片；现在改成按片名去重
+     * （见 [saveProgress]），存量数据在启动时幂等清理一遍。
+     */
+    private suspend fun dedupeStoredHistory() {
+        val current = store.current()
+        val deduped = HistoryDedupe.dedupe(current.history)
+        if (deduped.size != current.history.size) {
+            store.update { it.copy(history = deduped) }
         }
     }
 
@@ -507,7 +522,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         )
         viewModelScope.launch {
             store.update { data ->
-                data.copy(history = (listOf(entry) + data.history.filter { it.id != id }).take(100))
+                // 按片名去重（跨源）：同一部片子不因换了采集源而多出一条记录
+                data.copy(history = HistoryDedupe.upsert(data.history, entry))
             }
         }
     }

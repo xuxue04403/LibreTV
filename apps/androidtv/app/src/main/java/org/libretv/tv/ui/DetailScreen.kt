@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import org.libretv.tv.AppViewModel
 import org.libretv.tv.Screen
 import org.libretv.tv.data.AppData
+import org.libretv.tv.data.Parsers
 import org.libretv.tv.ui.theme.Accent
 import org.libretv.tv.ui.theme.Panel
 import org.libretv.tv.ui.theme.TextMuted
@@ -44,7 +45,9 @@ fun DetailScreen(vm: AppViewModel, target: Screen.Detail, data: AppData) {
     val playFocus = remember { FocusRequester() }
     val favoriteId = "${item.sourceKey}:${item.vodId}"
     val favorite = data.favorites.any { it.id == favoriteId }
+    // 观看记录按片名去重，换了采集源也能续播：先按 id 精确找，找不到再按片名兜底
     val resume = data.history.firstOrNull { it.id == favoriteId }
+        ?: data.history.firstOrNull { Parsers.normalizeTitle(it.title) == Parsers.normalizeTitle(item.name) }
 
     LaunchedEffect(target.item.vodId) { runCatching { playFocus.requestFocus() } }
 

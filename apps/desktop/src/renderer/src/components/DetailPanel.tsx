@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   buildPlaybackCandidates,
   fetchDetail,
+  findResumeByTitle,
   historyId,
   type AggregatedGroup,
   type SearchResultItem,
@@ -73,7 +74,9 @@ export function DetailPanel({
       .then((d) => {
         if (!alive) return;
         setDetail(d);
-        const resume = history.find((h) => h.id === historyId(source.key, selected.vodId));
+        const resume =
+          history.find((h) => h.id === historyId(source.key, selected.vodId)) ??
+          findResumeByTitle(history, selected.name);
         setEpisodeIndex(resume ? Math.min(resume.episodeIndex, d.episodes.length - 1) : 0);
       })
       .catch((err: unknown) => {
@@ -90,7 +93,9 @@ export function DetailPanel({
 
   const favId = `${selected.sourceKey}:${selected.vodId}`;
   const isFav = favorites.some((f) => f.id === favId);
-  const resume = history.find((h) => h.id === historyId(selected.sourceKey, selected.vodId));
+  const resume =
+    history.find((h) => h.id === historyId(selected.sourceKey, selected.vodId)) ??
+    findResumeByTitle(history, selected.name);
 
   return (
     <div className="overlay" onClick={onClose}>

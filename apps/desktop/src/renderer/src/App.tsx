@@ -35,6 +35,9 @@ export function App() {
       setReady(true);
       // 首次启动导入内置默认源（之后不再自动加回，用户删掉就是删掉）
       useAppStore.getState().seedDefaults();
+      // 老版本的观看记录按「源 + vodId」去重，同一部片子从两个源各播一次就会留两条；
+      // 现在改成按片名去重，这里把存量数据清理一遍（幂等）。
+      useAppStore.getState().dedupeHistory();
     });
   }, []);
 

@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { exportSourceList, normalizeSubscription, parseRelaxedJson, parseSubscription } from './subscriptions';
-import { DEFAULT_SETTINGS, normalizeSettings, parseSnapshot, toggleFavorite, upsertHistory } from './storage';
+import {
+  DEFAULT_SETTINGS,
+  dedupeHistory,
+  findResumeByTitle,
+  normalizeSettings,
+  parseSnapshot,
+  toggleFavorite,
+  upsertHistory,
+} from './storage';
 import { currentAndNext, parseXmltv, parseXmltvTime } from './live';
 import { episodeLabel, formatTime, stableKey, trimSlash } from './format';
 
@@ -96,6 +104,62 @@ describe('storage 纯函数', () => {
     expect(list).toHaveLength(2);
     expect(list[0].id).toBe('a:2');
     expect(list[0].position).toBe(30);
+  });
+
+  it('upsertHistory 跨源按片名去重（同一部片子只留一条）', () => {
+    const base = { sourceName: 's', episodeIndex: 0, episodeCount: 1, position: 5, duration: 100 };
+    let list = upsertHistory([], { ...base, id: 'ffzy:11', sourceKey: 'ffzy', vodId: '11', title: '大夏守夜人' });
+    list = upsertHistory(list, { ...base, id: 'lzi:22', sourceKey: 'lzi', vodId: '22', title: '大夏守夜人' });
+    expect(list).toHaveLength(1);
+    // 保留最近播放的那条，切换到新源
+    expect(list[0].id).toBe('lzi:22');
+    // 不同片子仍然各留一条
+    list = upsertHistory(list, { ...base, id: 'lzi:33', sourceKey: 'lzi', vodId: '33', title: '沙丘' });
+    expect(list).toHaveLength(2);
+  });
+
+  it('upsertHistory 忽略片名里的空格与标点', () => {
+    const base = { sourceName: 's', episodeIndex: 0, episodeCount: 1, position: 5, duration: 100 };
+    let list = upsertHistory([], { ...base, id: 'a:1', sourceKey: 'a', vodId: '1', title: 'The Dark Knight  2008' });
+    list = upsertHistory(list, { ...base, id: 'b:2', sourceKey: 'b', vodId: '2', title: 'thedarkknight2008' });
+    expect(list).toHaveLength(1);
+  });
+
+  it('dedupeHistory 清掉老数据里的重复记录并保留最近的', () => {
+    const mk = (id: string, title: string, updatedAt: number) => ({
+      id,
+      sourceKey: id.split(':')[0],
+      vodId: id.split(':')[1],
+      title,
+      sourceName: 's',
+      episodeIndex: 0,
+      episodeCount: 1,
+      position: 1,
+      duration: 10,
+      updatedAt,
+    });
+    const list = [mk('a:1', '大夏守夜人', 300), mk('b:2', '大夏守夜人', 200), mk('c:3', '沙丘', 100)];
+    const deduped = dedupeHistory(list);
+    expect(deduped.map((h) => h.id)).toEqual(['a:1', 'c:3']);
+    // 幂等
+    expect(dedupeHistory(deduped)).toEqual(deduped);
+  });
+
+  it('findResumeByTitle 能跨源找到续播点', () => {
+    const entry = {
+      id: 'ffzy:11',
+      sourceKey: 'ffzy',
+      vodId: '11',
+      title: '大夏守夜人',
+      sourceName: 's',
+      episodeIndex: 3,
+      episodeCount: 10,
+      position: 1,
+      duration: 10,
+      updatedAt: 1,
+    };
+    expect(findResumeByTitle([entry], '大夏守夜人')?.episodeIndex).toBe(3);
+    expect(findResumeByTitle([entry], '别的片')).toBeUndefined();
   });
 
   it('toggleFavorite 可增删', () => {
