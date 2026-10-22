@@ -117,6 +117,8 @@ cd apps/androidtv && gradle testDebugUnitTest   # Kotlin 解析层/换源/缩放
 
 端到端联调（本地假采集站 + 真实 HLS 视频）：见 [docs/build.md](docs/build.md#端到端联调)。
 
+TV 端没有真机也能验：普通 `system-images;android-35;default;x86_64` 镜像 + `-d tv_1080p` 建出来的 AVD 能正常拉起 leanback Activity、D-pad 可用（`android-tv` 镜像下载失败时的替代方案，细节见 [docs/architecture.md](docs/architecture.md#本机验证-tv-端的方法)）。
+
 真机验证脚本都在 `tools/e2e/`（CDP 驱动，桌面端需以 `--remote-debugging-port=9333` 启动）：
 
 - `failover.mjs`：搜索 → 起播 → 按 `S` 手动换源 → 屏蔽当前 CDN 域名，确认播放器自动切到别的源并继续播放。

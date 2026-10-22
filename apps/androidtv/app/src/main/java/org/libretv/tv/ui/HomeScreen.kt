@@ -59,7 +59,7 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
         // 分类入口：首页顶部一排，进屋就能选「电影 / 电视剧 / 少儿 / 综艺 …」
         // 只显示真的有内容的分类：点了进空页面比看不到入口更糟
         item { SectionHeader("分类浏览", "按源站分类直接打开") }
-        item { CategoryRow(vm) }
+        item { CategoryRow(vm, data) }
 
         if (data.history.isNotEmpty()) {
             item { SectionHeader("继续观看", "${data.history.size} 条记录") }
@@ -116,9 +116,21 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
 
         item { SectionHeader("数据源") }
         item {
+            // 两个「源」卡片做成可聚焦并直达数据源设置：
+            // 首页原本只有分类行可聚焦，往下按没有落点时焦点会飘到左侧导航栏
+            // （手指在屏幕中间却跳到「设置」），给这一行一个真实落点就正常了。
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                StatCard("点播源", "${data.activeSources().size}/${data.sources.size}", Modifier.width(190.dp))
-                StatCard("直播源", "${data.activeLiveSources().size}/${data.liveSources.size}", Modifier.width(190.dp))
+                StatCard(
+                    "点播源",
+                    "${data.activeSources().size}/${data.sources.size}",
+                    Modifier.width(190.dp),
+                ) { vm.go(Screen.Settings) }
+                StatCard(
+                    "直播源",
+                    "${data.activeLiveSources().size}/${data.liveSources.size}",
+                    Modifier.width(190.dp),
+                ) { vm.go(Screen.Settings) }
+                // 这两个数字只是概览，首页下方已有「继续观看 / 收藏」区，不做成按钮
                 StatCard("观看记录", "${data.history.size}", Modifier.width(190.dp))
                 StatCard("收藏", "${data.favorites.size + data.liveFavorites.size}", Modifier.width(190.dp))
             }
@@ -127,15 +139,25 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
 }
 
 @Composable
-private fun CategoryRow(vm: AppViewModel) {
-    // 进首页即探测各分类是否有内容；看到的是「已过滤后的入口」而不是全量
-    LaunchedEffect(Unit) { vm.probeCategories() }
+private fun CategoryRow(vm: AppViewModel, data: AppData) {
+    // 进首页即探测各分类是否有内容；看到的是「已过滤后的入口」而不是全量。
+    //
+    // 关键：这里必须按「当前启用的源」重新触发，不能用 LaunchedEffect(Unit)。
+    // ViewModel 的 data 是异步 collect 的，首帧组合时 activeSources() 还是空的；
+    // Unit 只在首次组合跑一次，等源到位后不会重跑，首页就永远停在
+    // 「暂未返回任何分类内容」。改 key 后源一到就重新探测。
+    val signature = remember(data.sources, data.selected, data.settings.adultFilter) {
+        data.activeSources().map { it.key }.sorted().joinToString(",") +
+            "|" + data.settings.adultFilter
+    }
+    LaunchedEffect(signature) { vm.probeCategories() }
 
     val available = vm.availableCategories
     val keys = available ?: CategoryKey.home
     if (keys.isEmpty()) {
+        // 探测还没出结果时不要急着说「没有」——那时源可能还没加载完
         Text(
-            "所选源暂未返回任何分类内容，可直接搜索片名",
+            if (available == null) "正在识别可用分类…" else "所选源暂未返回任何分类内容，可直接搜索片名",
             color = TextMuted,
             fontSize = MaterialTheme.typography.bodySmall.fontSize,
             modifier = Modifier.padding(vertical = 6.dp),
@@ -247,15 +269,24 @@ private fun HeroStat(value: String, label: String) {
 }
 
 @Composable
-private fun StatCard(label: String, value: String, modifier: Modifier = Modifier) {
-    Column(
-        modifier
-            .clip(RoundedCornerShape(14.dp))
-            .background(Panel)
-            .padding(18.dp)
-    ) {
-        Text(value, color = Color(0xFFFFB59C), fontSize = MaterialTheme.typography.headlineMedium.fontSize, fontWeight = FontWeight.Bold)
-        Text(label, color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
+private fun StatCard(label: String, value: String, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
+    if (onClick == null) {
+        Column(
+            modifier
+                .clip(RoundedCornerShape(14.dp))
+                .background(Panel)
+                .padding(18.dp)
+        ) {
+            Text(value, color = Color(0xFFFFB59C), fontSize = MaterialTheme.typography.headlineMedium.fontSize, fontWeight = FontWeight.Bold)
+            Text(label, color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
+        }
+    } else {
+        TvCard(onClick = onClick, modifier = modifier, containerColor = Panel) {
+            Column(Modifier.padding(18.dp)) {
+                Text(value, color = Color(0xFFFFB59C), fontSize = MaterialTheme.typography.headlineMedium.fontSize, fontWeight = FontWeight.Bold)
+                Text(label, color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
+            }
+        }
     }
 }
 

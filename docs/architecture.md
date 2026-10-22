@@ -165,7 +165,21 @@ scale = min(逻辑宽度dp / 960, 逻辑高度dp / 540)  // 夹在 [0.35, 5]
 
 `MainActivity` 里用 `TvScaleSurface` 包住整棵树，并且 `android:configChanges` 补上 `density`，避免个别盒子在分辨率/密度切换时重建 Activity 闪一下。
 
-「自动缩放」的判据是**同一张卡片占屏宽的比例处处相同**，而不是某个固定像素值。`TvUiScaleTest` 里有一条专门的断言：同一个 128dp 卡片，在 720p@320、1080p@160/213/320、4K@160/320/640 上占屏宽都是 13.33%（= `128 × 2 / 1920`）。这条测试代替了无法在本机完成的模拟器目视验证。
+「自动缩放」的判据是**同一张卡片占屏宽的比例处处相同**，而不是某个固定像素值。`TvUiScaleTest` 里有一条专门的断言：同一个 128dp 卡片，在 720p@320、1080p@160/213/320、4K@160/320/640 上占屏宽都是 13.33%（= `128 × 2 / 1920`）。
+
+#### 本机验证 TV 端的方法
+
+`system-images;android-tv;x86` 在部分网络下会一直下载失败（zip 停在 0 字节，报 `Error on ZipFile unknown archive`）。改用普通系统镜像同样能验证：**`system-images;android-35;default;x86_64`** 配合 `-d tv_1080p` 建 AVD，App 以 leanback activity 正常拉起、D-pad 可用，只是桌面启动器是手机样式（不影响 App 内部）。建好后的启动命令（后台、无窗口）：
+
+```powershell
+emulator.exe -avd <名字> -no-window -no-audio -no-boot-anim `
+  -gpu swiftshader_indirect -no-snapshot -port 5556
+adb -s emulator-5556 shell am start -n org.libretv.tv/.MainActivity
+```
+
+两个小坑：`am start -n org.libretv.tv/MainActivity` 会报 `Activity class does not exist`，必须写带点的 `.MainActivity`；模拟器时区默认 GMT，别按日志时间戳误判时序。
+
+焦点问题不要靠肉眼看截图判断，用 `uiautomator dump` 拿 `focused="true"` 的 `bounds` 序列来对比最准——「按 ↓ 焦点跳去左侧导航栏」就是这么发现的（分类行 `[292,654][564,760]` → 下一跳直接变成导航栏 `[27,663][181,817]`）。
 
 ### 播放器调优与失败转移
 
@@ -218,6 +232,19 @@ scale = min(逻辑宽度dp / 960, 逻辑高度dp / 540)  // 夹在 [0.35, 5]
 探测要 6~10 秒，如果每次都等它回来再渲染，首页会出现「先显示 8 个、几秒后少一个」的跳动。所以结论按「源签名」落盘：桌面端存 `localStorage`（`libretv-category-availability-v1`），TV 端存 DataStore（`category-availability`，格式 `签名\tkey1,key2`）。下次启动先按上次结论渲染，后台探测回来再覆盖；签名变化（换了源、切了成人过滤）时旧结论自动失效。
 
 实测（4 内置源，2026-10）：电影 ✅ 2 源、电视剧 ✅ 3 源、综艺 ✅ 3、动漫 ✅ 3、纪录片 ✅ 3、短剧 ✅ 3、体育 ✅ 2、**少儿 ❌ 0 源**，耗时约 6.8 秒。
+
+#### 不能拿「源还没到」当作「探测结论是空」
+
+TV 端曾经有个只在真机才暴露的竞态：冷启动后首页分类区一直显示「所选源暂未返回任何分类内容」，而同一页的「4/4 启用点播源」却是对的。源加载没问题，坏在探测的时序。
+
+`AppViewModel` 的 `data` 是 `seedIfNeeded()` 之后异步 `collect` 出来的，首帧组合时 `activeSources()` 还是空数组。旧代码在这个分支里写下 `availableCategories = emptyList()` 再返回——等于把「还没探测」记录成了「探测过、结论是无」，而触发探测的 `LaunchedEffect` 键是 `Unit`，源到位后不会重跑，首页就永久停在空态。
+
+正确的写法是两件事一起做：
+
+- 探测函数遇到空源**直接 return，不写任何结论**（`AppViewModel.probeCategories`），让 UI 继续停在「正在识别可用分类…」；
+- 触发键改成**源签名**而非 `Unit`：`remember(data.sources, data.selected, data.settings.adultFilter)` 算出 `签名 = 启用的源 key 排序后拼接 + "|" + adultFilter`，`LaunchedEffect(签名)` 一到位就重探（TV 端 `HomeScreen.CategoryRow`）。
+
+同一个坑在空态文案上也要区分开：`available == null` 是「还在识别」，`emptyList()` 才是「确实没有」。两者显示同一句话，用户和后续排错的人都分不清。
 
 ### 展示顺序
 

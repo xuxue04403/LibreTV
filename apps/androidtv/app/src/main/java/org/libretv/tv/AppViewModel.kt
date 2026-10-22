@@ -205,10 +205,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun probeCategories(force: Boolean = false) {
         val sources = _data.value.activeSources()
-        if (sources.isEmpty()) {
-            availableCategories = emptyList()
-            return
-        }
+        // 源还没就绪（DataStore 首次 collect 之前）时不能下「没有分类」的结论：
+        // availableCategories 一旦被写成 emptyList()，首页就会永久停在
+        // 「暂未返回任何分类内容」，而接下来真正到达的探测结果会被
+        // probedSourceSignature 判重挡掉。这里什么都不做，等源到位后由
+        // 首页按源签名重新触发。
+        if (sources.isEmpty()) return
         val signature = sources.map { it.key }.sorted().joinToString(",") +
             "|" + _data.value.settings.adultFilter
         if (!force && signature == probedSourceSignature && probeJob?.isActive != true) return

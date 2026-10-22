@@ -59,34 +59,40 @@ fun SettingsScreen(vm: AppViewModel, data: AppData) {
 
         SectionHeader("添加点播源", "Apple CMS 采集接口")
         PanelBox {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = vodName,
-                    onValueChange = { vodName = it },
-                    label = { Text("名称（可选）") },
-                    singleLine = true,
-                    modifier = Modifier.width(220.dp),
-                )
-                OutlinedTextField(
-                    value = vodUrl,
-                    onValueChange = { vodUrl = it },
-                    label = { Text("接口地址") },
-                    singleLine = true,
-                    modifier = Modifier.width(430.dp),
-                )
-                OutlinedTextField(
-                    value = vodDetail,
-                    onValueChange = { vodDetail = it },
-                    label = { Text("详情页根地址（可选）") },
-                    singleLine = true,
-                    modifier = Modifier.width(300.dp),
-                )
-                TvButton("添加", onClick = {
-                    vm.addSource(vodName, vodUrl, vodDetail.ifBlank { null })
-                    vodName = ""
-                    vodUrl = ""
-                    vodDetail = ""
-                }, primary = true)
+            // 分两行排：内容区只有 764dp 宽（960 设计宽 - 104 导航 - 92 内边距），
+            // 三个固定宽输入框挤在一行会把最后一个压成竖排单字
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = vodName,
+                        onValueChange = { vodName = it },
+                        label = { Text("名称（可选）") },
+                        singleLine = true,
+                        modifier = Modifier.width(220.dp),
+                    )
+                    OutlinedTextField(
+                        value = vodUrl,
+                        onValueChange = { vodUrl = it },
+                        label = { Text("接口地址") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = vodDetail,
+                        onValueChange = { vodDetail = it },
+                        label = { Text("详情页根地址（可选）") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TvButton("添加", onClick = {
+                        vm.addSource(vodName, vodUrl, vodDetail.ifBlank { null })
+                        vodName = ""
+                        vodUrl = ""
+                        vodDetail = ""
+                    }, primary = true)
+                }
             }
         }
 
@@ -106,34 +112,38 @@ fun SettingsScreen(vm: AppViewModel, data: AppData) {
 
         SectionHeader("添加直播源", "M3U / M3U8 播放列表")
         PanelBox {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = liveName,
-                    onValueChange = { liveName = it },
-                    label = { Text("名称（可选）") },
-                    singleLine = true,
-                    modifier = Modifier.width(220.dp),
-                )
-                OutlinedTextField(
-                    value = liveUrl,
-                    onValueChange = { liveUrl = it },
-                    label = { Text("M3U 地址") },
-                    singleLine = true,
-                    modifier = Modifier.width(430.dp),
-                )
-                OutlinedTextField(
-                    value = liveEpg,
-                    onValueChange = { liveEpg = it },
-                    label = { Text("EPG 地址（可选）") },
-                    singleLine = true,
-                    modifier = Modifier.width(300.dp),
-                )
-                TvButton("添加", onClick = {
-                    vm.addLiveSource(liveName, liveUrl, liveEpg.ifBlank { null })
-                    liveName = ""
-                    liveUrl = ""
-                    liveEpg = ""
-                }, primary = true)
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = liveName,
+                        onValueChange = { liveName = it },
+                        label = { Text("名称（可选）") },
+                        singleLine = true,
+                        modifier = Modifier.width(220.dp),
+                    )
+                    OutlinedTextField(
+                        value = liveUrl,
+                        onValueChange = { liveUrl = it },
+                        label = { Text("M3U 地址") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = liveEpg,
+                        onValueChange = { liveEpg = it },
+                        label = { Text("EPG 地址（可选）") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TvButton("添加", onClick = {
+                        vm.addLiveSource(liveName, liveUrl, liveEpg.ifBlank { null })
+                        liveName = ""
+                        liveUrl = ""
+                        liveEpg = ""
+                    }, primary = true)
+                }
             }
         }
 
