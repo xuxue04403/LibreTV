@@ -62,6 +62,9 @@ export function DetailPanel({
 
   useEffect(() => {
     let alive = true;
+    // 观看记录每 5 秒就会被播放页写一次，放进依赖会导致详情被反复重拉、
+    // 同时还把 detail 置空让选集闪一下——这里现取快照，依赖只留「选了哪个源」。
+    const { history: historySnapshot } = useAppStore.getState();
     const source = resolveSource(selected);
     if (!source.url) {
       setError('该来源缺少接口地址，无法获取详情');
@@ -75,8 +78,8 @@ export function DetailPanel({
         if (!alive) return;
         setDetail(d);
         const resume =
-          history.find((h) => h.id === historyId(source.key, selected.vodId)) ??
-          findResumeByTitle(history, selected.name);
+          historySnapshot.find((h) => h.id === historyId(source.key, selected.vodId)) ??
+          findResumeByTitle(historySnapshot, selected.name, selected.year);
         setEpisodeIndex(resume ? Math.min(resume.episodeIndex, d.episodes.length - 1) : 0);
       })
       .catch((err: unknown) => {
@@ -89,13 +92,13 @@ export function DetailPanel({
     return () => {
       alive = false;
     };
-  }, [history, resolveSource, selected]);
+  }, [resolveSource, selected]);
 
   const favId = `${selected.sourceKey}:${selected.vodId}`;
   const isFav = favorites.some((f) => f.id === favId);
   const resume =
     history.find((h) => h.id === historyId(selected.sourceKey, selected.vodId)) ??
-    findResumeByTitle(history, selected.name);
+    findResumeByTitle(history, selected.name, selected.year);
 
   return (
     <div className="overlay" onClick={onClose}>
@@ -145,6 +148,7 @@ export function DetailPanel({
                     sourceKey: selected.sourceKey,
                     vodId: selected.vodId,
                     title: selected.name,
+                    year: selected.year,
                     cover: selected.pic,
                   });
                   toast.push(isFav ? '已取消收藏' : '已加入收藏');

@@ -295,6 +295,33 @@ describe('browseCategory', () => {
     const unfiltered = await browseCategory({ sources: [source], key: 'movie', http, filterAdult: false });
     expect(unfiltered.items).toHaveLength(2);
   });
+
+  it('翻页只抓目标页，不会把前面的页全部重下一遍', async () => {
+    clearCategoryCache();
+    setCachedCategories(source.url, [
+      { id: '1', name: '电影片' },
+      { id: '6', name: '动作片', parentId: '1' },
+    ]);
+    const requested: string[] = [];
+    const http: HttpClient = {
+      async request(url) {
+        requested.push(url);
+        const page = Number(/[?&]pg=(\d+)/.exec(url)?.[1] ?? '1');
+        return res({ page, pagecount: 8, list: [{ vod_id: 100 + page, vod_name: `电影${page}`, type_name: '动作片' }] });
+      },
+    };
+
+    const first = await browseCategory({ sources: [source], key: 'movie', http, pages: 1, startPage: 1 });
+    expect(first.items.map((i) => i.vodId)).toEqual(['101']);
+    expect(requested).toHaveLength(1);
+
+    // 追加第 2 页：只应该再打 1 个请求（pg=2），而不是 2 个（pg=1+pg=2）
+    requested.length = 0;
+    const second = await browseCategory({ sources: [source], key: 'movie', http, pages: 1, startPage: 2 });
+    expect(second.items.map((i) => i.vodId)).toEqual(['102']);
+    expect(requested).toHaveLength(1);
+    expect(requested[0]).toContain('pg=2');
+  });
 });
 
 describe('probeCategories（首页隐藏空分类）', () => {

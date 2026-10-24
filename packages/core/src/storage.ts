@@ -49,14 +49,33 @@ export function historyId(sourceKey: string, vodId: string): string {
  *
  * 记录本身的 `id` 是 `${sourceKey}:${vodId}`（续播要靠它定位到具体哪个源），
  * 但「继续观看」是按影片排的：同一部片子先从非凡资源播、后从量子资源播，
- * 按 id 去重就会留下两张一模一样的卡片。所以去重改按归一化片名做。
+ * 按 id 去重就会留下两张一模一样的卡片。所以去重改按归一化片名 + 年份做。
  *
- * 只按片名、不带年份：同名不同年的翻拍片会被合并，但采集站返回的标题
- * 里往往带年份或副标题（如「沙丘2」），实际很少撞上；相比之下
- * 「同一部片子出现两条记录」是用户第一眼就能看到的错误。
+ * 为什么必须带年份：`西游记`、`射雕英雄传`、`红楼梦` 这类片名在采集站有多个年份的
+ * 版本互不相同的片子，只按片名合并会把用户另一部剧的记录**直接删掉**。
+ * 老记录没有 year 字段，这时退回「只按片名」，保证升级前的数据仍然能合并。
  */
-export function historyGroupKey(title: string): string {
-  return normalizeTitle(title);
+export function historyGroupKey(title: string, year?: string): string {
+  const normalized = normalizeTitle(title);
+  const y = (year ?? '').trim();
+  return y ? `${normalized}|${y}` : normalized;
+}
+
+/**
+ * 两条记录是否指同一部片子：片名归一化后相同，且年份不冲突。
+ *
+ * 任一方缺年份就按片名算同一部——旧数据没存年份，如果严格要求年份相等，
+ * 升级后同一次播放会产生「带年份」和「不带年份」两条记录。
+ */
+export function isSameWork(
+  a: Pick<HistoryEntry, 'title' | 'year'>,
+  b: Pick<HistoryEntry, 'title' | 'year'>
+): boolean {
+  if (normalizeTitle(a.title) !== normalizeTitle(b.title)) return false;
+  const ay = (a.year ?? '').trim();
+  const by = (b.year ?? '').trim();
+  if (!ay || !by) return true;
+  return ay === by;
 }
 
 /** 写入/更新观看进度：按「影片」去重（跨源）、移到最前、裁剪上限 */
@@ -66,24 +85,20 @@ export function upsertHistory(
   limit = HISTORY_LIMIT
 ): HistoryEntry[] {
   const item: HistoryEntry = { ...entry, updatedAt: entry.updatedAt ?? Date.now() };
-  const groupKey = historyGroupKey(item.title);
-  const rest = list.filter((h) => h.id !== item.id && historyGroupKey(h.title) !== groupKey);
+  const rest = list.filter((h) => h.id !== item.id && !isSameWork(h, item));
   return [item, ...rest].slice(0, limit);
 }
 
 /**
  * 清理历史里已有的重复记录（老版本按 id 去重留下的）。
  *
- * 列表按时间倒序，同名只保留最靠前的那条（也就是最近播放的），
+ * 列表按时间倒序，同一部片子只保留最靠前的那条（也就是最近播放的），
  * 幂等，可以在每次启动时跑一遍。
  */
 export function dedupeHistory(list: HistoryEntry[]): HistoryEntry[] {
-  const seen = new Set<string>();
   const out: HistoryEntry[] = [];
   for (const h of list) {
-    const key = historyGroupKey(h.title);
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (out.some((kept) => isSameWork(kept, h))) continue;
     out.push(h);
   }
   return out;
@@ -105,9 +120,12 @@ export function findResumePoint(
  * 详情页一次只能选中一个源，而上次可能是在另一个源上播的；
  * 按 id 查不到时用它兜底，否则「继续播放」按钮不会出现。
  */
-export function findResumeByTitle(list: HistoryEntry[], title: string): HistoryEntry | undefined {
-  const key = historyGroupKey(title);
-  return list.find((h) => historyGroupKey(h.title) === key);
+export function findResumeByTitle(
+  list: HistoryEntry[],
+  title: string,
+  year?: string
+): HistoryEntry | undefined {
+  return list.find((h) => isSameWork(h, { title, year }));
 }
 
 /** 收藏开关：已存在则移除，否则置顶插入 */

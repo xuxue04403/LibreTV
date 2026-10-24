@@ -77,7 +77,9 @@ export function CategoryPage({
           sources,
           key: category,
           http,
-          pages: targetPage,
+          // 追加模式只抓这一页：以前传 pages=targetPage 会让第 N 页把 1..N 全重下一遍
+          pages: 1,
+          startPage: targetPage,
           filterAdult: adultFilter,
           timeoutMs: 12_000,
           signal: controller.signal,

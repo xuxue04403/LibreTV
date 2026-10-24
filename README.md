@@ -36,7 +36,7 @@
 | 直播 / IPTV（M3U、分组、收藏） | ✅ | ✅ |
 | **直播列表渐进加载**（缓存优先 + 边下边解析边显示，万级频道首屏 < 1.5 秒） | ✅ | ✅ |
 | **直播换台** | ✅ `↑ / ↓` 换台、`M` 静音、`Esc` 退出 | ✅ 遥控器 `↑ / ↓ / ← / →`、`CH+ / CH-` |
-| 观看进度续播 / 历史 / 收藏 | ✅ 同一片子跨源只留一条记录 | ✅ 同左 |
+| 观看进度续播 / 历史 / 收藏 | ✅ 同一片子跨源只留一条记录（同名不同年份不合并）| ✅ 同左 |
 | 数据源管理、订阅导入（LibreTV / TVBOX）、导入导出 | ✅ | ✅ |
 | **投屏** | ✅ DLNA **发送端**（把影片推到电视/盒子） | ✅ DLNA **接收端**（手机投到电视） |
 | 内置默认源（点播 + iptv-org 直播） | ✅ 首次启动导入，可删除/恢复 | ✅ 同左（同一份 `defaults/sources.json`） |
@@ -76,7 +76,7 @@
 
 ```
 defaults/sources.json        内置默认源（两端共用同一份）
-packages/core/               共享 TS 核心：解析 / 聚合 / 订阅 / 存储模型 / 增量解析（182 项单测）
+packages/core/               共享 TS 核心：解析 / 聚合 / 订阅 / 存储模型 / 增量解析（187 项单测）
 apps/desktop/                Electron 桌面端（main / preload / renderer）
 apps/androidtv/              Android TV（Kotlin + Compose + Media3 + 自研 DLNA DMR）
 tools/mock-cms/              本地假采集站（端到端联调 + 截图）
@@ -114,9 +114,9 @@ APK 位置：`apps/androidtv/app/build/outputs/apk/debug/app-debug.apk`（debug 
 ### 测试
 
 ```bash
-npm test                     # 核心解析/聚合/换源/增量解析 + 桌面代理 182 项单测
+npm test                     # 核心解析/聚合/换源/增量解析 + 桌面代理 187 项单测
 npm run test:dlna            # DLNA 发送端链路（SSDP → 设备描述 → SOAP）
-cd apps/androidtv && gradle testDebugUnitTest   # Kotlin 解析层/换源/缩放/换台/播放器参数/观看记录去重 71 项单测
+cd apps/androidtv && gradle testDebugUnitTest   # Kotlin 解析层/换源/缩放/换台/播放器参数/观看记录去重 73 项单测
 ```
 
 端到端联调（本地假采集站 + 真实 HLS 视频）：见 [docs/build.md](docs/build.md#端到端联调)。

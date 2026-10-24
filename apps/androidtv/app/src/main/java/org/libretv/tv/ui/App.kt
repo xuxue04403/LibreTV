@@ -148,6 +148,9 @@ private fun CastPlayerScreen(target: Screen.CastPlayer, onExit: () -> Unit) {
                     keepScreenOn = true
                 }
             },
+            // 投屏地址变化时 exo 会被重建，但 AndroidView 的 factory 只跑一次：
+            // 不在这里同步 player，第二次投屏就只剩声音没有画面
+            update = { it.player = exo },
             modifier = Modifier.fillMaxSize(),
         )
         Row(

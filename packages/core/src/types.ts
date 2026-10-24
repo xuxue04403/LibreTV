@@ -144,6 +144,8 @@ export interface HistoryEntry {
   sourceKey: string;
   vodId: string;
   title: string;
+  /** 年份（采集站的 `vod_year`）：同名不同年的翻拍片靠它区分，老记录没有这个字段 */
+  year?: string;
   cover?: string;
   sourceName: string;
   /** 当前集下标 */
@@ -163,6 +165,8 @@ export interface FavoriteEntry {
   sourceKey: string;
   vodId: string;
   title: string;
+  /** 年份，用于和同名不同年的翻拍片区分 */
+  year?: string;
   cover?: string;
   createdAt: number;
 }

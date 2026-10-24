@@ -115,7 +115,9 @@ class Repository(private val net: Net = Net) {
         maxPages: Int = 1,
         timeoutMs: Long = 8_000,
     ): List<PlaybackCandidate> {
-        val keyword = Parsers.normalizeTitle(title).trim()
+        // 搜索词用原片名：采集站是 LIKE '%wd%'，归一化后的 thematrix 匹配不到 The Matrix。
+        // 归一化只用于比对结果，不能拿来查询。
+        val keyword = title.trim()
         if (keyword.isEmpty() || sources.isEmpty()) return emptyList()
 
         val outcomes: List<SourceOutcome> = coroutineScope {

@@ -10,6 +10,7 @@
  */
 
 import dgram from 'node:dgram';
+import os from 'node:os';
 import net from 'node:net';
 
 const SSDP_HOST = '239.255.255.250';
@@ -85,15 +86,31 @@ async function describe(location: string): Promise<DlnaDevice | null> {
   }
 }
 
-/** 只接受与本机同网段的 SSDP 回包，避免被局域网外的伪造响应引到别的网段 */
-function isSameSubnet(address: string, local: string | null): boolean {
-  if (!local) return true;
-  if (net.isIPv4(address) && net.isIPv4(local)) {
-    const a = address.split('.');
-    const b = local.split('.');
-    return a[0] === b[0] && a[1] === b[1];
+/** 本机所有非回环 IPv4 的 /16 前缀（投屏只可能来自同一网段） */
+function localSubnets(): Set<string> {
+  const prefixes = new Set<string>();
+  // 回环要放进白名单：本机模拟渲染器（联调）与用户自己的同机投屏都走 127.0.0.1
+  prefixes.add('127.0');
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const info of list ?? []) {
+      if (info.family === 'IPv4' && info.address) {
+        prefixes.add(info.address.split('.').slice(0, 2).join('.'));
+      }
+    }
   }
-  return false;
+  return prefixes;
+}
+
+/**
+ * 只接受与本机同网段的 SSDP 回包，避免被局域网外的伪造响应引到别的网段。
+ *
+ * 注意不能拿 `socket.address().address` 当基准：UDP socket 一般是 bind 到
+ * `0.0.0.0`，那个值永远不可能是对方所在网段，会让所有回包被丢掉（投屏直接找不到设备）。
+ */
+function isSameSubnet(address: string, prefixes: Set<string>): boolean {
+  if (prefixes.size === 0) return true;
+  if (!net.isIPv4(address)) return false;
+  return prefixes.has(address.split('.').slice(0, 2).join('.'));
 }
 
 /** 单飞：投屏面板挂载即探测、刷新按钮可连点，不能每次都新开 socket */
@@ -112,7 +129,7 @@ export async function discoverDevices(options: DiscoverOptions = {}): Promise<Dl
 async function discoverOnce(options: DiscoverOptions = {}): Promise<DlnaDevice[]> {
   const timeoutMs = options.timeoutMs ?? 2200;
   const locations = new Set<string>(options.locations ?? []);
-  let localAddress: string | null = null;
+  const subnets = localSubnets();
 
   await new Promise<void>((resolve) => {
     const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
@@ -135,7 +152,7 @@ async function discoverOnce(options: DiscoverOptions = {}): Promise<DlnaDevice[]
       if (!location || !/^https?:\/\//i.test(location)) return;
       // 只接受本机网段的响应：否则任意主机都能把自己伪装成渲染器，
       // 后续 SOAP 会被引到它指定的主机（SSRF）
-      if (!isSameSubnet(rinfo.address, localAddress)) return;
+      if (!isSameSubnet(rinfo.address, subnets)) return;
       locations.add(location);
     });
 
@@ -143,7 +160,6 @@ async function discoverOnce(options: DiscoverOptions = {}): Promise<DlnaDevice[]
     socket.bind(() => {
       try {
         socket.setBroadcast(true);
-        localAddress = socket.address().address;
       } catch {
         /* 部分网卡不支持广播 */
       }

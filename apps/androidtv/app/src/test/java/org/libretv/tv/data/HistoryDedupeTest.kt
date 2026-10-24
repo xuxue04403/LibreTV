@@ -15,11 +15,13 @@ class HistoryDedupeTest {
         title: String,
         sourceKey: String = id.substringBefore(':'),
         updatedAt: Long = 0L,
+        year: String? = null,
     ) = HistoryEntry(
         id = id,
         sourceKey = sourceKey,
         vodId = id.substringAfter(':'),
         title = title,
+        year = year,
         sourceName = "$sourceKey 源",
         episodeIndex = 0,
         episodeCount = 1,
@@ -71,9 +73,28 @@ class HistoryDedupeTest {
     }
 
     @Test
-    fun `sameTitle 忽略大小写与标点`() {
-        assertTrue(HistoryDedupe.sameTitle("流浪地球", "流浪地球 "))
-        assertTrue(HistoryDedupe.sameTitle("Spider-Man", "spiderman"))
-        assertFalse(HistoryDedupe.sameTitle("流浪地球", "流浪地球 2"))
+    fun `sameWork 忽略大小写与标点`() {
+        assertTrue(HistoryDedupe.sameWork(entry("a:1", "流浪地球"), "流浪地球 ", null))
+        assertTrue(HistoryDedupe.sameWork(entry("a:1", "Spider-Man"), "spiderman", null))
+        assertFalse(HistoryDedupe.sameWork(entry("a:1", "流浪地球"), "流浪地球 2", null))
+    }
+
+    @Test
+    fun `同名不同年的翻拍片不会被合并`() {
+        val old = listOf(entry("a:1", "西游记", year = "1986"))
+        val merged = HistoryDedupe.upsert(old, entry("b:2", "西游记", year = "2010"))
+        assertEquals(2, merged.size)
+        // 同一年、不同源，仍然是同一部片子
+        val again = HistoryDedupe.upsert(merged, entry("c:3", "西游记", year = "2010"))
+        assertEquals(2, again.size)
+        assertEquals("c:3", again[0].id)
+    }
+
+    @Test
+    fun `旧记录没有年份时按片名合并`() {
+        val old = listOf(entry("a:1", "大夏守夜人"))
+        val merged = HistoryDedupe.upsert(old, entry("b:2", "大夏守夜人", year = "2026"))
+        assertEquals(1, merged.size)
+        assertEquals("2026", merged[0].year)
     }
 }

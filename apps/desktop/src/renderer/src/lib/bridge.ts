@@ -44,12 +44,23 @@ let streamSeq = 0;
 export const http: HttpClient = {
   async request(url, options = {}): Promise<HttpResponse> {
     if (!window.libretv) return fetchHttp.request(url, options);
-    const res = await window.libretv.http(url, {
+    if (options.signal?.aborted) throw new Error('请求已取消');
+    const pending = window.libretv.http(url, {
       headers: options.headers,
       timeoutMs: options.timeoutMs,
       method: options.method,
       body: options.body,
     });
+    // 主进程的 http:fetch 没有取消通道，但渲染层不该陪着等：
+    // 搜索/分类切走之后旧请求要立刻放掉，否则「点了就走」的体验会被一条慢源拖住。
+    const res = options.signal
+      ? await Promise.race([
+          pending,
+          new Promise<never>((_, reject) => {
+            options.signal?.addEventListener('abort', () => reject(new Error('请求已取消')), { once: true });
+          }),
+        ])
+      : await pending;
     if (res.status === 0) throw new Error(res.error || '网络请求失败');
     return {
       ok: res.ok,

@@ -94,6 +94,23 @@ describe('fetchLivePlaylist', () => {
     expect(seen).toHaveLength(4);
   });
 
+  it('节流挡下的批次会在下次回调补发，不会凭空丢频道', async () => {
+    const seen: LiveChannel[] = [];
+    const playlist = await fetchLivePlaylist(
+      'https://example.com/list.m3u',
+      // 切片很碎 + 大节流窗口：绝大多数批次都会被挡下，只有最后一次会真的回调
+      streamingHttp(PLAYLIST, 40),
+      {
+        progressIntervalMs: 60_000,
+        onChannels: (added) => {
+          seen.push(...added);
+        },
+      }
+    );
+    expect(playlist.channels).toHaveLength(4);
+    expect(seen.map((c) => c.url)).toEqual(playlist.channels.map((c) => c.url));
+  });
+
   it('第一批频道早于整串下载完成就能上屏', async () => {
     // 12 块：前 2 块只有头部与第一个频道，第三块之后才有更多
     const order: number[] = [];

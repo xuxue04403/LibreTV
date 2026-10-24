@@ -10,7 +10,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -50,6 +52,8 @@ sealed interface Screen {
         val source: VodSource,
         val vodId: String,
         val title: String,
+        /** 年份：同名不同年的翻拍片靠它区分观看记录 */
+        val year: String? = null,
         val cover: String?,
         val episodes: List<String>,
         val startIndex: Int,
@@ -149,9 +153,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             seedIfNeeded()
             dedupeStoredHistory()
-            store.data
-                .catch { emit(AppData()) }
-                .collect { _data.value = it }
+            // DataStore 读盘是 IO：读失败（磁盘忙、文件被占）不该让界面永久停在空数据上。
+            // 原来 `.catch { emit(AppData()) }` 会在 catch 之后正常结束整条流，
+            // 之后再也不会收到更新；这里改成退避重订阅。
+            while (true) {
+                try {
+                    store.data.collect { _data.value = it }
+                    break
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    kotlinx.coroutines.delay(1_000)
+                }
+            }
         }
         // 先按上次落盘的结论摆好首页入口，真正的探测由 HomeScreen 触发
         viewModelScope.launch {
@@ -208,6 +222,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 切换分类并重新拉取 */
     fun selectCategory(key: CategoryKey) {
+        // 用户明确选了分类：取消还在防抖里的悬停预载，避免它稍后把页面再翻回去
+        previewJob?.cancel()
         screen = Screen.Category(key)
         loadCategory(key)
     }
@@ -221,12 +237,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * 加 180ms 防抖：快速划过一排分类时不会每个都放一轮请求出去。
      */
     fun previewCategory(key: CategoryKey) {
-        if (screen !is Screen.Category) return
+        val current = screen as? Screen.Category ?: return
         if (key == category.key) return
         previewJob?.cancel()
         previewJob = viewModelScope.launch {
             delay(180)
-            if (screen is Screen.Category) selectCategory(key)
+            // 防抖期间用户可能已经按下 OK 选了别的分类、或直接返回：
+            // 那时不能再把这个「只是路过」的分类加载出来，否则会被拽回悬停项
+            if (screen !is Screen.Category) return@launch
+            if (category.key != current.key) return@launch
+            selectCategory(key)
         }
     }
 
@@ -282,6 +302,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 分类加载任务：切分类时取消上一轮，避免旧结果覆盖新结果 */
     private var categoryJob: Job? = null
+
+    /** 详情加载任务：连续打开多个详情时取消上一轮，避免旧结果回填到新页面 */
+    private var detailJob: Job? = null
+
+    /** 详情请求序号：只有最后一次打开的详情才允许改 screen / detail */
+    private var detailSeq: Int = 0
 
     /** 按分类拉取各源内容（分类页与首页分类入口共用） */
     fun loadCategory(key: CategoryKey) {
@@ -389,7 +415,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (screen !is Screen.Detail) backTarget = screen
         screen = Screen.Detail(group, item)
         detail = DetailUi(loading = true)
-        viewModelScope.launch {
+        // 换片源最多试 8 个、每个 9 秒，慢的时候能跑一分多钟。
+        // 这段时间里用户可能已经返回或进了别的详情，所以既要能取消，
+        // 也要用序号把「过期的结果」挡在门外，否则会把导航劫持回去。
+        val seq = ++detailSeq
+        detailJob?.cancel()
+        detailJob = viewModelScope.launch {
             val sources = _data.value.sources
             val sourceOf: (SearchItem) -> VodSource = { entry ->
                 sources.firstOrNull { it.key == entry.sourceKey }
@@ -407,14 +438,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
             var lastError = "没有可用的片源"
             for (candidate in chain) {
+                if (seq != detailSeq) return@launch
                 val target = group.items.firstOrNull {
                     it.sourceKey == candidate.source.key && it.vodId == candidate.vodId
                 } ?: item
                 val result = withTimeoutOrNull(DETAIL_TIMEOUT_MS) {
-                    runCatching { repo.detail(sourceOf(target), target.vodId) }
+                    runCatchingCancellable { repo.detail(sourceOf(target), target.vodId) }
                 }
                 val vod = result?.getOrNull()
                 if (vod != null && vod.episodes.isNotEmpty()) {
+                    // 用户已经离开详情页（或又点了别的片）：不要把界面拽回来
+                    if (seq != detailSeq || screen !is Screen.Detail) return@launch
                     if (target !== item) {
                         // 换了源：详情页也要跟着切，否则播放按钮用的还是旧 item
                         screen = Screen.Detail(group, target)
@@ -425,6 +459,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 lastError = result?.exceptionOrNull()?.message ?: "「${target.sourceName}」没有可播放的线路"
             }
+            if (seq != detailSeq || screen !is Screen.Detail) return@launch
             detail = DetailUi(loading = false, error = lastError)
         }
     }
@@ -438,6 +473,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             source = source,
             vodId = current.item.vodId,
             title = vod.title ?: current.item.name,
+            year = current.item.year,
             cover = vod.cover ?: current.item.pic,
             episodes = vod.episodes,
             startIndex = index.coerceIn(0, (vod.episodes.size - 1).coerceAtLeast(0)),
@@ -468,6 +504,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     source = source,
                     vodId = entry.vodId,
                     title = vod.title ?: entry.title,
+            year = entry.year ?: vod.year,
                     cover = vod.cover ?: entry.cover,
                     episodes = vod.episodes,
                     startIndex = entry.episodeIndex.coerceIn(0, vod.episodes.size - 1),
@@ -502,6 +539,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         source = source,
                         vodId = fav.vodId,
                         title = vod.title ?: fav.title,
+            year = fav.year,
                         cover = vod.cover ?: fav.cover,
                         episodes = vod.episodes,
                         startIndex = 0,
@@ -531,6 +569,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             sourceKey = player.source.key,
             vodId = player.vodId,
             title = player.title,
+            year = player.year,
             cover = player.cover,
             sourceName = player.sourceName,
             episodeIndex = if (finished) (index + 1).coerceAtMost(player.episodes.size) else index,
@@ -566,17 +605,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     ): FailoverResult? {
         var chain = player.candidates
         var searched = discovered
+        // 必须自己记账：入参 tried 是调用方的快照，如果只拿它过滤，
+        // 「详情拉不到」的候选会被无限重试（每次 8~20 秒超时，播放页永远停在切换中）
+        val attempted = tried.toMutableSet()
 
         while (true) {
-            val untried = chain.filter { it.key !in tried }
+            currentCoroutineContext().ensureActive()
+            val untried = chain.filter { it.key !in attempted }
             if (untried.isEmpty()) {
                 if (searched) return null
                 searched = true
-                val extra = runCatching {
+                val extra = runCatchingCancellable {
                     repo.discoverCandidates(
                         title = player.title,
                         sources = _data.value.activeSources(),
-                        exclude = tried,
+                        exclude = attempted,
                     )
                 }.getOrDefault(emptyList())
                 if (extra.isEmpty()) return null
@@ -585,7 +628,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             val next = untried.first()
-            val detail = runCatching { repo.detail(next.source, next.vodId) }.getOrNull()
+            attempted += next.key
+            val detail = runCatchingCancellable { repo.detail(next.source, next.vodId) }.getOrNull()
             if (detail == null || detail.episodes.isEmpty()) continue
 
             val aligned = episodeIndex.coerceIn(0, (detail.episodes.size - 1).coerceAtLeast(0))
@@ -602,6 +646,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return FailoverResult(target, aligned, next, detail)
         }
     }
+
+    /**
+     * 与 [runCatching] 相同的兜底，但把协程取消原样抛出去。
+     *
+     * `runCatching` 连 `CancellationException` 一起吞掉，会让「退出播放页后仍在后台拉流」
+     * 变成可能，也让超时/取消被当成普通失败。
+     */
+    private suspend inline fun <T> runCatchingCancellable(block: () -> T): Result<T> =
+        try {
+            Result.success(block())
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
 
     data class FailoverResult(
         val target: Screen.Player,
@@ -635,6 +694,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             sourceKey = item.sourceKey,
                             vodId = item.vodId,
                             title = title ?: item.name,
+                            year = item.year,
                             cover = cover ?: item.pic,
                             createdAt = System.currentTimeMillis(),
                         )

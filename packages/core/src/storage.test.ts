@@ -162,6 +162,49 @@ describe('storage 纯函数', () => {
     expect(findResumeByTitle([entry], '别的片')).toBeUndefined();
   });
 
+  it('同名不同年的翻拍片不会被合并', () => {
+    const base = { sourceName: 's', episodeIndex: 0, episodeCount: 1, position: 5, duration: 100 };
+    let list = upsertHistory([], { ...base, id: 'a:1', sourceKey: 'a', vodId: '1', title: '西游记', year: '1986' });
+    list = upsertHistory(list, { ...base, id: 'b:2', sourceKey: 'b', vodId: '2', title: '西游记', year: '2010' });
+    expect(list).toHaveLength(2);
+    // 同一年、不同源，仍然是同一部片子
+    list = upsertHistory(list, { ...base, id: 'c:3', sourceKey: 'c', vodId: '3', title: '西游记', year: '2010' });
+    expect(list).toHaveLength(2);
+    expect(list[0].id).toBe('c:3');
+  });
+
+  it('旧记录没有年份时按片名合并，不会凭空多出一条', () => {
+    const base = { sourceName: 's', episodeIndex: 0, episodeCount: 1, position: 5, duration: 100 };
+    // 老版本存下的记录（没有 year）
+    let list = upsertHistory([], { ...base, id: 'a:1', sourceKey: 'a', vodId: '1', title: '大夏守夜人' });
+    // 新版本从另一个源又播了一次，这次带上了年份
+    list = upsertHistory(list, { ...base, id: 'b:2', sourceKey: 'b', vodId: '2', title: '大夏守夜人', year: '2026' });
+    expect(list).toHaveLength(1);
+    expect(list[0].year).toBe('2026');
+  });
+
+  it('dedupeHistory 不会把同名不同年的记录删掉', () => {
+    const mk = (id: string, title: string, year: string | undefined, updatedAt: number) => ({
+      id,
+      sourceKey: id.split(':')[0],
+      vodId: id.split(':')[1],
+      title,
+      year,
+      sourceName: 's',
+      episodeIndex: 0,
+      episodeCount: 1,
+      position: 1,
+      duration: 10,
+      updatedAt,
+    });
+    const list = [
+      mk('a:1', '西游记', '1986', 300),
+      mk('b:2', '西游记', '2010', 200),
+      mk('c:3', '西游记', '1986', 100),
+    ];
+    expect(dedupeHistory(list).map((h) => h.id)).toEqual(['a:1', 'b:2']);
+  });
+
   it('toggleFavorite 可增删', () => {
     const entry = { id: 'a:1', sourceKey: 'a', vodId: '1', title: 'A' };
     let list = toggleFavorite([], entry);

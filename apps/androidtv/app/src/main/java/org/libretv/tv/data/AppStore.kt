@@ -22,23 +22,62 @@ private val Context.appDataStore: DataStore<Preferences> by preferencesDataStore
  */
 class AppStore(private val context: Context) {
     private val key = stringPreferencesKey("app-data")
+    private val corruptKey = stringPreferencesKey("app-data-corrupt")
     private val availabilityKey = stringPreferencesKey("category-availability")
     private val liveCacheKey = stringPreferencesKey("live-cache")
 
-    val data: Flow<AppData> = context.appDataStore.data.map { prefs -> decode(prefs[key]) }
+    /** 最近一次成功解析的快照：解析失败时先拿它顶着，别让界面瞬间变空 */
+    @Volatile
+    private var lastGood: AppData? = null
 
-    private fun decode(raw: String?): AppData {
+    /** 解析失败时把原文另存一份，供事后排查（也避免下一次写入把它彻底盖掉） */
+    @Volatile
+    var lastDecodeError: String? = null
+        private set
+
+    val data: Flow<AppData> = context.appDataStore.data.map { prefs -> decodeOrLastGood(prefs[key]) }
+
+    /** 原始解析：区分「没有数据」与「数据坏了」——前者返回默认值，后者返回 null */
+    private fun decodeOrNull(raw: String?): AppData? {
         if (raw.isNullOrBlank()) return AppData()
-        return runCatching { LooseJson.decodeFromString<AppData>(raw) }.getOrDefault(AppData())
+        return runCatching { LooseJson.decodeFromString<AppData>(raw) }
+            .onFailure { lastDecodeError = it.message }
+            .getOrNull()
     }
 
-    suspend fun current(): AppData = decode(context.appDataStore.data.first()[key])
-
-    suspend fun update(transform: (AppData) -> AppData) {
-        context.appDataStore.edit { prefs ->
-            val current = decode(prefs[key])
-            prefs[key] = LooseJson.encodeToString(transform(current))
+    private fun decodeOrLastGood(raw: String?): AppData {
+        val decoded = decodeOrNull(raw)
+        if (decoded != null) {
+            lastGood = decoded
+            return decoded
         }
+        return lastGood ?: AppData()
+    }
+
+    suspend fun current(): AppData = decodeOrNull(context.appDataStore.data.first()[key]) ?: AppData()
+
+    /**
+     * 原子读改写。返回 false 表示「本地快照解析失败、这次写入被跳过」。
+     *
+     * 调用方大多是「存进度」这类后台写入，拿不到 true 也不该崩，
+     * 所以这里不抛异常；真正要让用户知道时再看返回值。
+     */
+    suspend fun update(transform: (AppData) -> AppData): Boolean {
+        var blocked = false
+        context.appDataStore.edit { prefs ->
+            val raw = prefs[key]
+            val decoded = decodeOrNull(raw)
+            if (decoded == null) {
+                // 快照解析失败时绝不能按「空数据」继续写：
+                // update 的读改写会把源、历史、收藏一次性清空（这是最伤的一种数据丢失）。
+                // 先把坏数据另存一份，然后放弃这次写入。
+                if (!raw.isNullOrBlank()) prefs[corruptKey] = raw
+                blocked = true
+                return@edit
+            }
+            prefs[key] = LooseJson.encodeToString(transform(decoded))
+        }
+        return !blocked
     }
 
     suspend fun replace(data: AppData) {

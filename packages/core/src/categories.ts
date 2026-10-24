@@ -248,8 +248,15 @@ export interface CategoryBrowseOptions {
   sources: SourceConfig[];
   key: CategoryKey;
   http: HttpClient;
-  /** 每个源抓取的页数（默认 1，翻页由调用方追加） */
+  /** 每个源抓取的页数（默认 1） */
   pages?: number;
+  /**
+   * 从第几页开始抓（默认 1）。
+   *
+   * 「加载更多」必须配合 `pages: 1, startPage: n` 使用：只调大 `pages`
+   * 会让每次翻页都把前面所有页重下一遍（第 8 页 = 8 倍请求）。
+   */
+  startPage?: number;
   /** 单源最多并行抓取的子分类数（默认 6） */
   typeLimit?: number;
   /** 是否过滤成人分类内容（默认 true，与搜索保持一致） */
@@ -278,6 +285,7 @@ async function categoriesOf(
  */
 export async function browseCategory(opts: CategoryBrowseOptions): Promise<CategoryBrowseResult> {
   const pages = Math.min(20, Math.max(1, opts.pages ?? 1));
+  const startPage = Math.min(500, Math.max(1, opts.startPage ?? 1));
   const typeLimit = Math.min(20, Math.max(1, opts.typeLimit ?? 6));
   const filterAdult = opts.filterAdult ?? true;
   const timeoutMs = opts.timeoutMs ?? 12_000;
@@ -286,7 +294,7 @@ export async function browseCategory(opts: CategoryBrowseOptions): Promise<Categ
   // 用户反馈「切回上一个分类还要重新拉一遍各源」——分类之间来回切换是最常见的操作，
   // 每次都打 4 个源 × 6 个子分类，体感就是「每次都在重新加载播放源」。
   const cacheKey =
-    pages === 1
+    pages === 1 && startPage === 1
       ? `${opts.key}|${filterAdult ? 1 : 0}|${typeLimit}|${opts.sources
           .map((s) => s.url)
           .sort()
@@ -327,7 +335,7 @@ export async function browseCategory(opts: CategoryBrowseOptions): Promise<Categ
         const batches = await Promise.all(
           typeIds.map(async (typeId) => {
             const list: SearchResultItem[] = [];
-            for (let page = 1; page <= pages; page++) {
+            for (let page = startPage; page < startPage + pages; page++) {
               const result = await browseSourceCategory(source, typeId, page, opts.http, {
                 timeoutMs,
                 signal: opts.signal,

@@ -76,14 +76,21 @@ export async function fetchLivePlaylist(
     let lastPush = 0;
     const interval = opts.progressIntervalMs ?? 400;
     let head = '';
+    /** 被节流挡下的批次：下次回调要一起带上，否则这批频道在渐进列表里永远缺失 */
+    let pendingPush: LiveChannel[] = [];
 
     const emit = (added: LiveChannel[], force: boolean): void => {
-      if (added.length === 0) return;
-      for (const ch of added) all.push(ch);
+      if (added.length > 0) {
+        pendingPush.push(...added);
+        all.push(...added);
+      }
+      if (pendingPush.length === 0) return;
       const now = Date.now();
       if (!force && now - lastPush < interval) return;
       lastPush = now;
-      opts.onChannels?.(added, { channels: all.length, bytes, elapsed: now - started });
+      const payload = pendingPush;
+      pendingPush = [];
+      opts.onChannels?.(payload, { channels: all.length, bytes, elapsed: now - started });
     };
 
     const feed = (chunk: Uint8Array): void => {

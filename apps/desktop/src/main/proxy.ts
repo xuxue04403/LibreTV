@@ -295,7 +295,8 @@ export async function startMediaProxy(): Promise<MediaProxy> {
         'Content-Length': String(buf.byteLength),
         'X-Content-Type-Options': 'nosniff',
         'Access-Control-Allow-Origin': '*',
-        'Cache-Control': CACHE_SEGMENT,
+        // 失败的响应不能按「一小时不变」缓存：否则一张 404 的封面会整整一小时都刷不出来
+        'Cache-Control': upstream.ok ? CACHE_SEGMENT : 'no-store',
       });
       res.end(buf);
       return;
@@ -324,10 +325,13 @@ export async function startMediaProxy(): Promise<MediaProxy> {
         res.end();
         return;
       }
-      // 播放列表是小文本：整体读入 → 改写成代理地址
+      // 播放列表是小文本：整体读入 → 改写成代理地址。
+      // 相对路径必须按**最终地址**解析：CDN 常常 302 到另一个目录，
+      // 用入口 URL 当基准会把分片拼到错的路径上（表现为起播黑屏 / 404）。
       const buf = await readRest(reader, first);
       const text = buf.toString('utf8');
-      const rewritten = upstream.ok ? rewritePlaylist(text, targetUrl.href, `${base}${prefix}`, adFilter) : text;
+      const playlistBase = upstream.url || targetUrl.href;
+      const rewritten = upstream.ok ? rewritePlaylist(text, playlistBase, `${base}${prefix}`, adFilter) : text;
       const out = Buffer.from(rewritten, 'utf8');
       res.writeHead(upstream.ok ? 200 : upstream.status, {
         'Content-Type': 'application/vnd.apple.mpegurl',
@@ -397,7 +401,17 @@ export async function startMediaProxy(): Promise<MediaProxy> {
       total += chunk.byteLength;
       if (total > MAX_STREAM_BYTES) return false;
       if (res.write(chunk)) return true;
-      await new Promise<void>((resolve) => res.once('drain', resolve));
+      // 等背压解除，但连接被关掉时 drain 永远不会来：
+      // 必须同时监听 close，否则每次拖进度条都会漏一个挂起的 Promise
+      await new Promise<void>((resolve) => {
+        const done = (): void => {
+          res.off('drain', done);
+          res.off('close', done);
+          resolve();
+        };
+        res.once('drain', done);
+        res.once('close', done);
+      });
       return !closed;
     };
 

@@ -227,7 +227,10 @@ export async function discoverCandidates(
     signal?: AbortSignal;
   } = {}
 ): Promise<PlaybackCandidate[]> {
-  const keyword = normalizeTitle(title);
+  // 搜索词用**原片名**：采集站的接口是 `LIKE '%wd%'`，
+  // 归一化后的 `thematrix`（去空格去标点）几乎匹配不到 `The Matrix`。
+  // 归一化只用于比对结果，不能用来查询。
+  const keyword = title.trim();
   if (!keyword || sources.length === 0) return [];
 
   const result = await searchSources({

@@ -117,20 +117,26 @@ export function createFetchHttp(fetchImpl?: typeof fetch): HttpClient {
 
     async stream(url, options) {
       const { onChunk, idleTimeoutMs = 20_000, ...rest } = options;
-      // 总时长不设死线（大列表可能合法地下一分钟），只设「多久没数据」的空闲死线
-      const res = await send(url, { ...rest, timeoutMs: undefined });
+      // 总时长不设死线（大列表可能合法地下一分钟），只设「多久没数据」的空闲死线。
+      // 但连接阶段必须有人管：上游接受连接后一直不响应时，下面那句 read() 会永久挂住。
+      const res = await send(url, { ...rest, timeoutMs: idleTimeoutMs });
       const chunks: Uint8Array[] = [];
       let total = 0;
       let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+      let timedOut = false;
       const armIdle = () => {
         if (idleTimer) clearTimeout(idleTimer);
         idleTimer = setTimeout(() => {
-          void res.body?.cancel().catch(() => undefined);
+          timedOut = true;
+          // 只有 reader.cancel() 才能真正打断在途的 read()；
+          // 直接 cancel(body) 会因为流已被锁定而抛出，然后被吞掉，等于什么都没做
+          void reader?.cancel().catch(() => undefined);
         }, idleTimeoutMs);
       };
 
       if (res.body) {
-        const reader = res.body.getReader();
+        reader = res.body.getReader();
         armIdle();
         try {
           for (;;) {
@@ -143,12 +149,14 @@ export function createFetchHttp(fetchImpl?: typeof fetch): HttpClient {
             chunks.push(value);
           }
         } catch (err) {
+          if (timedOut) throw new HttpError('请求超时', 408);
           if (err instanceof Error && err.name === 'AbortError') throw new HttpError('请求超时', 408);
           throw new HttpError(err instanceof Error ? err.message : '网络请求失败', 0);
         } finally {
           if (idleTimer) clearTimeout(idleTimer);
         }
       }
+      if (timedOut) throw new HttpError('请求超时', 408);
 
       const bytes = new Uint8Array(total);
       let offset = 0;

@@ -138,6 +138,8 @@ data class HistoryEntry(
     val sourceKey: String,
     val vodId: String,
     val title: String,
+    /** 年份：同名不同年的翻拍片靠它区分观看记录 */
+    val year: String? = null,
     val cover: String? = null,
     val sourceName: String,
     val episodeIndex: Int,
@@ -153,6 +155,8 @@ data class FavoriteEntry(
     val sourceKey: String,
     val vodId: String,
     val title: String,
+    /** 年份，用于和同名不同年的翻拍片区分 */
+    val year: String? = null,
     val cover: String? = null,
     val createdAt: Long = 0L,
 )

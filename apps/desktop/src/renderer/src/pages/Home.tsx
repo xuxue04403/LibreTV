@@ -57,6 +57,7 @@ export function HomePage({
           source,
           vodId: entry.vodId,
           title: detail.videoInfo.title ?? entry.title,
+          year: entry.year,
           cover: detail.videoInfo.cover ?? entry.cover,
           episodes: detail.episodes,
           startIndex: Math.min(entry.episodeIndex, detail.episodes.length - 1),
@@ -72,7 +73,7 @@ export function HomePage({
   );
 
   const playFavorite = useCallback(
-    async (fav: { sourceKey: string; vodId: string; title: string; cover?: string; id: string }) => {
+    async (fav: { sourceKey: string; vodId: string; title: string; year?: string; cover?: string; id: string }) => {
       const source = sources.find((s) => s.key === fav.sourceKey);
       if (!source) {
         toast.err('该片源已被删除');
@@ -90,6 +91,7 @@ export function HomePage({
           source,
           vodId: fav.vodId,
           title: detail.videoInfo.title ?? fav.title,
+          year: fav.year,
           cover: detail.videoInfo.cover ?? fav.cover,
           episodes: detail.episodes,
           startIndex: saved ? Math.min(saved.episodeIndex, detail.episodes.length - 1) : 0,

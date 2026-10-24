@@ -22,6 +22,8 @@ export interface WatchTarget {
   source: { key: string; name: string; url: string; detail?: string; isAdult?: boolean };
   vodId: string;
   title: string;
+  /** 年份：同名不同年的翻拍片靠它区分观看记录 */
+  year?: string;
   cover?: string;
   episodes: string[];
   startIndex: number;
@@ -50,6 +52,8 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
   const recoverRef = useRef(0);
   /** 是否已经按片名反查过补充候选（只查一次） */
   const discoveredRef = useRef(false);
+  /** 进行中的换源任务：同一时刻只跑一轮，避免并发换源互相覆盖状态 */
+  const failoverRef = useRef<Promise<boolean> | null>(null);
   const sources = useAppStore((s) => s.sources);
 
   /** 当前播放的候选（换源后指向新源） */
@@ -69,6 +73,8 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
   const [fullscreen, setFullscreen] = useState(false);
   /** 全屏真实状态（ref 供事件回调与卸载清理读取，避免闭包拿到旧值） */
   const fullscreenRef = useRef(false);
+  /** 进播放页时窗口是否已经全屏（决定退出时要不要还原） */
+  const fullscreenBeforeRef = useRef(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [castOpen, setCastOpen] = useState(false);
   const [failoverNote, setFailoverNote] = useState<string | null>(null);
@@ -88,27 +94,35 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     triedRef.current.add(candidateKey({ sourceKey: target.source.key, vodId: target.vodId }));
   }, [target.source.key, target.vodId]);
 
-  /** 保存进度（同一影片去重置顶） */
+  /**
+   * 保存进度（同一影片去重置顶）。
+   *
+   * `finished = true` 表示这一集看完了：位置写 0、集数推到下一集，
+   * 这样首页进度条归零、「继续观看」直接从下一集开始。
+   * 不能靠传 0 位置来表达「看完」，那会被位置守卫当成无效写入丢掉。
+   */
   const persistProgress = useCallback(
-    (position: number, epIndex: number, total: number) => {
+    (position: number, epIndex: number, total: number, finished = false) => {
       if (!settings.resumePlayback) return;
-      if (!Number.isFinite(position) || position <= 0) return;
+      if (!finished && (!Number.isFinite(position) || position <= 0)) return;
+      const nextIndex = finished ? Math.min(epIndex + 1, episodes.length) : epIndex;
       recordHistory({
         id: historyId(currentSource.key, active?.vodId ?? target.vodId),
         sourceKey: currentSource.key,
         vodId: active?.vodId ?? target.vodId,
         title: target.title,
+        year: target.year,
         cover: target.cover,
         sourceName: currentSourceName,
-        episodeIndex: epIndex,
+        episodeIndex: nextIndex,
         episodeCount: episodes.length,
-        episodeUrl: episodes[epIndex],
-        position,
+        episodeUrl: episodes[nextIndex] ?? episodes[epIndex],
+        position: finished ? 0 : position,
         duration: Number.isFinite(total) ? total : 0,
       });
-      savedRef.current = position;
+      savedRef.current = finished ? 0 : position;
     },
-    [active?.vodId, currentSource, currentSourceName, episodes, recordHistory, settings.resumePlayback, target.cover, target.title, target.vodId]
+    [active?.vodId, currentSource, currentSourceName, episodes, recordHistory, settings.resumePlayback, target.cover, target.title, target.vodId, target.year]
   );
 
   /**
@@ -119,7 +133,11 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
    * 补出来的候选也全部试完才认输，避免无限循环。
    */
   const failover = useCallback(
-    async (reason: string): Promise<boolean> => {
+    (reason: string): Promise<boolean> => {
+      // 同一时刻只允许一轮换源：看门狗、hls 致命错误、用户按 S 可能几乎同时触发，
+      // 两轮并行会各挑一个候选、互相覆盖 active/episodes，还会同时建两个 Hls 实例。
+      if (failoverRef.current) return failoverRef.current;
+      const task = (async (): Promise<boolean> => {
       for (;;) {
         const untried = candidatesRef.current.filter((candidate) => !triedRef.current.has(candidateKey(candidate)));
         if (untried.length === 0) {
@@ -158,6 +176,11 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
           // 这个源拿不到详情，继续试下一个
         }
       }
+      })();
+      failoverRef.current = task.finally(() => {
+        failoverRef.current = null;
+      });
+      return failoverRef.current;
     },
     [index, sources, target.title]
   );
@@ -292,26 +315,34 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
       if (Math.abs(video.currentTime - savedRef.current) >= 5) persistProgress(video.currentTime, index, video.duration);
     };
     const onPlay = () => setPlaying(true);
-    const onPause = () => {
-      setPlaying(false);
-      persistProgress(video.currentTime, index, video.duration);
-    };
-    const onDuration = () => setDuration(video.duration || 0);
-    const onEnded = () => {
-      setPlaying(false);
-      persistProgress(0, index, video.duration);
-      if (settings.autoplayNext && index + 1 < episodes.length) {
-        setIndex((i) => i + 1);
-      }
-    };
     const clearStall = () => {
       if (stallTimer.current) {
         clearTimeout(stallTimer.current);
         stallTimer.current = null;
       }
     };
+    const onPause = () => {
+      setPlaying(false);
+      // 暂停后不会再有 playing 事件，卡死定时器必须在这里清掉，
+      // 否则「暂停中拖进度条」会被误判成加载超时并自动换源
+      clearStall();
+      setLoading(false);
+      persistProgress(video.currentTime, index, video.duration);
+    };
+    const onDuration = () => setDuration(video.duration || 0);
+    const onEnded = () => {
+      setPlaying(false);
+      clearStall();
+      setLoading(false);
+      persistProgress(video.currentTime, index, video.duration, true);
+      if (settings.autoplayNext && index + 1 < episodes.length) {
+        setIndex((i) => i + 1);
+      }
+    };
     // 一直卡在 buffering 超过 STALL_MS 也要换源，否则用户只能看到无限转圈
     const onWaiting = () => {
+      // 暂停状态下的 seeking 也会派发 waiting，这种情况不该判成卡死
+      if (video.paused) return;
       setLoading(true);
       clearStall();
       stallTimer.current = setTimeout(() => {
@@ -434,6 +465,8 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     let alive = true;
     void window.libretv?.isFullscreen().then((on) => {
       if (!alive) return;
+      // 进页面那一刻的状态就是「用户原本的状态」，退出时据此决定要不要还原
+      fullscreenBeforeRef.current = on;
       fullscreenRef.current = on;
       setFullscreen(on);
     });
@@ -447,11 +480,15 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     };
   }, []);
 
-  // 退出播放页时把窗口还原：全屏通常是播放页里开的，退出播放还停在满屏
+  // 退出播放页时把窗口还原：全屏通常是在播放页里开的，退出播放还停在满屏
   // 会让人找不到窗口边框（也关不掉），只能在首页再按一次 F11。
+  //
+  // 但如果进播放页之前窗口就已经全屏（用户自己按 F11 或系统记忆的窗口状态），
+  // 那就不是「播放页开的」，不能替他退出去。
+
   useEffect(
     () => () => {
-      if (!fullscreenRef.current) return;
+      if (!fullscreenRef.current || fullscreenBeforeRef.current) return;
       fullscreenRef.current = false;
       if (window.libretv) void window.libretv.setFullscreen(false);
       else if (document.fullscreenElement) void document.exitFullscreen();
@@ -477,7 +514,10 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
   // —— 键盘快捷键 ——
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      // 输入框/滑块里打字时不抢快捷键，但 Esc 要例外：
+      // 拖完音量滑块焦点会留在 input 上，那时按 Esc 用户就是想退出播放。
+      const inField = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
+      if (inField && e.key !== 'Escape') return;
       switch (e.key) {
         case ' ':
           e.preventDefault();
