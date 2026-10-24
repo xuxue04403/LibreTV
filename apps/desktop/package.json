@@ -1,6 +1,6 @@
 {
   "name": "@libretv/desktop",
-  "version": "0.2.0",
+  "version": "1.0.1",
   "private": true,
   "description": "LibreTV 桌面端（Electron）",
   "author": "LibreTV Client Contributors",

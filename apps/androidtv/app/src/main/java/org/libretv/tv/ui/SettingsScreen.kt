@@ -24,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -213,7 +214,14 @@ fun SettingsScreen(vm: AppViewModel, data: AppData) {
         SectionHeader("关于")
         PanelBox {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("LibreTV TV 版 v0.1.0", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                // 版本号从安装包读，不写死：写死过一次（v0.1.0 一直没跟着改）
+                val context = LocalContext.current
+                val versionName = remember(context) {
+                    runCatching {
+                        context.packageManager.getPackageInfo(context.packageName, 0).versionName
+                    }.getOrNull().orEmpty().ifEmpty { "—" }
+                }
+                Text("LibreTV TV 版 v$versionName", color = TextPrimary, fontWeight = FontWeight.SemiBold)
                 Text(
                     "基于 LibreTV（AGPL-3.0-or-later）的衍生客户端：采集聚合、解析与播放全部在电视本地完成，不需要部署服务器。",
                     color = TextMuted,
