@@ -163,7 +163,7 @@ function scanGroups(
   return groups;
 }
 
-function stripInterstitialAdGroups(m3u8Content: string): string {
+export function stripInterstitialAdGroups(m3u8Content: string): string {
   if (!m3u8Content) return '';
   const lines = m3u8Content.split('\n');
   const isDisc = (l: string) => l.trim() === '#EXT-X-DISCONTINUITY';

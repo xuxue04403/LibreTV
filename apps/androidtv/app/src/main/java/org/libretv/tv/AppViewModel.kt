@@ -31,6 +31,7 @@ import org.libretv.tv.data.HistoryEntry
 import org.libretv.tv.data.LiveChannel
 import org.libretv.tv.data.LiveSource
 import org.libretv.tv.data.Parsers
+import org.libretv.tv.data.Pinyin
 import org.libretv.tv.data.PlaybackCandidate
 import org.libretv.tv.data.Repository
 import org.libretv.tv.data.SearchGroup
@@ -111,6 +112,7 @@ data class CategoryUi(
 )
 
 /** 单次详情请求的死线：超时即换下一个候选源，不让用户对着转圈等 */
+private const val PINYIN_SOURCE_KEY = "pinyin"
 private const val DETAIL_TIMEOUT_MS = 9_000L
 
 /** 同时发起的候选详情请求上限（电视盒子并发能力有限） */
@@ -149,6 +151,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private var searchJob: Job? = null
 
+    /** 上次落盘的拼音索引条数，用来判断「攒够没有」 */
+    private var persistedIndexSize: Int = 0
+
     init {
         viewModelScope.launch {
             seedIfNeeded()
@@ -171,6 +176,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             kotlinx.coroutines.delay(300) // 等首帧 seed/collect 落定，拿到 activeSources
             runCatching { restoreCategoryAvailability() }
+        }
+        // 拼音索引：上次落盘的片名先装进内存，这样一开机 qmmk 就能命中之前浏览过的片子
+        viewModelScope.launch {
+            runCatching { repo.rememberItems(store.pinyinIndex()) }
         }
     }
 
@@ -395,6 +404,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 showToast("还没有启用任何点播源，请在设置中添加")
                 return@launch
             }
+            // 拼音首字母：采集站只支持中文 LIKE，本地扫「最近列表」再按首字母过滤。
+            // 遥控器输中文极难，`qmmk` 能搜到「奇妙萌可」是电视端最实用的一条输入路径。
+            if (Pinyin.isQuery(word)) {
+                val hits = runCatching {
+                    repo.pinyinSearch(sources, word, _data.value.settings.adultFilter)
+                }.getOrDefault(emptyList())
+                val outcome = SourceOutcome(
+                    sourceKey = PINYIN_SOURCE_KEY,
+                    sourceName = "拼音「${word.lowercase()}」",
+                    ok = true,
+                    items = hits,
+                )
+                search = search.copy(
+                    outcomes = listOf(outcome),
+                    groups = Parsers.group(hits),
+                    loading = false,
+                )
+                if (hits.isEmpty()) showToast("没有匹配「${word.lowercase()}」的影片：拼音只查已见过的片名，先用中文搜一次即可")
+                return@launch
+            }
             repo.searchAll(sources, word, _data.value.settings.adultFilter)
                 .catch { }
                 .collect { outcome ->
@@ -407,7 +436,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 }
             search = search.copy(loading = false)
+            persistPinyinIndex()
         }
+    }
+
+    /**
+     * 把「见过的片名」落盘，供拼音检索下次直接用。
+     *
+     * 不是每次都写：一条索引就是一次整份 JSON 序列化，攒够 80 条再写一次足够。
+     */
+    private fun persistPinyinIndex() {
+        val snapshot = repo.seenSnapshot()
+        if (snapshot.size < persistedIndexSize + 80) return
+        persistedIndexSize = snapshot.size
+        viewModelScope.launch { runCatching { store.savePinyinIndex(snapshot) } }
     }
 
     fun openDetail(group: SearchGroup, item: SearchItem) {

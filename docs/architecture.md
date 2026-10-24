@@ -369,6 +369,37 @@ interface AppData {
 | 投屏设备拒绝 | 解析 SOAP `errorCode` 并回显到面板 |
 | 媒体代理拒绝私网 | 面板提示，自建源可用 `LTV_ALLOW_PRIVATE_MEDIA=1` 放行 |
 
+### 拼音首字母检索（TV）
+
+遥控器在电视上敲中文很痛苦，所以搜索框同时接受拼音首字母：qmmk → 「奇妙萌可」。
+
+采集站的 wd 只支持中文 LIKE，所以拼音只能在本地做，前提是有一张「汉字 → 首字母」表：
+
+- 表由 	ools/gen-pinyin-table.mjs 用 pinyin-pro 离线生成，覆盖 U+4E00..U+9FFF 共 20992 个码位，生僻字记 ?；
+- 两端共用同一份数据，形状不同：TS 侧是 packages/core/src/pinyin-table.ts，Kotlin 侧是 pps/androidtv/app/src/main/assets/pinyin-table.txt（启动时 Pinyin.install 读入）；
+- 匹配只认**连续命中**（initials.includes(query)），不做跳字母匹配——qmx 在 qmmkzsyxl 里出现过，放行它噪声太大。
+
+**索引从哪来**：采集站无法按拼音查询，只能拿「已经见过的片名」反查。
+
+1. 本次会话搜索 / 分类浏览过的条目（Repository.seenItems）；
+2. 落盘的索引（AppStore 的 pinyin-index，上限 6000 条，攒够 80 条增量写一次）——这是第二次开机仍能命中的原因；
+3. 各源「最新列表」（?ac=videolist&pg=n，不带 wd/	），默认每源 4 页。
+
+实测：浏览过「动漫」分类后，dpcq 直接命中「斗破苍穹年番」。而 qmmk 只在**该片真的进过索引**时才会命中——没搜过、没浏览过就是空，此时提示用户先用中文搜一次。这是能力边界，不是 bug，README 里也写清楚了。
+
+### 播放列表广告过滤
+
+采集站把中插广告做成同一份 m3u8 里的一段：#EXT-X-DISCONTINUITY 包住 4~5 个分片、约 18~22 秒，与正片同域。实测 4 个内置源各采样 8 份播放列表：**8/8 有 DISCONTINUITY 分组、0/8 换域名**，现有规则一共摘掉 207 秒。
+
+两端实现不同：
+
+- **桌面**：回环代理改写 m3u8 文本（packages/core/src/ad-filter.ts），因为所有分片本来就要过代理；
+- **TV**：Media3 直连源站，没有代理层，于是替换播放列表解析器——AdFilteringPlaylistParserFactory 把整份文本读出来、交给 data/AdFilter.kt 摘掉广告分组，再交给官方 HlsPlaylistParser。注意 Media3 1.5 里这个接口返回的是 ParsingLoadable.Parser<HlsPlaylist>，主列表类型叫 HlsMultivariantPlaylist（不是 HlsMasterPlaylist），照旧名字写会编译不过。
+
+判定必须靠**分段时长 + 相邻段长度**，不能靠 URL：三体第一季 的播放列表被切成 161 组、每组 5 片约 20 秒，只看「短分组」会把整部片删光，所以要求前后相邻组都 ≥120 秒。
+
+**滤不掉的情况**：广告被压进正片分片里（贴片）、或源站自己的播放器插的广告。这两类换源才有效，README 的已知限制里写明。
+
 ### 暂停不算卡死
 
 卡死看门狗（`STALL_MS`）只在**真正播放中**才有意义：

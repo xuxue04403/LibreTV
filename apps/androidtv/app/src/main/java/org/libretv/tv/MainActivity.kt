@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.libretv.tv.cast.CastRuntime
+import org.libretv.tv.data.Pinyin
 import org.libretv.tv.cast.DlnaServer
 import org.libretv.tv.ui.LibretvApp
 import org.libretv.tv.ui.theme.LibreTvTheme
@@ -15,6 +16,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installPinyinTable()
         startCastReceiver()
 
         setContent {
@@ -26,6 +28,18 @@ class MainActivity : ComponentActivity() {
                     LibretvApp(vm)
                 }
             }
+        }
+    }
+
+    /**
+     * 载入拼音首字母表（21KB 文本）。
+     *
+     * 遥控器输中文很痛苦，有了它用户敲 `qmmk` 就能搜「奇妙萌可」。
+     * 读失败只影响拼音检索，普通搜索照常可用，所以整段吞掉异常。
+     */
+    private fun installPinyinTable() {
+        runCatching {
+            assets.open("pinyin-table.txt").bufferedReader().use { Pinyin.install(it.readText()) }
         }
     }
 

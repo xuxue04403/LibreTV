@@ -50,11 +50,13 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.libretv.tv.AppViewModel
 import org.libretv.tv.Screen
+import org.libretv.tv.data.AdFilteringPlaylistParserFactory
 import org.libretv.tv.data.Playback
 import org.libretv.tv.ui.theme.Accent
 import org.libretv.tv.ui.theme.TextMuted
@@ -115,6 +117,28 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
     val drawerState = rememberLazyListState()
     val exo = remember { Playback.build(context) }
 
+    /**
+     * 统一的「放这个地址」入口。
+     *
+     * HLS 走显式的 [HlsMediaSource]（而不是 `MediaItem` + 默认工厂），因为只有这样
+     * 才能挂上 [AdFilteringPlaylistParserFactory] 把播放列表里的中插广告段摘掉——
+     * Media3 默认解析器原样接受源站列表，广告会照播。
+     */
+    fun play(url: String) {
+        val item = MediaItem.fromUri(url)
+        val isHls = url.contains(".m3u8", ignoreCase = true)
+        if (isHls && vm.data.value.settings.adFilter) {
+            exo.setMediaSource(
+                HlsMediaSource.Factory(Playback.dataSourceFactory())
+                    .setPlaylistParserFactory(AdFilteringPlaylistParserFactory(true))
+                    .createMediaSource(item)
+            )
+        } else {
+            exo.setMediaItem(item)
+        }
+        exo.prepare()
+    }
+
     DisposableEffect(Unit) {
         onDispose {
             vm.saveProgress(current, currentIndex, exo.currentPosition.coerceAtLeast(0), exo.duration.coerceAtLeast(0))
@@ -140,8 +164,7 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                     index = result.episodeIndex
                     error = null
                     note = "已切换到「${result.candidate.sourceName}」"
-                    exo.setMediaItem(MediaItem.fromUri(result.target.episodes[result.episodeIndex]))
-                    exo.prepare()
+                    play(result.target.episodes[result.episodeIndex])
                     exo.playWhenReady = true
                     delay(2_400)
                     note = null
@@ -156,8 +179,7 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
         error = null
         buffering = true
         val url = current.episodes.getOrNull(index) ?: return@LaunchedEffect
-        exo.setMediaItem(MediaItem.fromUri(url))
-        exo.prepare()
+        play(url)
         exo.playWhenReady = true
         if (!resumedOnce) {
             resumedOnce = true

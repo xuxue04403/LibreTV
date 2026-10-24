@@ -196,6 +196,11 @@ fun SettingsScreen(vm: AppViewModel, data: AppData) {
                     "下次打开同一影片时从上次位置继续播放",
                     data.settings.resumePlayback,
                 ) { vm.updateSettings { s -> s.copy(resumePlayback = !s.resumePlayback) } }
+                SettingToggle(
+                    "移除播放列表广告",
+                    "跳过采集站插在播放列表里的中插广告段；片源自带的贴片无法去掉",
+                    data.settings.adFilter,
+                ) { vm.updateSettings { s -> s.copy(adFilter = !s.adFilter) } }
             }
         }
 

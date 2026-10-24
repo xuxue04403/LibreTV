@@ -16,6 +16,21 @@ import kotlinx.serialization.json.jsonObject
  * 桌面端由 packages/core 承担同一职责，两端行为保持一致。
  */
 class Repository(private val net: Net = Net) {
+    /**
+     * 会话内见过的条目，作为拼音检索的本地索引。
+     *
+     * 拼音只能在本地比对（采集站不支持），所以「已经搜过/浏览过」的东西
+     * 必须留在内存里：用户先翻过动漫分类再敲 `qmmk`，不该再去抓一遍网络。
+     */
+    private val seenItems = java.util.concurrent.ConcurrentHashMap<String, SearchItem>()
+
+    /** 当前已见过的条目快照（拼音索引持久化用） */
+    fun seenSnapshot(): List<SearchItem> = seenItems.values.toList()
+
+    fun rememberItems(items: List<SearchItem>) {
+        for (item in items) seenItems["${item.sourceKey}:${item.vodId}"] = item
+    }
+
 
     /** 单源搜索：第一页拿 pagecount，再并行/顺序补齐后续页（默认最多 2 页，电视端不宜拖太久） */
     suspend fun search(
@@ -43,7 +58,7 @@ class Repository(private val net: Net = Net) {
                         Parsers.parseSearchList(net.getText("$base?ac=videolist&wd=$encoded&pg=$page"), source)
                     }.getOrNull()?.let { items.addAll(it) }
                 }
-                items.distinctBy { it.vodId }
+                items.distinctBy { it.vodId }.also { rememberItems(it) }
             }
         }
 
@@ -251,6 +266,7 @@ class Repository(private val net: Net = Net) {
                     }
                 }.awaitAll()
                 val merged = Parsers.filterAdult(lists.flatten().distinctBy { it.vodId }, adultFilter)
+                rememberItems(merged)
                 Triple(true, merged, null)
             }
             result ?: Triple(false, emptyList(), "请求超时（>${timeoutMs / 1000}s）")
@@ -270,6 +286,53 @@ class Repository(private val net: Net = Net) {
 
     private companion object {
         const val BROWSE_TTL_MS = 5 * 60 * 1000L
+    }
+
+    /**
+     * 拼音首字母检索。
+     *
+     * 采集站的 `wd` 只支持中文 LIKE，拼音必然只能在本地做，所以先建索引：
+     * 1. 本次会话已经见过的条目（搜索/分类浏览留下的），命中即出，零网络；
+     * 2. 再扫每个源的「最新列表」（`?ac=videolist&pg=n`，不带 wd/t 就是全站最新），
+     *    抓到不满一页就停，避免白跑。
+     *
+     * 每源默认 4 页（80 条），4 个源并发，电视上大约 2~4 秒。
+     */
+    suspend fun pinyinSearch(
+        sources: List<VodSource>,
+        query: String,
+        adultFilter: Boolean,
+        pagesPerSource: Int = 4,
+        timeoutMs: Long = 9_000,
+    ): List<SearchItem> {
+        if (!Pinyin.ready || !Pinyin.isQuery(query)) return emptyList()
+        val cached = seenItems.values.filter { Pinyin.matches(it.name, query) }
+
+        val fresh = coroutineScope {
+            sources.map { source ->
+                async {
+                    withTimeoutOrNull(timeoutMs) {
+                        runCatching {
+                            val base = source.url.trimEnd('/')
+                            val collected = mutableListOf<SearchItem>()
+                            for (page in 1..pagesPerSource) {
+                                val text = net.getText("$base?ac=videolist&pg=$page")
+                                val parsed = Parsers.parseSearchList(text, source)
+                                collected += parsed
+                                if (parsed.size < 20) break
+                            }
+                            collected
+                        }.getOrDefault(emptyList())
+                    } ?: emptyList()
+                }
+            }.awaitAll().flatten()
+        }
+        rememberItems(fresh)
+
+        return (fresh + cached)
+            .filter { Pinyin.matches(it.name, query) }
+            .let { Parsers.filterAdult(it, adultFilter) }
+            .distinctBy { "${it.sourceKey}:${it.vodId}" }
     }
 
     suspend fun importSubscription(url: String): ParsedSubscription {

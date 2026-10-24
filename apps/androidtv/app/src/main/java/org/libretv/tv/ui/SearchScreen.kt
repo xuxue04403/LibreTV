@@ -31,6 +31,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import org.libretv.tv.AppViewModel
+import org.libretv.tv.data.Pinyin
 import org.libretv.tv.data.AppData
 import org.libretv.tv.data.SearchGroup
 import org.libretv.tv.data.SearchItem
@@ -58,7 +59,7 @@ fun SearchScreen(vm: AppViewModel, data: AppData) {
                 onValueChange = { input = it },
                 modifier = Modifier.width(520.dp),
                 singleLine = true,
-                placeholder = { Text("输入片名、剧名或演员", color = TextMuted) },
+                placeholder = { Text("输入片名、剧名、演员或拼音首字母", color = TextMuted) },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { vm.startSearch(input) }),
             )
@@ -70,6 +71,15 @@ fun SearchScreen(vm: AppViewModel, data: AppData) {
                 else if (search.searched) "${search.groups.size} 部影片"
                 else "已启用 ${data.activeSources().size} 个源",
                 color = TextMuted,
+                fontSize = MaterialTheme.typography.bodySmall.fontSize,
+            )
+        }
+
+        if (Pinyin.isQuery(input.trim())) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "按拼音首字母检索：${input.trim()} → 「奇妙萌可」这类片名（只匹配本地已见过的条目和各源最新列表）",
+                color = Accent,
                 fontSize = MaterialTheme.typography.bodySmall.fontSize,
             )
         }

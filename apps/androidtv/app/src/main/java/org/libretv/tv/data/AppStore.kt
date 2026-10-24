@@ -25,6 +25,7 @@ class AppStore(private val context: Context) {
     private val corruptKey = stringPreferencesKey("app-data-corrupt")
     private val availabilityKey = stringPreferencesKey("category-availability")
     private val liveCacheKey = stringPreferencesKey("live-cache")
+    private val pinyinIndexKey = stringPreferencesKey("pinyin-index")
 
     /** 最近一次成功解析的快照：解析失败时先拿它顶着，别让界面瞬间变空 */
     @Volatile
@@ -142,6 +143,69 @@ class AppStore(private val context: Context) {
 
     suspend fun clearLiveCache() {
         context.appDataStore.edit { prefs -> prefs.remove(liveCacheKey) }
+    }
+
+    /**
+     * 拼音检索的本地索引。
+     *
+     * 采集站的 `wd` 只认中文，拼音只能拿「已经见过的片名」反查：浏览过分类、
+     * 搜过片名，这些条目的首字母就有据可查。索引落盘后，第二次输入 `qmmk`
+     * 不用等网络。上限 [PINYIN_INDEX_LIMIT] 条，超出按原顺序截断（新的在前）。
+     */
+    suspend fun pinyinIndex(): List<SearchItem> {
+        val raw = context.appDataStore.data.first()[pinyinIndexKey] ?: return emptyList()
+        return runCatching {
+            LooseJson.decodeFromString<List<IndexEntry>>(raw).map { it.toItem() }
+        }.getOrDefault(emptyList())
+    }
+
+    suspend fun savePinyinIndex(items: List<SearchItem>) {
+        if (items.isEmpty()) return
+        val body = runCatching {
+            LooseJson.encodeToString(items.take(PINYIN_INDEX_LIMIT).map { IndexEntry.from(it) })
+        }.getOrNull() ?: return
+        context.appDataStore.edit { prefs -> prefs[pinyinIndexKey] = body }
+    }
+}
+
+private const val PINYIN_INDEX_LIMIT = 6000
+
+/** 拼音索引里的一行：字段都取短名，一万条也就几百 KB */
+@Serializable
+private data class IndexEntry(
+    val n: String,
+    val sk: String,
+    val sn: String,
+    val v: String,
+    val p: String? = null,
+    val t: String? = null,
+    val y: String? = null,
+    val a: String? = null,
+) {
+    fun toItem() = SearchItem(
+        sourceKey = sk,
+        sourceName = sn,
+        vodId = v,
+        name = n,
+        pic = p,
+        typeName = t,
+        year = y,
+        area = a,
+    )
+
+    companion object {
+        fun from(item: SearchItem) = IndexEntry(
+            n = item.name,
+            sk = item.sourceKey,
+            sn = item.sourceName,
+            v = item.vodId,
+            p = item.pic,
+            t = item.typeName,
+            y = item.year,
+            a = item.area,
+        )
+
+
     }
 }
 

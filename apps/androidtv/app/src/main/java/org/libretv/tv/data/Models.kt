@@ -174,6 +174,8 @@ data class AppSettings(
     val adultFilter: Boolean = true,
     val autoplayNext: Boolean = true,
     val resumePlayback: Boolean = true,
+    /** 移除播放列表里的中插广告分组（桌面端同一开关语义） */
+    val adFilter: Boolean = true,
 )
 
 @Serializable

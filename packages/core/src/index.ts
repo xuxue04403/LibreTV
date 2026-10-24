@@ -20,5 +20,6 @@ export * from './detail';
 export * from './failover';
 export * from './live';
 export * from './live-switch';
+export * from './pinyin';
 export * from './subscriptions';
 export * from './storage';

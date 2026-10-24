@@ -19,6 +19,21 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 @UnstableApi
 object Playback {
 
+    /** 播放器统一用的 HTTP 数据源（UA / 超时 / 跨协议跳转都在这里配） */
+    fun dataSourceFactory(): DefaultHttpDataSource.Factory =
+        DefaultHttpDataSource.Factory()
+            .setUserAgent(Net.UA)
+            .setConnectTimeoutMs(12_000)
+            .setReadTimeoutMs(20_000)
+            // 分片请求偶尔 4xx 是防盗链抖动，允许一次重试比直接判死更实用
+            .setAllowCrossProtocolRedirects(true)
+            .setDefaultRequestProperties(
+                mapOf(
+                    "Accept" to "*/*",
+                    "Accept-Encoding" to "identity",
+                )
+            )
+
     fun build(context: Context): ExoPlayer {
         // 参数本身放在 PlaybackTuning 里，由单测保证不违反 Media3 的三条硬约束
         // （违反会在 build() 时抛 IllegalArgumentException，表现为按播放就闪退）
@@ -36,22 +51,9 @@ object Playback {
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
-        val dataSource = DefaultHttpDataSource.Factory()
-            .setUserAgent(Net.UA)
-            .setConnectTimeoutMs(12_000)
-            .setReadTimeoutMs(20_000)
-            // 分片请求偶尔 4xx 是防盗链抖动，允许一次重试比直接判死更实用
-            .setAllowCrossProtocolRedirects(true)
-            .setDefaultRequestProperties(
-                mapOf(
-                    "Accept" to "*/*",
-                    "Accept-Encoding" to "identity",
-                )
-            )
-
         return ExoPlayer.Builder(context)
             .setLoadControl(loadControl)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory()))
             .build()
             .apply {
                 playWhenReady = true
