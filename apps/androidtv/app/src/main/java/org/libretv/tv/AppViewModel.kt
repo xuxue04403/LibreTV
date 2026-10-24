@@ -10,6 +10,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -209,6 +210,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun selectCategory(key: CategoryKey) {
         screen = Screen.Category(key)
         loadCategory(key)
+    }
+
+    private var previewJob: Job? = null
+
+    /**
+     * 遥控器焦点移到某个分类上就预载它，不需要再按一次 OK。
+     *
+     * 只认「当前就在分类页」的情况：首页分类行也会调用，那里应当按 OK 才进页面。
+     * 加 180ms 防抖：快速划过一排分类时不会每个都放一轮请求出去。
+     */
+    fun previewCategory(key: CategoryKey) {
+        if (screen !is Screen.Category) return
+        if (key == category.key) return
+        previewJob?.cancel()
+        previewJob = viewModelScope.launch {
+            delay(180)
+            if (screen is Screen.Category) selectCategory(key)
+        }
     }
 
     /**

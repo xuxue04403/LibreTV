@@ -228,6 +228,12 @@ class Repository(private val net: Net = Net) {
         adultFilter: Boolean = true,
     ): Triple<Boolean, List<SearchItem>, String?> {
         val started = System.currentTimeMillis()
+        // 切回上一个分类时如果重新打一遍各源，体感就是「每次切分类都在重新加载播放源」。
+        // 缓存 5 分钟：分类内的第一批内容在这个时间尺度上几乎不会变。
+        val cacheKey = "${source.key}|$key|$typeLimit|${if (adultFilter) 1 else 0}"
+        browseCache[cacheKey]?.let { (at, cached) ->
+            if (System.currentTimeMillis() - at < BROWSE_TTL_MS) return cached
+        }
         return try {
             val result = withTimeoutOrNull(timeoutMs) {
                 val categories = categoriesOf(source)
@@ -248,10 +254,20 @@ class Repository(private val net: Net = Net) {
             result ?: Triple(false, emptyList(), "请求超时（>${timeoutMs / 1000}s）")
         } catch (err: Exception) {
             Triple(false, emptyList(), err.message ?: "失败")
-        }.also {
+        }.also { final ->
+            // 只缓存有结论的结果：失败的源下次还要重试，否则会一直显示「失败」
+            if (final.first) browseCache[cacheKey] = System.currentTimeMillis() to final
             // 便于日志排查：单源耗时
             System.currentTimeMillis() - started
         }
+    }
+
+    /** 分类浏览结果缓存：切回上一个分类应当立刻出内容 */
+    private val browseCache =
+        java.util.concurrent.ConcurrentHashMap<String, Pair<Long, Triple<Boolean, List<SearchItem>, String?>>>()
+
+    private companion object {
+        const val BROWSE_TTL_MS = 5 * 60 * 1000L
     }
 
     suspend fun importSubscription(url: String): ParsedSubscription {

@@ -195,6 +195,41 @@ describe('browseCategory', () => {
     expect(calls.filter((url) => url.includes('ac=list'))).toHaveLength(1);
   });
 
+  it('切回同一个分类直接读缓存，不再打任何接口', async () => {
+    clearCategoryCache();
+    const calls: string[] = [];
+    const http: HttpClient = {
+      async request(url) {
+        calls.push(url);
+        if (url.includes('ac=list')) return res({ class: [{ type_id: 1, type_name: '电影' }] });
+        return res({ pagecount: 1, list: [{ vod_id: 11, vod_name: '流浪地球', type_name: '电影' }] });
+      },
+    };
+    const first = await browseCategory({ sources: [source], key: 'movie', http });
+    const before = calls.length;
+    const second = await browseCategory({ sources: [source], key: 'movie', http });
+    expect(calls.length).toBe(before);
+    expect(second.items.map((i) => i.vodId)).toEqual(first.items.map((i) => i.vodId));
+  });
+
+  it('换分类不会命中另一个分类的缓存', async () => {
+    clearCategoryCache();
+    const calls: string[] = [];
+    const http: HttpClient = {
+      async request(url) {
+        calls.push(url);
+        if (url.includes('ac=list')) {
+          return res({ class: [{ type_id: 1, type_name: '电影' }, { type_id: 2, type_name: '连续剧' }] });
+        }
+        return res({ pagecount: 1, list: [{ vod_id: 11, vod_name: 'x' }] });
+      },
+    };
+    await browseCategory({ sources: [source], key: 'movie', http });
+    const afterMovie = calls.length;
+    await browseCategory({ sources: [source], key: 'tv', http });
+    expect(calls.length).toBeGreaterThan(afterMovie);
+  });
+
   it('分页：按 pages 拉取并遵守 pagecount', async () => {
     clearCategoryCache();
     setCachedCategories(source.url, [{ id: '1', name: '电影' }]);

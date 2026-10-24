@@ -222,6 +222,7 @@ export function setCachedCategories(url: string, categories: SourceCategory[]): 
 
 export function clearCategoryCache(): void {
   categoryCache.clear();
+  browseCache.clear();
 }
 
 export interface CategorySourceOutcome {
@@ -280,6 +281,21 @@ export async function browseCategory(opts: CategoryBrowseOptions): Promise<Categ
   const typeLimit = Math.min(20, Math.max(1, opts.typeLimit ?? 6));
   const filterAdult = opts.filterAdult ?? true;
   const timeoutMs = opts.timeoutMs ?? 12_000;
+
+  // 只缓存第一页：翻页是有意为之的追加动作，缓存住反而看不到新内容。
+  // 用户反馈「切回上一个分类还要重新拉一遍各源」——分类之间来回切换是最常见的操作，
+  // 每次都打 4 个源 × 6 个子分类，体感就是「每次都在重新加载播放源」。
+  const cacheKey =
+    pages === 1
+      ? `${opts.key}|${filterAdult ? 1 : 0}|${typeLimit}|${opts.sources
+          .map((s) => s.url)
+          .sort()
+          .join(',')}`
+      : '';
+  if (cacheKey) {
+    const hit = browseCache.get(cacheKey);
+    if (hit && Date.now() - hit.at < BROWSE_TTL_MS) return hit.result;
+  }
 
   interface SourceCollected {
     outcome: CategorySourceOutcome;
@@ -359,11 +375,23 @@ export async function browseCategory(opts: CategoryBrowseOptions): Promise<Categ
     }
   }
 
-  return {
+  const result: CategoryBrowseResult = {
     items,
     outcomes,
     supportedSources: outcomes.filter((outcome) => outcome.supported).length,
   };
+  // 中途被取消的结果不能写缓存，否则用户下次切回来看到的是半截列表
+  if (cacheKey && !opts.signal?.aborted) browseCache.set(cacheKey, { at: Date.now(), result });
+  return result;
+}
+
+/** 分类浏览结果缓存（5 分钟）：切回上一个分类应当立刻出内容 */
+const BROWSE_TTL_MS = 5 * 60 * 1000;
+const browseCache = new Map<string, { at: number; result: CategoryBrowseResult }>();
+
+/** 清空分类结果缓存（源变更、手动刷新时调用） */
+export function clearBrowseCache(): void {
+  browseCache.clear();
 }
 
 /** 单个分类的可用性探测结果 */

@@ -86,6 +86,16 @@
 
 候选链由 `packages/core/src/failover.ts` 的 `buildPlaybackCandidates` 生成，**按源轮转**而不是按结果顺序取满 8 条：搜「沙丘」时单个源可能命中 8 个版本，顺序取会让整条链全来自同一个站，而换源要解决的恰恰是该站整体挂掉。TV 端 `PlaybackCandidate.build` 是同规则的 Kotlin 实现。
 
+#### 透传 Content-Length 前必须看有没有 content-encoding
+
+`pipeStream` 会把上游的 `Content-Length` 透传给渲染层，但这里有个必须绕开的坑：**undici 解压响应体之后，头里仍然留着压缩时的长度**。
+
+实测（gzip 的上游）：响应头 `content-encoding: gzip` + `content-length: 52`，而 `await res.arrayBuffer()` 拿到的是 **540 字节明文**。代理若照抄这个 52，Chromium 只读前 52 字节就认为响应结束，剩下 488 字节被当成下一个响应 —— 分片被截断，解码出来就是花屏/噪点，而且**是否出现取决于该 CDN 有没有对这一块启用压缩**，所以表现为「有时候」。
+
+修法：只要上游声明过 `content-encoding`，就不透传 `Content-Length`，改走 chunked（`apps/desktop/src/main/proxy.ts` 的 `upstreamEncoding` 判断）。回归测试在 `proxy.test.ts`：「上游 gzip 的分片不会被截断」。
+
+TV 端不经过这个代理（ExoPlayer 直连），OkHttp 自己解压并会重算长度，不存在该问题。
+
 ### 直播列表加载
 
 直播列表的瓶颈在**下载**，不在解析。实测 iptv-org 的 `index.m3u`（11485 个频道，2.46MB）：服务器只给约 35KB/s 且**不启用 gzip**，整串下完要 70–90 秒；而 `parseM3u` 解析 11 万行只要十几毫秒。所以优化全部围绕「不让用户盯着一分钟空列表」：
@@ -167,6 +177,27 @@ AppStore（DataStore Preferences，整份 AppData 以 JSON 存储）
 - **字体**：正文 15–16sp、标题 21sp 起，适配 3 米观看距离；
 - **输入**：搜索框聚焦时弹出系统 IME，另提供历史片名一键搜索。
 
+#### 弹出的面板必须主动把焦点送进去
+
+播放页的根 `Box` 自己是 `focusable()` 的（为了接方向键做快进快退）。Compose 的方向键搜索只在**当前焦点节点的兄弟节点**之间找，不会下钻到它的子节点，于是「↑ 打开选集抽屉」之后左右键完全没反应——抽屉里的卡片永远拿不到焦点。
+
+修法是在面板出现时用 `FocusRequester` 主动送焦点：
+
+- 抽屉：`LaunchedEffect(drawerVisible)` 里先 `scrollToItem(index)`，`delay(90)` 等 `AnimatedVisibility` 展开一帧，再请求当前集卡片的焦点；收起时把焦点还给根节点，否则左右键快进会一起失灵。
+- 错误面板：同理，面板出现后把焦点交给「换源重试」按钮，否则重试/下一集/返回三个按钮点不到。
+
+顺带一个约束：抽屉里每张卡片都要有**稳定的** `FocusRequester`（存在 `remember` 的 Map 里按集数索引），不能每次组合都 `FocusRequester()` 新建——新实例和挂上去的那个不是同一个，请求会落空。
+
+#### 想知道「焦点进了某张卡片」，用 TvCard 自己的回调
+
+`ui/Components.kt` 的 `TvCard` 把外部传入的 `modifier` 放在最前面，后面还接 `focusRequester` / `clickable`。所以在外层写 `Modifier.onFocusChanged { … }` 是**收不到事件**的：焦点描边照常出现（那是 `interaction` 的焦点态画的），回调却一次都不触发。实测 `previewCategory` 一次也没被调用，标题和焦点 chip 长期对不上。
+
+需要的回调统一走 `TvCard(onFocusChange = …)`，它内部本来就用 `collectIsFocusedAsState()` 观察焦点（描边、放大都靠这份状态），转发出去才可靠。
+
+#### 验证时先确认跑的是哪个包
+
+`app/build.gradle.kts` 的 debug 构建带 `applicationIdSuffix = ".debug"`。所以装了 debug APK 之后 `am start -n org.libretv.tv/.MainActivity` 启动的仍是**更早装的那个 release 包**，改动看起来"完全没生效"。调试安装包要显式启动 `org.libretv.tv.debug/org.libretv.tv.MainActivity`，或者先 `adb uninstall org.libretv.tv`。
+
 ### 分辨率自适应（`ui/theme/Scaling.kt`）
 
 电视盒子对 `densityDpi` 的上报极不统一。1080p 报 320dpi 时逻辑尺寸正好 960×540dp，4K 报 640dpi 也是 960×540dp —— 这两种情况布局天然正确。但廉价 4K 盒子常只报 160/213dpi，逻辑宽度会变成 3840dp 或 2308dp，960dp 的设计被摊薄到 4 倍宽度里，表现为「界面不随分辨率缩放、字小到看不清、内容全挤在左上角」。
@@ -235,6 +266,26 @@ adb -s emulator-5556 shell am start -n org.libretv.tv/.MainActivity
 
 对 4 个内置源做「电影」分类实测：从 1 部变为 342 部。
 分类页支持「加载更多」（追加页并去重），聚合规则与搜索页一致（同名同年合并、显示多源角标）。
+
+### 分类结果缓存（5 分钟）
+
+分类之间来回切换是最常见的操作，而一次分类浏览要打「每源 1 次分类表 + 每源最多 6 个子分类」，即 4 个源约 24 个请求。用户反馈「每次切分类都像在重新加载一遍播放源」，指的就是这个。
+
+因此 `browseCategory` 与 TV 端 `Repository.browseCategory` 都对**第一页结果**做了 5 分钟内存缓存：
+
+- 只缓存 `pages === 1`：翻页是有意的追加动作，缓存住反而看不到新内容；
+- 键包含分类、成人过滤开关、`typeLimit` 与源地址集合，换源 / 切过滤自然失效；
+- 被 `AbortSignal` 取消的结果**不写缓存**，否则下次切回来看到的是半截列表；
+- TV 端只缓存 `supported == true` 的结论——失败的源下次还要重试，缓存失败会让它一直显示「失败」。
+
+### TV：焦点停在分类上就自动加载
+
+桌面端分类页靠点击切换，TV 端原本也必须按一次 OK。现在分类卡片加了 `onFocusChanged`：遥控器一路左右划过去，内容就跟着换。
+
+两个细节：
+
+- `previewCategory` 只在 `screen is Screen.Category` 时生效——首页分类行也复用了同一个卡片，那里应当按 OK 才进页面；
+- 180ms 防抖：快速划过一排分类时撤掉上一个待发请求，不会每个都放一轮出去。
 
 ### 首页只显示有内容的分类
 

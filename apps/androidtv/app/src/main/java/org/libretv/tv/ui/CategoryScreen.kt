@@ -67,6 +67,11 @@ fun CategoryScreen(vm: AppViewModel, data: AppData) {
             CategoryKey.home.forEachIndexed { index, key ->
                 TvCard(
                     onClick = { vm.selectCategory(key) },
+                    // 焦点落到分类上就自动加载：遥控器一路左右划过去就能看内容，
+                    // 不用每换一个分类再按一次 OK。
+                    // 用 TvCard 自己的 onFocusChange，而不是外层 Modifier.onFocusChanged：
+                    // 后者接在 focusRequester/clickable 之前，拿不到焦点事件。
+                    onFocusChange = { focused -> if (focused) vm.previewCategory(key) },
                     containerColor = if (key == state.key) org.libretv.tv.ui.theme.Panel2 else org.libretv.tv.ui.theme.Panel,
                     shape = androidx.compose.foundation.shape.RoundedCornerShape(999.dp),
                     focusedScale = 1.06f,

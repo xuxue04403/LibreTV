@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
+import { gzipSync } from 'node:zlib';
 import {
   assertAllowedTarget,
   fetchChecked,
@@ -187,6 +188,18 @@ describe('媒体代理 HTTP 行为', () => {
         res.end('#EXTM3U\r\n#EXTINF:6,\r\nseg1.ts\r\n');
         return;
       }
+      if (req.url === '/gzip.ts') {
+        // 上游对分片做了 gzip：undici 会把 body 解压好，但**保留压缩时的 content-length**。
+        // 代理如果照抄这个长度，浏览器只读前几十字节就认为响应结束 → 分片截断 → 花屏/噪点。
+        const gz = gzipSync(Buffer.alloc(64 * 1024, 7));
+        res.writeHead(200, {
+          'Content-Type': 'video/mp2t',
+          'Content-Encoding': 'gzip',
+          'Content-Length': String(gz.length),
+        });
+        res.end(gz);
+        return;
+      }
       if (req.url === '/no-length.ts') {
         // 无 Content-Length：走 chunked，验证流式限长分支
         res.writeHead(200, { 'Content-Type': 'video/mp2t' });
@@ -256,6 +269,20 @@ describe('媒体代理 HTTP 行为', () => {
     const res = await proxyGet('/no-length.ts');
     expect(res.status).toBe(200);
     expect((await res.arrayBuffer()).byteLength).toBe(1024);
+  });
+
+  /**
+   * 花屏回归：上游 gzip 过的分片不能按压缩时的长度截断。
+   * undici 解压后响应头里仍留着压缩前的 content-length，代理若照抄，
+   * 浏览器只会读前几十字节，解码出来就是噪点/花屏。
+   */
+  it('上游 gzip 的分片不会被截断（不透传压缩时的 Content-Length）', async () => {
+    const res = await proxyGet('/gzip.ts');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-length')).toBeNull();
+    const body = await res.arrayBuffer();
+    expect(body.byteLength).toBe(64 * 1024);
+    expect(new Uint8Array(body).every((v) => v === 7)).toBe(true);
   });
 
   it('图片路由拒绝把 text/html 当图片回给渲染层', async () => {

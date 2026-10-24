@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -102,6 +103,16 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
     var discovered by remember { mutableStateOf(false) }
 
     val focusRequester = remember { FocusRequester() }
+    /**
+     * 每个选集卡片的 FocusRequester。
+     *
+     * 根 Box 自己是 focusable 的，Compose 的方向键搜索只在「当前焦点节点的兄弟」之间找，
+     * 不会进到它的子节点里，所以抽屉弹出来以后左右键根本没东西可移 —— 必须由代码
+     * 主动把焦点送进抽屉。同理，收起时要把焦点还给根节点，否则左右键快进/快退会失灵。
+     */
+    val chipsFocus = remember { mutableMapOf<Int, FocusRequester>() }
+    val errorFocus = remember { FocusRequester() }
+    val drawerState = rememberLazyListState()
     val exo = remember { Playback.build(context) }
 
     DisposableEffect(Unit) {
@@ -224,6 +235,26 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
 
     LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
 
+    // 抽屉打开：把焦点送到当前集对应的卡片上，用户才能用左右键选其它集
+    LaunchedEffect(drawerVisible) {
+        if (drawerVisible) {
+            runCatching { drawerState.scrollToItem(index.coerceAtLeast(0)) }
+            // 等 AnimatedVisibility 展开一帧再请求焦点，否则节点还没进入组合
+            delay(90)
+            runCatching { chipsFocus.getOrPut(index) { FocusRequester() }.requestFocus() }
+        } else {
+            runCatching { focusRequester.requestFocus() }
+        }
+    }
+
+    // 错误面板出现时同理：根节点吃掉了方向键，必须主动把焦点交给第一个按钮
+    LaunchedEffect(error) {
+        if (error != null) {
+            delay(60)
+            runCatching { errorFocus.requestFocus() }
+        }
+    }
+
     Box(
         Modifier
             .fillMaxSize()
@@ -345,7 +376,7 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                 )
                 Spacer(Modifier.height(14.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    TvButton("换源重试", onClick = {
+                    TvButton("换源重试", focusRequester = errorFocus, onClick = {
                         error = null
                         buffering = true
                         tryFailover("手动切换")
@@ -424,11 +455,12 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
             ) {
                 Text("选集（↑ 打开 / ↓ 收起）", color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
                 Spacer(Modifier.height(10.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                LazyRow(state = drawerState, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     itemsIndexed(current.episodes) { i, _ ->
                         EpisodeChip(
                             label = "第 ${i + 1} 集",
                             selected = i == index,
+                            focusRequester = chipsFocus.getOrPut(i) { FocusRequester() },
                             onClick = {
                                 index = i
                                 drawerVisible = false
@@ -445,9 +477,15 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
 }
 
 @Composable
-private fun EpisodeChip(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun EpisodeChip(
+    label: String,
+    selected: Boolean,
+    focusRequester: FocusRequester? = null,
+    onClick: () -> Unit,
+) {
     TvCard(
         onClick = onClick,
+        focusRequester = focusRequester,
         containerColor = if (selected) org.libretv.tv.ui.theme.Panel2 else Color(0xFF1A202B),
         shape = androidx.compose.foundation.shape.RoundedCornerShape(10.dp),
         focusedScale = 1.08f,

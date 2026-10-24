@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -60,11 +61,21 @@ fun TvCard(
     containerColor: Color = Panel,
     focusedScale: Float = 1.05f,
     focusRequester: FocusRequester? = null,
+    /**
+     * 焦点变化回调。
+     *
+     * 别在外层用 `Modifier.onFocusChanged {}` 代替：传进来的 modifier 后面还接着
+     * focusRequester / clickable，外层拿不到焦点事件——实测焦点描边出来了、
+     * 回调一次都没触发。卡片内部本来就在观察 interaction 的焦点态（描边与放大
+     * 都靠它），在这里转发才可靠。
+     */
+    onFocusChange: ((Boolean) -> Unit)? = null,
     content: @Composable (Boolean) -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val scale by animateFloatAsState(if (focused) focusedScale else 1f, label = "tvCardScale")
+    LaunchedEffect(focused) { onFocusChange?.invoke(focused) }
 
     Box(
         modifier

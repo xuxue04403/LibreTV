@@ -367,7 +367,12 @@ export async function startMediaProxy(): Promise<MediaProxy> {
       // 分片内容按 URL 恒定：允许缓存，seek/重播不用回源
       'Cache-Control': CACHE_SEGMENT,
     };
-    const contentLength = upstream.headers.get('content-length');
+    // 上游带了 content-encoding 时，undici 已经把响应体解压好了，但**响应头原样保留**
+    // （实测 gzip：头里仍是压缩后的 content-length=52，body 却是 540 字节明文）。
+    // 这时如果照抄 content-length，浏览器只读前 52 字节就认定响应结束，剩下的丢掉，
+    // 分片被截断 → 解码出花屏/噪点。所以只要上游声明过编码，就不要透传长度，改走 chunked。
+    const upstreamEncoding = upstream.headers.get('content-encoding');
+    const contentLength = upstreamEncoding ? null : upstream.headers.get('content-length');
     if (contentLength) headers['Content-Length'] = contentLength;
     const contentRange = upstream.headers.get('content-range');
     if (contentRange) headers['Content-Range'] = contentRange;
