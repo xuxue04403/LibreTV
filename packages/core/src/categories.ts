@@ -264,13 +264,23 @@ export interface CategoryBrowseOptions {
    * 会让每次翻页都把前面所有页重下一遍（第 8 页 = 8 倍请求）。
    */
   startPage?: number;
-  /** 单源最多并行抓取的子分类数（默认 6） */
+  /** 单源最多并行抓取的子分类数（默认 4） */
   typeLimit?: number;
   /** 是否过滤成人分类内容（默认 true，与搜索保持一致） */
   filterAdult?: boolean;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** 每完成一个源就回调一次（不是全部完成后才回调，UI 可以边收边渲染） */
   onSource?: (outcome: CategorySourceOutcome) => void;
+  /**
+   * 增量结果回调：只要有新内容就带着「目前为止的全部条目」回调一次。
+   *
+   * 这是分类页首屏速度的关键：4 个源 × 4 个子分类 = 16 个请求，
+   * 等全部回来要 3~6 秒，而第一个源通常在 1 秒内就有内容。
+   * 回调里拿到的是已经合并、去重、过滤过的完整快照，UI 直接整体替换即可，
+   * 不需要自己做增量合并（那正是最容易出错的地方）。
+   */
+  onPartial?: (items: SearchResultItem[], outcomes: CategorySourceOutcome[]) => void;
 }
 
 /** 取某源的分类表（带 6 小时缓存） */
@@ -293,7 +303,10 @@ async function categoriesOf(
 export async function browseCategory(opts: CategoryBrowseOptions): Promise<CategoryBrowseResult> {
   const pages = Math.min(20, Math.max(1, opts.pages ?? 1));
   const startPage = Math.min(500, Math.max(1, opts.startPage ?? 1));
-  const typeLimit = Math.min(20, Math.max(1, opts.typeLimit ?? 6));
+  // 4 而不是 6：实测 typeLimit=6 时 4 源共 24 个请求，被全局闸门（6）排成 4 轮，
+  // 耗时 6.6 秒；降到 4 只需 16 个请求、3 轮，3.8 秒拿到 300 部（对照 459 部）。
+  // 首屏本来也看不完 459 部，少抓两个子分类换来近 3 秒的体感提升是划算的。
+  const typeLimit = Math.min(20, Math.max(1, opts.typeLimit ?? 4));
   const filterAdult = opts.filterAdult ?? true;
   const timeoutMs = opts.timeoutMs ?? 12_000;
 
@@ -343,6 +356,28 @@ export async function browseCategory(opts: CategoryBrowseOptions): Promise<Categ
     uniqueSources.push(source);
   }
 
+  // 已完成的源，按完成顺序累积；每完成一个就回调一次 onPartial
+  const done: SourceCollected[] = [...duplicated];
+  const emitPartial = () => {
+    if (!opts.onPartial || opts.signal?.aborted) return;
+    // 与最终结果同样口径：合并、去重、成人过滤
+    const partialItems: SearchResultItem[] = [];
+    const seenIds = new Set<string>();
+    for (const entry of done) {
+      for (const item of entry.items) {
+        const id = `${item.sourceKey}:${item.vodId}`;
+        if (seenIds.has(id)) continue;
+        seenIds.add(id);
+        partialItems.push(item);
+      }
+    }
+    try {
+      opts.onPartial(partialItems, done.map((entry) => entry.outcome));
+    } catch {
+      /* 回调异常不影响整体 */
+    }
+  };
+
   const uniqueCollected = await Promise.all(
     uniqueSources.map(async (source): Promise<SourceCollected> => {
       const started = Date.now();
@@ -362,7 +397,12 @@ export async function browseCategory(opts: CategoryBrowseOptions): Promise<Categ
       try {
         const categories = await categoriesOf(source, opts.http, { timeoutMs, signal: opts.signal });
         const typeIds = matchTypeIds(categories, opts.key, typeLimit);
-        if (typeIds.length === 0) return finish({ ok: true, supported: false, count: 0 });
+        if (typeIds.length === 0) {
+          const skipped = finish({ ok: true, supported: false, count: 0 });
+          done.push(skipped);
+          emitPartial();
+          return skipped;
+        }
 
         // 子分类并行抓取：父分类不聚合子分类，只抓父级会几乎空白
         const batches = await Promise.all(
@@ -382,21 +422,33 @@ export async function browseCategory(opts: CategoryBrowseOptions): Promise<Categ
 
         // 「伦理片」这类名字带「片」，会被归档到电影桶，因此必须在分类浏览里也做成人过滤
         const list = filterAdultResults(batches.flat(), filterAdult);
-        return finish({ ok: true, supported: true, count: list.length }, list);
+        const collectedEntry = finish({ ok: true, supported: true, count: list.length }, list);
+        done.push(collectedEntry);
+        emitPartial();
+        return collectedEntry;
       } catch (err) {
         const timedOut = err instanceof HttpError && err.status === 408;
-        return finish({
+        const failed = finish({
           ok: false,
           supported: false,
           count: 0,
           error: err instanceof Error ? err.message : '失败',
           timedOut,
         });
+        done.push(failed);
+        emitPartial();
+        return failed;
       }
     })
   );
 
-  const collected = [...uniqueCollected, ...duplicated];
+  // `done` 是「完成顺序」，最终结果仍按源声明顺序排列，保证列表顺序稳定。
+  // 用下标而不是 sourceKey 回查：sourceKey 理论上唯一，但用户导入的源可能撞 key，
+  // 一旦撞上按 key 回查就会把多个源折叠成一条，丢内容且很难查。
+  const collected = [
+    ...uniqueSources.map((_, index) => uniqueCollected[index]).filter((e): e is SourceCollected => !!e),
+    ...duplicated,
+  ];
   const outcomes = collected.map((entry) => entry.outcome);
   for (const outcome of outcomes) {
     try {

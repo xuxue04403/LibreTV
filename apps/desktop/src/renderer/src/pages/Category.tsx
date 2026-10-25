@@ -102,6 +102,15 @@ export function CategoryPage({
           filterAdult: adultFilter,
           timeoutMs: 12_000,
           signal: controller.signal,
+          // 边收边渲染：4 个源各回一次，首个源通常 1~3 秒就有内容，
+          // 等全部回来才渲染会让用户盯着骨架屏 5 秒以上。
+          // 回调给的是「目前为止的全部条目」，直接整体替换，不用自己做增量合并。
+          onPartial: (partialItems) => {
+            if (myRun !== runId.current || append || partialItems.length === 0) return;
+            setGroups(groupSearchResults(partialItems));
+            setFromCache(false);
+            setLoading(false);
+          },
         });
         if (myRun !== runId.current) return;
 

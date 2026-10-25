@@ -50,6 +50,9 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
     // requestFocus() 会抛「FocusRequester is not initialized」，被 runCatching 吞掉之后
     // 焦点就默认落到第一个可聚焦项（左侧导航栏的「首页」），看起来像没有选中项。
     LaunchedEffect(Unit) {
+        // 焦点还在左侧导航里移动（导航支持「移上去就切页」）时不抢，
+        // 否则焦点一进导航就被首页拽到「开始搜索」，↓ 走不到「搜索」。
+        if (vm.navFocusHold) return@LaunchedEffect
         repeat(4) { attempt ->
             if (attempt > 0) kotlinx.coroutines.delay(80L)
             if (runCatching { firstFocus.requestFocus() }.isSuccess) return@LaunchedEffect

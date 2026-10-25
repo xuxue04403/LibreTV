@@ -50,7 +50,12 @@ fun SearchScreen(vm: AppViewModel, data: AppData) {
             data.history.map { it.title }.distinct().take(6)
     }
 
-    LaunchedEffect(Unit) { runCatching { searchButtonFocus.requestFocus() } }
+    // 焦点还在左侧导航里移动时不抢：否则焦点一进导航就被这里拽到搜索框，
+    // 用户没法用 ↓ 从「搜索」走到「直播」。
+    LaunchedEffect(Unit) {
+        if (vm.navFocusHold) return@LaunchedEffect
+        runCatching { searchButtonFocus.requestFocus() }
+    }
 
     Column(Modifier.fillMaxSize().padding(ScreenPadding)) {
         Row(verticalAlignment = Alignment.CenterVertically) {

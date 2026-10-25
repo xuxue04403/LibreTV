@@ -147,13 +147,16 @@ export function App() {
               <Icon name="sliders" size={17} />
               设置
             </button>
+            <button className="btn ghost" onClick={() => setView('settings')} title="管理点播源与直播源">
+              <Icon name="film" size={16} />
+              管理数据源
+            </button>
           </div>
 
           <div className="content">
             {view === 'home' ? (
               <HomePage
                 onPlay={setWatch}
-                onOpenSettings={() => setView('settings')}
                 onSearch={startSearch}
                 onCategory={(key) => {
                   setCategory(key);

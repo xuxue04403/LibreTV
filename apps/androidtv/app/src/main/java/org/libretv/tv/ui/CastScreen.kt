@@ -52,7 +52,12 @@ private val items = listOf(
 )
 
 @Composable
-fun NavRail(current: Screen, onSelect: (Screen) -> Unit) {
+fun NavRail(
+    current: Screen,
+    onSelect: (Screen) -> Unit,
+    onFocusEnter: () -> Unit = {},
+    onFocusLeave: () -> Unit = {},
+) {
     // 导航收窄到 84dp：104dp 常显时占掉 960dp 设计宽的 11%，
     // 而电视上没人需要一直看到文字标签——聚焦时再显示就够了。
     Column(
@@ -77,6 +82,17 @@ fun NavRail(current: Screen, onSelect: (Screen) -> Unit) {
             val active = current::class == item.screen::class
             TvCard(
                 onClick = { onSelect(item.screen) },
+                // 焦点移到导航项就切过去，不用再按 OK：电视上「先选中再确认」
+                // 是鼠标时代遗留的操作方式，遥控器连着按过去才是自然的手感。
+                // 只对「按页切换」的项生效；Home 之外的状态（播放页等）不会出现在导航里。
+                onFocusChange = { focused ->
+                    if (focused) {
+                        onFocusEnter()
+                        if (!active) onSelect(item.screen)
+                    } else {
+                        onFocusLeave()
+                    }
+                },
                 modifier = Modifier.size(64.dp),
                 containerColor = if (active) Color(0xFF22140F) else Color(0x00000000),
                 shape = RoundedCornerShape(14.dp),

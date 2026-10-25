@@ -2,7 +2,6 @@ import { useCallback, useState } from 'react';
 import { buildPlaybackCandidates, fetchDetail, formatRelativeTime, type HistoryEntry } from '@libretv/core';
 import { http } from '../lib/bridge';
 import { useAppStore } from '../lib/store';
-import { Icon } from '../components/Icons';
 import { Poster } from '../components/Poster';
 import { useToast } from '../components/Toast';
 import { CategoryButtons, type CategoryKey } from './Category';
@@ -21,20 +20,16 @@ function soloCandidate(source: { key: string; name: string; url: string; isAdult
 
 export function HomePage({
   onPlay,
-  onOpenSettings,
   onSearch,
   onCategory,
 }: {
   onPlay: (target: WatchTarget) => void;
-  onOpenSettings: () => void;
   onSearch: (keyword: string) => void;
   onCategory: (key: CategoryKey) => void;
 }) {
   const sources = useAppStore((s) => s.sources);
-  const selectedKeys = useAppStore((s) => s.selectedKeys);
   const history = useAppStore((s) => s.history);
   const favorites = useAppStore((s) => s.favorites);
-  const liveSources = useAppStore((s) => s.liveSources);
   const recentSearches = useAppStore((s) => s.recentSearches);
   const toast = useToast();
   const [opening, setOpening] = useState<string | null>(null);
@@ -106,43 +101,9 @@ export function HomePage({
     [onPlay, sources, toast]
   );
 
-  const activeCount = sources.filter((s) => selectedKeys.includes(s.key)).length;
 
   return (
     <>
-      <div className="hero">
-        <div className="hero-copy">
-          <h1>把影院留在桌面</h1>
-          <p>
-            采集聚合、解析与广告过滤全部在本机运行：无需服务器、无需密码，播放走本地代理以绕开跨域与防盗链。
-          </p>
-        </div>
-        <div className="hero-actions">
-          <button className="btn primary" onClick={() => onSearch(recentSearches[0] ?? '')}>
-            <Icon name="search" size={16} />
-            开始搜索
-          </button>
-          <button className="btn" onClick={onOpenSettings}>
-            <Icon name="sliders" size={16} />
-            管理数据源
-          </button>
-          <div className="hero-stats">
-            <div className="stat">
-              <div className="n">{activeCount}</div>
-              <div className="l">启用点播源</div>
-            </div>
-            <div className="stat">
-              <div className="n">{liveSources.length}</div>
-              <div className="l">直播源</div>
-            </div>
-            <div className="stat">
-              <div className="n">{history.length}</div>
-              <div className="l">观看记录</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
       {recentSearches.length > 0 ? (
         <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
           <span style={{ color: '#8d97a8', fontSize: 12 }}>最近搜索</span>

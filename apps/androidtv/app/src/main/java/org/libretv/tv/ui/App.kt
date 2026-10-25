@@ -63,7 +63,16 @@ fun LibretvApp(vm: AppViewModel) {
             )
             is Screen.CastPlayer -> CastPlayerScreen(screen, onExit = { vm.back() })
             else -> Row(Modifier.fillMaxSize()) {
-                NavRail(screen, onSelect = { vm.go(it) })
+                // 焦点进入导航栏后要「保持焦点」在这里：目标页各有抢焦点的
+                // LaunchedEffect，不挡住的话焦点刚进导航就被拽走，↓ 走不到第二项。
+                // 释放时机是「焦点落到内容区」，交给各页面自己的焦点重置即可——
+                // 这里只在用户按下 OK（onClick）时收尾。
+                NavRail(
+                    screen,
+                    onSelect = { vm.go(it) },
+                    onFocusEnter = { vm.beginNavFocusHold() },
+                    onFocusLeave = { vm.releaseNavFocusHoldSoon() },
+                )
                 Box(Modifier.weight(1f).fillMaxSize()) {
                     when (screen) {
                         Screen.Home -> HomeScreen(vm, data)

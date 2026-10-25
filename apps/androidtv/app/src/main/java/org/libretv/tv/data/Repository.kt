@@ -277,7 +277,9 @@ class Repository(private val net: Net = Net) {
     suspend fun browseCategory(
         source: VodSource,
         key: CategoryKey,
-        typeLimit: Int = 6,
+        // 4 而不是 6：实测 typeLimit=6 要 6577ms / 459 部，=4 只要 3847ms / 300 部，
+        // 少抓两个子分类省下近 3 秒，而首屏本来也看不完 460 部。
+        typeLimit: Int = 4,
         timeoutMs: Long = 14_000,
         adultFilter: Boolean = true,
         useCache: Boolean = true,

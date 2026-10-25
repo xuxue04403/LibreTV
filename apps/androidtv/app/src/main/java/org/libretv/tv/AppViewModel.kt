@@ -379,7 +379,46 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         openDetail(SearchGroup(key = item.name, name = item.name, items = listOf(item)), item)
     }
 
-    fun go(target: Screen) {        screen = target
+    /**
+     * 焦点在左侧导航里连续移动时会反复调用 go()。
+     * 目标页各自有「进入后把焦点抢到第一个可操作元素」的 LaunchedEffect，
+     * 若不加标记，焦点刚进导航栏就会被目标页抢走，↓ 根本走不到第二项。
+     * 前端在这段时间内跳过自己的抢焦点逻辑。
+     */
+    var navFocusHold = false
+        private set
+
+    private var navHoldRelease: Job? = null
+
+    fun beginNavFocusHold() {
+        navHoldRelease?.cancel()
+        navFocusHold = true
+    }
+
+    /**
+     * 焦点离开某个导航项后的收尾。
+     *
+     * 不能立刻解除：焦点还在导航栏里从「首页」→「搜索」移动时，
+     * 上一个项的失焦和下一个项的获焦之间有几十毫秒空档，
+     * 立刻解除会让目标页趁这个空档抢走焦点。
+     * 用 250ms 的宽限期把「连续移动」和「真的离开导航」区分开。
+     */
+    fun releaseNavFocusHoldSoon() {
+        navHoldRelease?.cancel()
+        navHoldRelease = viewModelScope.launch {
+            delay(250)
+            navFocusHold = false
+        }
+    }
+
+    fun endNavFocusHold() {
+        navHoldRelease?.cancel()
+        navHoldRelease = null
+        navFocusHold = false
+    }
+
+    fun go(target: Screen) {
+        screen = target
         if (target is Screen.Search) {
             // 从详情返回搜索时保留结果
         }
@@ -405,21 +444,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var previewJob: Job? = null
 
     /**
-     * 遥控器焦点移到某个分类上就预载它，不需要再按一次 OK。
+     * 遥控器焦点移到某个分类上就直接切过去并加载，不用再按一次 OK。
      *
      * 只认「当前就在分类页」的情况：首页分类行也会调用，那里应当按 OK 才进页面。
-     * 加 180ms 防抖：快速划过一排分类时不会每个都放一轮请求出去。
+     * 防抖 70ms：遥控器连按时一次移动只发一轮请求，但短到用户感觉不到延迟。
+     *
+     * 这里**不能**再校验「category.key 还是不是进入时的那个」。
+     * 之前写了 `if (category.key != current.key) return@launch`，本意是防止
+     * 迟到的预载把页面拽回悬停项，实际效果是：先悬停 A（A 已加载，category.key 变成 A），
+     * 再悬停 B 时 current.key 仍是更早的值，判断成立 → B 直接放弃加载。
+     * 表现就是「第一个分类能自动加载，之后都必须按 OK」。光标自己换来的
+     * 分类本来就是要加载的目标，不需要防它。
      */
     fun previewCategory(key: CategoryKey) {
-        val current = screen as? Screen.Category ?: return
+        if (screen !is Screen.Category) return
         if (key == category.key) return
         previewJob?.cancel()
         previewJob = viewModelScope.launch {
-            delay(180)
-            // 防抖期间用户可能已经按下 OK 选了别的分类、或直接返回：
+            delay(70)
+            // 防抖期间用户可能已经按 OK 选了别的分类、或直接返回：
             // 那时不能再把这个「只是路过」的分类加载出来，否则会被拽回悬停项
             if (screen !is Screen.Category) return@launch
-            if (category.key != current.key) return@launch
             selectCategory(key)
         }
     }
@@ -512,16 +557,39 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // 快速切分类时取消上一轮：否则旧协程回来会覆盖新分类的结果
         categoryJob?.cancel()
         categoryJob = viewModelScope.launch {
+            // 边收边渲染：4 个源 × 4 个子分类全回来要 3~6 秒，
+            // 而第一个源通常 1~3 秒就有内容了。等全部回来才出画面，
+            // 用户看到的就是长时间骨架屏。
+            val done = mutableListOf<Triple<Boolean, List<SearchItem>, String?>>()
+            val doneLock = Mutex()
+            fun snapshot() = done.flatMap { it.second }
+                .distinctBy { "${it.sourceKey}:${it.vodId}" }
+
             // 并行抓取：串行时单源 14s 超时，8 个源要等近两分钟
             val results = sources.map { source ->
                 async {
-                    repo.browseCategory(
+                    val result = repo.browseCategory(
                         source,
                         key,
                         adultFilter = _data.value.settings.adultFilter,
                         // 有缓存时这一轮是「后台刷新」：命中 5 分钟内存缓存就够，别把整排源再打一遍
                         useCache = cached.isNullOrEmpty(),
                     )
+                    val partial = doneLock.withLock {
+                        done += result
+                        snapshot()
+                    }
+                    if (partial.isNotEmpty()) {
+                        val okCount = doneLock.withLock { done.count { it.first } }
+                        category = category.copy(
+                            key = key,
+                            loading = false,
+                            groups = Parsers.group(partial),
+                            supportedSources = okCount,
+                            fromCache = false,
+                        )
+                    }
+                    result
                 }
             }.awaitAll()
             val items = mutableListOf<SearchItem>()
