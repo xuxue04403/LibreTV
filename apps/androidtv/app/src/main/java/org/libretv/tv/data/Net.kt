@@ -86,7 +86,8 @@ object Net {
         }
     }
 
-    /** 流式读取（直播/EPG 用），调用方负责关闭 */    suspend fun stream(url: String): InputStream = withContext(Dispatchers.IO) {
+    /** 流式读取（直播/EPG 用），调用方负责关闭 */
+    suspend fun stream(url: String): InputStream = withContext(Dispatchers.IO) {
         val request = Request.Builder().url(url).header("User-Agent", UA).build()
         val response = client.newCall(request).execute()
         if (!response.isSuccessful) {
