@@ -180,6 +180,8 @@ describe('媒体代理 HTTP 行为', () => {
   let upstreamUrl = '';
   let proxyBase = '';
   let closeProxy: (() => Promise<void>) | null = null;
+  /** 分片命中计数：证明预取之后播放器再要同一分片没有回源 */
+  const segmentHits = new Map<string, number>();
 
   beforeAll(async () => {
     upstream = createServer((req, res) => {
@@ -228,6 +230,22 @@ describe('媒体代理 HTTP 行为', () => {
       if (req.url === '/notfound') {
         res.writeHead(404, { 'Content-Type': 'text/plain' });
         res.end('nope');
+        return;
+      }
+      // —— 预取相关的上游路由 ——
+      // 记一笔命中次数，用来证明「预取之后再取同一分片不再回源」
+      if (req.url && /^\/pf\d\.ts$/.test(req.url)) {
+        segmentHits.set(req.url, (segmentHits.get(req.url) ?? 0) + 1);
+        res.writeHead(200, { 'Content-Type': 'video/mp2t' });
+        res.end(Buffer.alloc(4096, 9));
+        return;
+      }
+      if (req.url === '/prefetch.m3u8') {
+        res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' });
+        res.end(
+          '#EXTM3U\n#EXT-X-TARGETDURATION:6\n' +
+            '#EXTINF:6,\npf1.ts\n#EXTINF:6,\npf2.ts\n#EXTINF:6,\npf3.ts\n#EXT-X-ENDLIST\n'
+        );
         return;
       }
       res.writeHead(200, { 'Content-Type': 'video/mp2t' });
@@ -335,5 +353,44 @@ describe('媒体代理 HTTP 行为', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('application/vnd.apple.mpegurl');
     expect(await res.text()).toContain('/p?ad=0&url=');
+  });
+
+  /**
+   * 预取：点击播放时后台先把前几个分片抓进内存，播放器再来要时零 RTT。
+   *
+   * 这里用「上游计数」证明真的省了请求：预取之后再取同一个分片，
+   * 上游的命中次数不应增加。
+   */
+  it('预取后同一分片不再回源', async () => {
+    segmentHits.clear();
+    const listUrl = `${upstreamUrl}/prefetch.m3u8`;
+    const started = Date.now();
+    const result = (await (
+      await fetch(`${proxyBase}/prefetch?url=${encodeURIComponent(listUrl)}&count=3`)
+    ).json()) as { ok: boolean; cached: number; playlist: boolean };
+    const prefetchMs = Date.now() - started;
+    expect(result.ok).toBe(true);
+    expect(result.playlist).toBe(true);
+    expect(result.cached).toBe(3);
+    // 三个分片各抓一次
+    expect(segmentHits.get('/pf1.ts')).toBe(1);
+    expect(segmentHits.get('/pf2.ts')).toBe(1);
+    expect(segmentHits.get('/pf3.ts')).toBe(1);
+
+    // 播放器随后请求第一个分片：命中缓存，上游计数不变
+    const res = await proxyGet('/pf1.ts');
+    const body = await res.arrayBuffer();
+    expect(body.byteLength).toBe(4096);
+    expect(new Uint8Array(body).every((v) => v === 9)).toBe(true);
+    expect(segmentHits.get('/pf1.ts')).toBe(1);
+    expect(prefetchMs).toBeLessThan(5_000);
+  });
+
+  it('预取失败不抛错，返回 ok=false 让调用方忽略', async () => {
+    const res = await fetch(`${proxyBase}/prefetch?url=${encodeURIComponent(`${upstreamUrl}/notfound`)}`);
+    const result = (await res.json()) as { ok: boolean; cached: number };
+    expect(res.status).toBe(200);
+    expect(result.ok).toBe(false);
+    expect(result.cached).toBe(0);
   });
 });

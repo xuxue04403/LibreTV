@@ -11,7 +11,7 @@ import {
   pickEpisodeIndex,
   type PlaybackCandidate,
 } from '@libretv/core';
-import { http, proxify } from '../lib/bridge';
+import { http, prefetchSegments, proxify } from '../lib/bridge';
 import { useAppStore } from '../lib/store';
 import { useToast } from '../components/Toast';
 import { CastDialog } from '../components/CastDialog';
@@ -201,6 +201,9 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
 
     const isHls = /\.m3u8(\?|$)/i.test(episodeUrl);
     const src = proxify(episodeUrl, { ad: settings.adFilter });
+    // HLS 起播要串两跳：先等 m3u8，再等首个分片。真流交给 hls.js 之前，
+    // 先让主进程把接下来的分片抓进内存缓存，播放器随后直接命中——这是「点开就播」的关键。
+    if (isHls) prefetchSegments(episodeUrl, { ad: settings.adFilter });
     let hls: Hls | null = null;
     let disposed = false;
 

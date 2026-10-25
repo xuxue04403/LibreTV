@@ -139,6 +139,26 @@ export function posterUrl(url: string | undefined): string | undefined {
   return proxify(url, { image: true });
 }
 
+/**
+ * 让主进程在后台预取接下来几个分片。
+ *
+ * 点击播放的那一刻就把前 8 个分片抓进代理进程的内存缓存，
+ * 播放器真正开始拉流时这些分片已经是本地内存命中——这是「点开就播」的关键。
+ * 故意不 await：预取是锦上添花，失败了播放也照常进行。
+ */
+export function prefetchSegments(url: string, opts: { ad?: boolean; count?: number } = {}): void {
+  if (!info.proxyBase || !/^https?:\/\//i.test(url)) return;
+  const count = opts.count ?? 8;
+  const ad = opts.ad ? '&ad=1' : '';
+  const target = `${info.proxyBase}/prefetch?url=${encodeURIComponent(url)}&count=${count}${ad}`;
+  // 用 setTimeout 让出一帧：调用点在播放按钮里，别让网络动作压在点击处理上
+  setTimeout(() => {
+    void fetch(target).catch(() => {
+      /* 预取失败不影响播放 */
+    });
+  }, 0);
+}
+
 // —— 投屏（DLNA 发送端） ——
 
 export interface DlnaDeviceInfo {

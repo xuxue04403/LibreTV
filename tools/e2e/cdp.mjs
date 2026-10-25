@@ -93,6 +93,25 @@ export async function evaluate(session, expression) {
   return result.result.value;
 }
 
+/**
+ * 同 evaluate，但允许在表达式里写 await。
+ *
+ * evaluate 包的是同步箭头函数，`await` 会直接语法错误（`await is only valid in
+ * async functions`）。要调用 `window.libretv.info()` 这类返回 Promise 的接口时用这个。
+ */
+export async function evaluateAsync(session, expression) {
+  const result = await session.send('Runtime.evaluate', {
+    expression: `(async () => { ${expression} })()`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  if (result.exceptionDetails) {
+    const detail = result.exceptionDetails;
+    throw new Error(detail.exception?.description ?? detail.text ?? '页面求值异常');
+  }
+  return result.result.value;
+}
+
 export async function click(session, text) {
   const escaped = JSON.stringify(text);
   return evaluate(

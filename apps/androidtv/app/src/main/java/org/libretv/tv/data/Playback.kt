@@ -34,6 +34,15 @@ object Playback {
                 )
             )
 
+    /**
+     * 带预取命中的数据源工厂。
+     *
+     * 点击播放时 [SegmentPrefetch] 已经在后台抓接下来的分片；播放器必须走这条
+     * 路径才能拿到那批内存副本，否则预取白跑、起播还是两跳 RTT。
+     */
+    fun prefetchingDataSourceFactory(): androidx.media3.datasource.DataSource.Factory =
+        PrefetchAwareDataSource.Factory(dataSourceFactory())
+
     fun build(context: Context): ExoPlayer {
         // 参数本身放在 PlaybackTuning 里，由单测保证不违反 Media3 的三条硬约束
         // （违反会在 build() 时抛 IllegalArgumentException，表现为按播放就闪退）
@@ -53,7 +62,7 @@ object Playback {
 
         return ExoPlayer.Builder(context)
             .setLoadControl(loadControl)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory()))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(prefetchingDataSourceFactory()))
             .build()
             .apply {
                 playWhenReady = true

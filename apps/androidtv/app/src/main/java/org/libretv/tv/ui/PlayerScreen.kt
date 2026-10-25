@@ -58,11 +58,15 @@ import org.libretv.tv.AppViewModel
 import org.libretv.tv.Screen
 import org.libretv.tv.data.AdFilteringPlaylistParserFactory
 import org.libretv.tv.data.Playback
+import org.libretv.tv.data.SegmentPrefetch
 import org.libretv.tv.ui.theme.Accent
 import org.libretv.tv.ui.theme.TextMuted
 import org.libretv.tv.ui.theme.TextPrimary
 
 private const val SEEK_STEP_MS = 10_000L
+
+/** HLS 播放列表判定：只有 HLS 才有分片可预取 */
+private val HLS_URL = Regex("""\.m3u8(\?|$)""", RegexOption.IGNORE_CASE)
 /** 连续缓冲超过这个时长就判定为卡死并换源（秒） */
 private const val STALL_SECONDS = 15
 
@@ -179,6 +183,9 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
         error = null
         buffering = true
         val url = current.episodes.getOrNull(index) ?: return@LaunchedEffect
+        // 先让预取跑起来，再 prepare：m3u8 要现拉，分片预取与它并行，
+        // 等播放器要点首个分片时它多半已经在内存里了。非 HLS 直链没有分片可预取。
+        if (HLS_URL.containsMatchIn(url)) SegmentPrefetch.start(url)
         play(url)
         exo.playWhenReady = true
         if (!resumedOnce) {

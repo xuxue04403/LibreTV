@@ -42,6 +42,19 @@ object Net {
         .retryOnConnectionFailure(true)
         .build()
 
+    /**
+     * 播放器专用的 OkHttp 客户端。
+     *
+     * 和 [client] 分开：播放要多路并发拉分片、且片段大、需要复用连接；
+     * 元数据请求走小连接池即可，混在一起会让播放卡在分类请求后面排队。
+     */
+    val playbackClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(12, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .retryOnConnectionFailure(true)
+        .build()
+
     suspend fun getText(url: String, headers: Map<String, String> = emptyMap()): String =
         withContext(Dispatchers.IO) {
             val builder = Request.Builder().url(url).header("User-Agent", UA).header("Accept", "*/*")
@@ -52,8 +65,28 @@ object Net {
             }
         }
 
-    /** 流式读取（直播/EPG 用），调用方负责关闭 */
-    suspend fun stream(url: String): InputStream = withContext(Dispatchers.IO) {
+    /**
+     * 整块读取字节（预取分片用）。
+     *
+     * 和 [getText] 分开是因为分片是二进制，走 string 会先按 UTF-8 解码再编码回来，
+     * 既浪费一次全量拷贝，也会损坏非 UTF-8 字节。
+     */
+    suspend fun getBytes(url: String): Pair<ByteArray, String> = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", UA)
+            .header("Accept", "*/*")
+            .header("Accept-Encoding", "identity")
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
+            val body = response.body ?: throw IOException("空响应")
+            val type = response.header("Content-Type") ?: "video/mp2t"
+            body.bytes() to type
+        }
+    }
+
+    /** 流式读取（直播/EPG 用），调用方负责关闭 */    suspend fun stream(url: String): InputStream = withContext(Dispatchers.IO) {
         val request = Request.Builder().url(url).header("User-Agent", UA).build()
         val response = client.newCall(request).execute()
         if (!response.isSuccessful) {

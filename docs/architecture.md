@@ -73,6 +73,7 @@
 1. **代理分片直通**：`/p` 拿到上游响应后立刻 `getReader()`，只有当第一块内容看起来像播放列表（前 64 字节含 `#EXTM3U`，容忍 BOM）时才整体读入改写；其余分片走 `pipeStream`，边收边发、尊重 `drain` 背压、连接关闭即 `reader.cancel()`。旧实现把整个分片读进 Buffer 再 `res.end()`，首字节要等上游写完。上限：播放列表/图片 16MB，流 1GB。
 2. **hls.js 参数**：`maxBufferLength 30` / `maxMaxBufferLength 90` / `backBufferLength 30` / `maxBufferSize 60MB`，`startLevel: -1`（自动选码率）；重试次数压到 1–2 次并配 `fragLoadingRetryDelay 500`，让失败快速暴露给换源逻辑，而不是无限重试卡住。
 3. **卡顿看门狗**：`waiting` 事件起 12 秒计时器，`playing` 清除；超时直接触发换源。TV 端同理（`STALL_SECONDS = 15`）。
+4. **点播即预取**：`Watch.tsx` 在创建 hls.js 之前调 `prefetchSegments(episodeUrl)`，主进程 `/prefetch?url=…&count=8` 解析 m3u8 并把开头 8 个分片抓进 `SegmentCache`（64MB 上限、单条 8MB、LRU、并发 3）。`/p` 路由**在回源之前**先查这份缓存，命中直接回内存副本。起播原本要串「等 m3u8 → 等首个分片」两跳 RTT，现在第二跳是内存命中。注意 `/prefetch` 必须允许从内网地址取（联调 mock CMS 时），且失败要返回 `ok:false` 而不是 5xx——预取失败不能影响正常播放。
 
 失败转移分两级，桌面与 TV 行为一致：
 
@@ -236,6 +237,7 @@ adb -s emulator-5556 shell am start -n org.libretv.tv/.MainActivity
 - **这些数字不能随手改**：Media3 有三条硬约束——`maxBufferMs >= minBufferMs`、`minBufferMs >= bufferForPlaybackMs`、`minBufferMs >= bufferForPlaybackAfterRebufferMs`。违反任意一条，`DefaultLoadControl.build()` 会抛 `IllegalArgumentException`，而它发生在 Compose 的帧回调里，**用户看到的就是「按播放整个 App 闪退」**，编译器与 lint 都查不出来。曾经 `MIN_BUFFER_MS 1500` 配 `AFTER_REBUFFER 3000` 就踩过，装上 APK 一点播放必崩。现在约束由 `PlaybackTuning.violations()` 表达（返回全部违规项而非撞第一条就抛），`PlaybackTuningTest` 守着当前参数合法、且拿历史坏值能复现违规；`Playback.build()` 里另有一道 `check` 兜底。
 - `DefaultHttpDataSource.Factory`：固定 `Net.UA`、`connectTimeout 12s` / `readTimeout 20s`、`allowCrossProtocolRedirects`、`Accept-Encoding: identity`（避免拿到 gzip 的分片流）。OkHttp 无 CORS 概念，也不需要回环代理。
 - `setHandleAudioBecomingNoisy(true)` 让拔耳机/切输出时自动暂停。
+- **分片预取**：`PlayerScreen` 在 `prepare()` 之前先调 `SegmentPrefetch.start(url)`，后台解析 m3u8 并把开头 8 个分片抓进内存（`SegmentLru`，64MB 上限、单条 8MB 上限、LRU 淘汰、并发 3）。播放器的数据源换成 `PrefetchAwareDataSource`——它在发起 HTTP 之前先查这份缓存，命中就直接把字节喂给 ExoPlayer，没命中再原样交给 `DefaultHttpDataSource`。**两条路径必须接上，否则预取只是白跑一遍网络**；只对 `position == 0` 的整段请求走缓存，seek 要字节区间，交给 CDN 更可靠。桌面端同理（见「播放性能与失败转移」的 `/prefetch`）。
 
 失败转移与桌面端同构：`Player.Listener.onPlayerError` 和 15 秒缓冲看门狗都调 `AppViewModel.failoverPlayback(player, tried, episodeIndex, discovered)`，它返回 `FailoverResult`（新 `Screen.Player` + 对齐后的集数）；候选链空了会 `repo.discoverCandidates` 按片名补一轮，补过仍失败才报错。`openDetail` 也做了候选扇出：前 3 个候选并行拉详情，谁先成功就展示谁（`DETAIL_FANOUT = 3`、`DETAIL_TIMEOUT_MS = 9000`）。
 
