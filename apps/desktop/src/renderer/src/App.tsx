@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { initBridge } from './lib/bridge';
+import { startCatalogWarmup, stopCatalogWarmup } from './lib/catalog-warmer';
 import { useAppStore } from './lib/store';
 import { ToastProvider } from './components/Toast';
 import { Icon, type IconName } from './components/Icons';
@@ -38,7 +39,10 @@ export function App() {
       // 老版本的观看记录按「源 + vodId」去重，同一部片子从两个源各播一次就会留两条；
       // 现在改成按片名去重，这里把存量数据清理一遍（幂等）。
       useAppStore.getState().dedupeHistory();
+      // 启动预热分类目录，并在后台每小时刷新一次
+      startCatalogWarmup();
     });
+    return () => stopCatalogWarmup();
   }, []);
 
   useEffect(() => {

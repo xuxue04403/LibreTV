@@ -6,6 +6,7 @@ import {
   type SourceSearchOutcome,
 } from '@libretv/core';
 import { http } from '../lib/bridge';
+import { cachedSearch, rememberSearch } from '../lib/catalog-cache';
 import { useAppStore } from '../lib/store';
 import { DetailPanel } from '../components/DetailPanel';
 import { Icon } from '../components/Icons';
@@ -42,6 +43,7 @@ export function SearchPage({
 
   const [state, setState] = useState<SearchState>({ outcomes: [], groups: [] });
   const [loading, setLoading] = useState(false);
+  const [fromCache, setFromCache] = useState(false);
   const [selected, setSelected] = useState<AggregatedGroup | null>(null);
   const outcomesRef = useRef<SourceSearchOutcome[]>([]);
   const runId = useRef(0);
@@ -65,10 +67,20 @@ export function SearchPage({
       setLoading(true);
       addRecentSearch(word);
 
+      // 先出缓存结果，网络结果回来后覆盖：同一个片名搜第二遍不该再等十几秒
+      const cached = cachedSearch(word, settings.adultFilter);
+      if (cached && cached.length > 0) {
+        setState({ outcomes: [], groups: groupSearchResults(cached) });
+        setFromCache(true);
+      }
+
       const commit = (outcome: SourceSearchOutcome) => {
         if (myRun !== runId.current) return;
         const merged = [...outcomesRef.current.filter((o) => o.sourceKey !== outcome.sourceKey), outcome];
         outcomesRef.current = merged;
+        // 第一个源回来后就把缓存结果换掉：缓存里没有「哪些源有/没有」的信息，
+        // 混着用会让用户以为某个源也返回了这些条目
+        setFromCache(false);
         const items = merged.flatMap((o) => (o.ok ? o.list : []));
         setState({ outcomes: merged, groups: groupSearchResults(items) });
       };
@@ -89,6 +101,9 @@ export function SearchPage({
           toast.err('所有源都没有返回结果，请检查网络或源可用性');
         } else if (result.list.length === 0) {
           toast.push(`没有找到「${word}」的相关内容`);
+        } else {
+          // 有结果才落盘：把「确实没搜到」也缓存住，会让下次重试直接看到空页面
+          rememberSearch(word, settings.adultFilter, result.list);
         }
       } catch (err) {
         if (myRun === runId.current) {
@@ -133,7 +148,11 @@ export function SearchPage({
               搜索结果 {keyword ? <span style={{ color: '#8d97a8' }}>· {keyword}</span> : null}
             </span>
             <span className="hint">
-              {loading ? `搜索中… 已完成 ${state.outcomes.length}/${sources.length} 个源` : `${state.groups.length} 部影片`}
+              {loading
+                ? `搜索中… 已完成 ${state.outcomes.length}/${sources.length} 个源`
+                : fromCache
+                  ? `${state.groups.length} 部影片（本地缓存）`
+                  : `${state.groups.length} 部影片`}
             </span>
           </div>
 

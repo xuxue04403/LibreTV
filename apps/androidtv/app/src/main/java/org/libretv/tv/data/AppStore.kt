@@ -26,6 +26,8 @@ class AppStore(private val context: Context) {
     private val availabilityKey = stringPreferencesKey("category-availability")
     private val liveCacheKey = stringPreferencesKey("live-cache")
     private val pinyinIndexKey = stringPreferencesKey("pinyin-index")
+    private val catalogKey = stringPreferencesKey("catalog-cache")
+    private val searchCacheKey = stringPreferencesKey("search-cache")
 
     /** 最近一次成功解析的快照：解析失败时先拿它顶着，别让界面瞬间变空 */
     @Volatile
@@ -165,6 +167,44 @@ class AppStore(private val context: Context) {
             LooseJson.encodeToString(items.take(PINYIN_INDEX_LIMIT).map { IndexEntry.from(it) })
         }.getOrNull() ?: return
         context.appDataStore.edit { prefs -> prefs[pinyinIndexKey] = body }
+    }
+
+    /**
+     * 分类目录落盘缓存。
+     *
+     * 与 `live-cache` 同样的思路：单独一个 key，不和 app-data 的原子读改写抢。
+     * 源集合签名不符就整体作废——换过源之后，旧条目可能来自已经被停用的站。
+     */
+    suspend fun catalog(signature: String): CatalogSnapshot? {
+        val raw = context.appDataStore.data.first()[catalogKey] ?: return null
+        val snapshot = runCatching { LooseJson.decodeFromString<CatalogSnapshot>(raw) }.getOrNull()
+            ?: return null
+        return snapshot.takeIf { it.signature == signature }
+    }
+
+    suspend fun saveCatalog(snapshot: CatalogSnapshot) {
+        val body = runCatching { LooseJson.encodeToString(snapshot) }.getOrNull() ?: return
+        context.appDataStore.edit { prefs -> prefs[catalogKey] = body }
+    }
+
+    suspend fun clearCatalog() {
+        context.appDataStore.edit { prefs -> prefs.remove(catalogKey) }
+    }
+
+    /** 检索结果缓存（1 小时，最多 20 个关键词） */
+    suspend fun searchCache(signature: String): SearchCacheSnapshot? {
+        val raw = context.appDataStore.data.first()[searchCacheKey] ?: return null
+        val sep = raw.indexOf('\t')
+        if (sep <= 0) return null
+        if (raw.substring(0, sep) != signature) return null
+        return runCatching {
+            LooseJson.decodeFromString<SearchCacheSnapshot>(raw.substring(sep + 1))
+        }.getOrNull()
+    }
+
+    suspend fun saveSearchCache(signature: String, snapshot: SearchCacheSnapshot) {
+        val body = runCatching { LooseJson.encodeToString(snapshot) }.getOrNull() ?: return
+        context.appDataStore.edit { prefs -> prefs[searchCacheKey] = "$signature\t$body" }
     }
 }
 

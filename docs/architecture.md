@@ -287,6 +287,53 @@ adb -s emulator-5556 shell am start -n org.libretv.tv/.MainActivity
 - `previewCategory` 只在 `screen is Screen.Category` 时生效——首页分类行也复用了同一个卡片，那里应当按 OK 才进页面；
 - 180ms 防抖：快速划过一排分类时撤掉上一个待发请求，不会每个都放一轮出去。
 
+### 分类目录与检索结果的本地缓存
+
+用户反馈「每次切换分类、每次检索都像在重新加载播放源」。根源不是解析慢——实测 `parseM3u` 解析 3957 个频道只要 16ms——而是**一次分类浏览要打 4 个源 × 最多 6 个子分类**，冷启动 2~6 秒；`Repository.browseCache` 又只在内存里，进程一退就没了。
+
+现在两端都把「每个分类的第一页」和「最近的检索结果」落盘，切分类/再搜同一片名时零网络：
+
+| 层 | 桌面端 | TV 端 |
+| --- | --- | --- |
+| 纯逻辑（TTL、截断、签名、淘汰） | `packages/core/src/catalog.ts` | 同一份逻辑的 Kotlin 实现 `data/CatalogCache.kt`、`data/SearchCache.kt` |
+| 落盘 | `localStorage`（`libretv-catalog-v1`、`libretv-search-cache-v1`） | DataStore（`catalog-cache`、`search-cache`，格式 `签名\tJSON`） |
+| 适配层 | `lib/catalog-cache.ts` | `AppStore.catalog()` / `saveCatalog()` |
+
+规则（两端逐条对齐，`packages/core/src/catalog.test.ts` 18 项 + `CatalogCacheTest.kt` 15 项覆盖）：
+
+- **签名**：启用源地址排序拼接 + `|` + 成人过滤开关。源顺序变化不作废缓存，源集合或开关变化整体作废；
+- **TTL**：目录 6 小时、检索 1 小时，过期只是「该刷新了」，界面仍先用旧内容顶上（空页面比旧内容糟得多）；
+- **条目上限**：每分类 240 条、每关键词 300 条、关键词最多留 20 个（按时间戳丢最旧）；
+- **空结果不覆盖**：刷新失败或源临时抽风时写空会把已有内容清空，所以 `withEntry` 遇到空列表原样返回；
+- **没缓存过返回 `undefined` 而不是空数组**：界面要区分「还在加载（显示骨架）」与「确实没有（显示空态）」。
+
+实测（桌面端，4 内置源）：
+
+| 场景 | 耗时 |
+| --- | --- |
+| 冷启动首次进电影分类 | 首屏内容 12 张骨架 → 319 部 |
+| 切到电视剧再切回电影 | **182ms**（命中内存/落盘缓存） |
+| 重启应用后进电影分类 | **42ms，257 部**（直接命中 localStorage） |
+| 首次搜索 | 5034ms |
+| 同词再搜 | 1926ms（先出缓存，网络结果覆盖） |
+
+TV 端 DataStore 文件从 967 B 增长到 **333 KB**（两个分类各 240 条），冷启动 8.7 秒后首页内容行已经出现「14 部 / 查看全部」。
+
+#### 启动预热与每小时刷新
+
+用户要求「程序启动时自动拉取刷新播放源数据，后台每小时自动拉取一次并更新缓存」：
+
+- 桌面端 `lib/catalog-warmer.ts`：`startCatalogWarmup()` 在 `initBridge()` 之后调用，延迟 1.5 秒（让 Hero / 继续观看先渲染完）再抓，之后 `setInterval(CATALOG_REFRESH_MS)`；`stopCatalogWarmup()` 在 `App` 卸载时清掉定时器；
+- TV 端 `AppViewModel.init` 里一条 `while (true) { refreshCatalog(); delay(REFRESH_INTERVAL_MS) }`；
+- 只抓**没缓存过或已过期**的分类（`staleCategories` / `missingCategories`），命中缓存的不重复请求；
+- 首启还没有任何缓存时只抓电影 + 电视剧两个分支，而不是一次抓 8 个——那会让首屏多等好几秒；
+- 并发度刻意压到 2（桌面）而不是全开：预热不该和用户主动点击抢带宽；
+- 预热失败一律吞掉：用户点进分类时页面自己还会再拉一次。
+
+#### 别拿「空列表」当省略号
+
+TV 端 `CatalogSnapshot.itemsOf()` 对没缓存过的分类返回 `null`（Kotlin 的 `List?`）、core 的 `catalogItems()` 返回 `undefined`。如果图省事返回空列表，`refreshHomeRows()` 会认为「所有分类都缓存过了但都是空的」，首页内容流永远不渲染——而真正的空态和加载态也没法区分。
+
 ### 首页只显示有内容的分类
 
 「少儿」这类分类在部分源里一条内容都没有，入口点进去只能是空页面。因此 `probeCategories` 会在首页挂载时并发探测 8 个分类的可用性：

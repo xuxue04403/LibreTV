@@ -53,12 +53,14 @@ private val items = listOf(
 
 @Composable
 fun NavRail(current: Screen, onSelect: (Screen) -> Unit) {
+    // 导航收窄到 84dp：104dp 常显时占掉 960dp 设计宽的 11%，
+    // 而电视上没人需要一直看到文字标签——聚焦时再显示就够了。
     Column(
         Modifier
-            .width(104.dp)
+            .width(84.dp)
             .fillMaxHeight()
             .background(Brush.verticalGradient(listOf(Color(0xFF10141C), Bg)))
-            .padding(vertical = 22.dp),
+            .padding(vertical = 18.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -66,20 +68,20 @@ fun NavRail(current: Screen, onSelect: (Screen) -> Unit) {
             painter = painterResource(id = org.libretv.tv.R.drawable.logo),
             contentDescription = "LibreTV",
             modifier = Modifier
-                .size(48.dp)
-                .clip(RoundedCornerShape(13.dp)),
+                .size(42.dp)
+                .clip(RoundedCornerShape(12.dp)),
         )
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(14.dp))
 
         items.forEach { item ->
             val active = current::class == item.screen::class
             TvCard(
                 onClick = { onSelect(item.screen) },
-                modifier = Modifier.size(72.dp),
+                modifier = Modifier.size(64.dp),
                 containerColor = if (active) Color(0xFF22140F) else Color(0x00000000),
                 shape = RoundedCornerShape(14.dp),
                 focusedScale = 1.07f,
-            ) { _ ->
+            ) { focused ->
                 Column(
                     Modifier.fillMaxSize(),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -88,15 +90,18 @@ fun NavRail(current: Screen, onSelect: (Screen) -> Unit) {
                     Icon(
                         imageVector = item.icon,
                         contentDescription = item.label,
-                        tint = if (active) Accent else TextMuted,
+                        tint = if (active || focused) Accent else TextMuted,
                         modifier = Modifier.size(24.dp),
                     )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        item.label,
-                        color = if (active) Accent else TextMuted,
-                        fontSize = MaterialTheme.typography.bodySmall.fontSize,
-                    )
+                    // 标签只在「当前页」和「聚焦中」出现，其余时候纯图标
+                    if (active || focused) {
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            item.label,
+                            color = if (active || focused) Accent else TextMuted,
+                            fontSize = MaterialTheme.typography.bodySmall.fontSize,
+                        )
+                    }
                 }
             }
         }

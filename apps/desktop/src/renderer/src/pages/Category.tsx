@@ -9,6 +9,7 @@ import {
   type CategorySourceOutcome,
 } from '@libretv/core';
 import { http } from '../lib/bridge';
+import { cachedItems, rememberItems } from '../lib/catalog-cache';
 import { useAppStore } from '../lib/store';
 import { DetailPanel } from '../components/DetailPanel';
 import { Icon } from '../components/Icons';
@@ -42,6 +43,7 @@ export function CategoryPage({
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
+  const [fromCache, setFromCache] = useState(false);
   const [selected, setSelected] = useState<AggregatedGroup | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const runId = useRef(0);
@@ -65,12 +67,29 @@ export function CategoryPage({
       abortRef.current = controller;
       const myRun = ++runId.current;
 
-      setLoading(true);
-      if (!append) {
+      // 第一页先读本地缓存：切换分类不应该再等各源响应一遍。
+      // 缓存只是「先给你内容」，请求照样发，回来后覆盖。
+      if (targetPage === 1 && !append) {
+        const cached = cachedItems(sources, adultFilter, category);
+        if (cached && cached.length > 0) {
+          setGroups(groupSearchResults(cached));
+          setOutcomes([]);
+          setPage(1);
+          setHasMore(false);
+          setFromCache(true);
+        } else {
+          setGroups([]);
+          setOutcomes([]);
+          setPage(1);
+          setFromCache(false);
+        }
+      } else if (!append) {
         setGroups([]);
         setOutcomes([]);
         setPage(1);
       }
+
+      setLoading(true);
 
       try {
         const result = await browseCategory({
@@ -108,9 +127,14 @@ export function CategoryPage({
         });
         setOutcomes(result.outcomes);
         setPage(targetPage);
+        setFromCache(false);
         // 任一源还有下一页就允许继续加载
         setHasMore(result.outcomes.some((o) => o.supported && o.count > 0) && targetPage < 8);
-        if (result.items.length === 0) {
+        // 第一页拿到就落盘：下次切回这个分类是 0 延迟
+        if (targetPage === 1 && result.items.length > 0) {
+          rememberItems(sources, adultFilter, category, result.items);
+        }
+        if (result.items.length === 0 && !append) {
           toast.push(`当前源没有返回「${label}」内容`);
         }
       } catch (err) {
@@ -140,7 +164,11 @@ export function CategoryPage({
         <span>
           {label}
           <span style={{ color: '#8d97a8', fontWeight: 400, fontSize: 12, marginLeft: 8 }}>
-            {loading && page === 1 ? '加载中…' : `${groups.length} 部`}
+            {loading && groups.length === 0
+              ? '加载中…'
+              : fromCache
+                ? `${groups.length} 部（本地缓存，正在刷新）`
+                : `${groups.length} 部`}
           </span>
         </span>
         <span className="hint">

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -176,10 +177,17 @@ fun Poster(
 }
 
 @Composable
-fun SectionHeader(title: String, hint: String? = null, modifier: Modifier = Modifier) {
+fun SectionHeader(
+    title: String,
+    hint: String? = null,
+    modifier: Modifier = Modifier,
+    onMore: (() -> Unit)? = null,
+) {
     // 参数顺序符合 Compose 约定：modifier 是第一个可选参数（lint ModifierParameter）
     Row(
-        modifier = modifier.padding(top = 26.dp, bottom = 10.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(top = 26.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -192,6 +200,61 @@ fun SectionHeader(title: String, hint: String? = null, modifier: Modifier = Modi
         if (hint != null) {
             Spacer(Modifier.width(10.dp))
             Text(hint, color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
+        }
+        if (onMore != null) {
+            Spacer(Modifier.weight(1f))
+            // 「查看全部 ›」：内容流每排只摆十几张，得有个明确的出口
+            TvCard(
+                onClick = onMore,
+                shape = RoundedCornerShape(999.dp),
+                containerColor = Color.Transparent,
+                focusedScale = 1.04f,
+            ) { focused ->
+                Text(
+                    "查看全部 ›",
+                    color = if (focused) Accent else TextMuted,
+                    fontSize = MaterialTheme.typography.bodySmall.fontSize,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 首页/分类页统一的海报卡：2:3 海报 + 标题 + 副标题。
+ *
+ * 原来首页并存三种比例（分类 128 方形、收藏 158×228、直播 200 横卡），
+ * 一屏里三种尺度在客厅距离下显得很乱。内容流统一用这一种。
+ */
+@Composable
+fun PosterCard(
+    title: String,
+    poster: String?,
+    subtitle: String? = null,
+    width: androidx.compose.ui.unit.Dp = 158.dp,
+    onClick: () -> Unit,
+) {
+    TvCard(onClick = onClick, modifier = Modifier.width(width), focusedScale = 1.06f) { focused ->
+        Column {
+            Poster(poster, title, Modifier.fillMaxWidth().height(228.dp))
+            Column(Modifier.padding(horizontal = 10.dp, vertical = 9.dp)) {
+                EllipsizedText(
+                    title,
+                    fontSize = MaterialTheme.typography.titleMedium.fontSize,
+                    color = if (focused) Accent else TextPrimary,
+                )
+                if (!subtitle.isNullOrBlank()) {
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        subtitle,
+                        color = TextMuted,
+                        fontSize = MaterialTheme.typography.bodySmall.fontSize,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
         }
     }
 }
@@ -270,7 +333,9 @@ fun VSpacer(height: Int = 10) {
     Spacer(Modifier.height(height.dp))
 }
 
-val ScreenPadding = PaddingValues(horizontal = 46.dp, vertical = 26.dp)
+// 左右留白对称：导航收窄到 84dp 之后，左边不再比右边多出一截。
+// 原来是 horizontal = 46dp，加上 104dp 导航，左侧视觉留白 150dp、右侧只有 46dp。
+val ScreenPadding = PaddingValues(horizontal = 36.dp, vertical = 22.dp)
 
 @Composable
 fun ProgressBar(progress: Float, modifier: Modifier = Modifier, color: Color = Accent) {

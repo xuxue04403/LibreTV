@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -26,18 +25,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import org.libretv.tv.AppViewModel
+import org.libretv.tv.HomeRow
 import org.libretv.tv.Screen
 import org.libretv.tv.data.AppData
 import org.libretv.tv.data.CategoryKey
+import org.libretv.tv.data.FavoriteEntry
 import org.libretv.tv.data.HistoryEntry
 import org.libretv.tv.data.LiveFavoriteEntry
-import org.libretv.tv.data.FavoriteEntry
+import org.libretv.tv.data.SearchItem
 import org.libretv.tv.ui.theme.Accent
 import org.libretv.tv.ui.theme.Panel
 import org.libretv.tv.ui.theme.TextMuted
@@ -56,25 +56,41 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
         }
     }
 
+    val rows = vm.homeRows
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .padding(ScreenPadding),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        item { HomeHero(data, onSearch = { vm.go(Screen.Search) }, onSettings = { vm.go(Screen.Settings) }, onCast = { vm.go(Screen.Cast) }, firstFocus) }
+        item {
+            HomeHero(
+                data,
+                onSearch = { vm.go(Screen.Search) },
+                onSettings = { vm.go(Screen.Settings) },
+                onCast = { vm.go(Screen.Cast) },
+                firstFocus,
+            )
+        }
 
-        // 分类入口：首页顶部一排，进屋就能选「电影 / 电视剧 / 少儿 / 综艺 …」
+        // 分类入口：一排胶囊，进屋就能选「电影 / 电视剧 / 少儿 / 综艺 …」
         // 只显示真的有内容的分类：点了进空页面比看不到入口更糟
         item { SectionHeader("分类浏览", "按源站分类直接打开") }
         item { CategoryRow(vm, data) }
 
+        // 继续观看：有记录才出现，放在内容流最上面（用户回来大概率是为了接着看）
         if (data.history.isNotEmpty()) {
-            item { SectionHeader("继续观看", "${data.history.size} 条记录") }
+            item {
+                SectionHeader(
+                    "继续观看",
+                    hint = "${data.history.size} 条记录",
+                    onMore = null,
+                )
+            }
             item {
                 LazyRow(
-                    state = rememberLazyListState(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     items(data.history.take(14), key = { it.id }) { entry ->
                         HistoryCard(entry) { vm.resumeFromHistory(entry) }
@@ -83,13 +99,35 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
             }
         }
 
+        // 内容流：每个可用分类一排真实海报。数据来自本地目录缓存，
+        // 所以进首页不需要等网络；缓存没到位时这几排先不渲染，不会留空框。
+        items(rows, key = { it.key.name }) { row ->
+            Column {
+                SectionHeader(
+                    row.key.label,
+                    hint = "${row.items.size} 部",
+                    onMore = { vm.selectCategory(row.key) },
+                )
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    items(row.items, key = { "${it.sourceKey}:${it.vodId}" }) { item ->
+                        PosterCard(
+                            title = item.name,
+                            poster = item.pic,
+                            subtitle = listOfNotNull(item.year?.takeIf { it.isNotBlank() }, item.remarks?.takeIf { it.isNotBlank() })
+                                .joinToString(" · ")
+                                .ifBlank { row.key.label },
+                        ) { vm.openDetailForItem(item) }
+                    }
+                }
+            }
+        }
+
         if (data.favorites.isNotEmpty()) {
             item { SectionHeader("我的收藏", "${data.favorites.size} 部") }
             item {
-                LazyRow(
-                    state = rememberLazyListState(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                ) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     items(data.favorites.take(20), key = { it.id }) { fav ->
                         FavoriteCard(fav) { vm.playFavorite(fav.id) }
                     }
@@ -100,10 +138,7 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
         if (data.liveFavorites.isNotEmpty()) {
             item { SectionHeader("直播收藏", "${data.liveFavorites.size} 个频道") }
             item {
-                LazyRow(
-                    state = rememberLazyListState(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     items(data.liveFavorites, key = { it.url }) { fav ->
                         LiveFavoriteCard(fav) {
                             vm.go(
@@ -122,11 +157,10 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
             }
         }
 
+        // 数据源入口挪到最后：它是「设置」，不是内容。
+        // 原来四张统计卡摆在首屏主视觉上，新装用户 0 记录 0 收藏时整屏都是数字。
         item { SectionHeader("数据源") }
         item {
-            // 两个「源」卡片做成可聚焦并直达数据源设置：
-            // 首页原本只有分类行可聚焦，往下按没有落点时焦点会飘到左侧导航栏
-            // （手指在屏幕中间却跳到「设置」），给这一行一个真实落点就正常了。
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 StatCard(
                     "点播源",
@@ -138,8 +172,7 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
                     "${data.activeLiveSources().size}/${data.liveSources.size}",
                     Modifier.width(190.dp),
                 ) { vm.go(Screen.Settings) }
-                // 这两个数字只是概览，首页下方已有「继续观看 / 收藏」区，不做成按钮
-                StatCard("观看记录", "${data.history.size}", Modifier.width(190.dp))
+                StatCard("观看记录", "${data.history.size}", Modifier.width(190.dp)) { vm.go(Screen.Search) }
                 StatCard("收藏", "${data.favorites.size + data.liveFavorites.size}", Modifier.width(190.dp))
             }
         }

@@ -31,6 +31,40 @@ class Repository(private val net: Net = Net) {
         for (item in items) seenItems["${item.sourceKey}:${item.vodId}"] = item
     }
 
+    /**
+     * 落盘目录缓存（由 ViewModel 在初始化时注入 store 里读出来的快照）。
+     *
+     * 缓存放这里而不是 ViewModel：`browseCategory` 是决定「要不要打网络」的地方，
+     * 判断必须和读取在同一处，否则容易出现「界面说有缓存、数据层还是照抓一遍」。
+     */
+    @Volatile
+    private var catalog: CatalogSnapshot? = null
+
+    /** 目录缓存变更后通知外面落盘 */
+    var onCatalogChanged: ((CatalogSnapshot) -> Unit)? = null
+
+    fun installCatalog(snapshot: CatalogSnapshot?) {
+        catalog = snapshot
+    }
+
+    fun catalogSnapshot(): CatalogSnapshot = catalog ?: CatalogSnapshot(signature = "")
+
+    /** 写入某个分类的缓存条目（内存 + 回调落盘） */
+    fun cacheCatalogItems(key: CategoryKey, items: List<SearchItem>) {
+        val current = catalog
+        val signature = current?.signature ?: return
+        val next = (current).withEntry(key, items)
+        if (next === current) return
+        catalog = next
+        onCatalogChanged?.invoke(next)
+    }
+
+    /** 缓存里这个分类的内容；已过期也返回（界面先用旧内容顶上，后台再刷） */
+    fun cachedCategory(key: CategoryKey): List<SearchItem>? = catalog?.itemsOf(key)
+
+    /** 全局搜索用的关键词缓存由 ViewModel 持有，这里只暴露「有没有可用的源签名」 */
+    fun catalogSignature(): String? = catalog?.signature?.takeIf { it.isNotEmpty() }
+
 
     /** 单源搜索：第一页拿 pagecount，再并行/顺序补齐后续页（默认最多 2 页，电视端不宜拖太久） */
     suspend fun search(
@@ -236,6 +270,9 @@ class Repository(private val net: Net = Net) {
      *
      * adultFilter 默认开启：与搜索保持一致。「伦理片」名字带「片」会被归入电影桶，
      * 不过滤的话首页分类会直接露出成人内容。
+     *
+     * [useCache] 为 true 时优先返回落盘缓存（进程重启后依然有效），
+     * 只有缓存缺失才打网络。后台刷新走 `useCache = false`。
      */
     suspend fun browseCategory(
         source: VodSource,
@@ -243,13 +280,16 @@ class Repository(private val net: Net = Net) {
         typeLimit: Int = 6,
         timeoutMs: Long = 14_000,
         adultFilter: Boolean = true,
+        useCache: Boolean = true,
     ): Triple<Boolean, List<SearchItem>, String?> {
         val started = System.currentTimeMillis()
         // 切回上一个分类时如果重新打一遍各源，体感就是「每次切分类都在重新加载播放源」。
         // 缓存 5 分钟：分类内的第一批内容在这个时间尺度上几乎不会变。
         val cacheKey = "${source.key}|$key|$typeLimit|${if (adultFilter) 1 else 0}"
-        browseCache[cacheKey]?.let { (at, cached) ->
-            if (System.currentTimeMillis() - at < BROWSE_TTL_MS) return cached
+        if (useCache) {
+            browseCache[cacheKey]?.let { (at, cached) ->
+                if (System.currentTimeMillis() - at < BROWSE_TTL_MS) return cached
+            }
         }
         return try {
             val result = withTimeoutOrNull(timeoutMs) {
@@ -279,6 +319,14 @@ class Repository(private val net: Net = Net) {
             System.currentTimeMillis() - started
         }
     }
+
+    /**
+     * 从落盘缓存里还原某个分类（跨源合并后的条目）。
+     *
+     * 返回 null 表示缓存里没有这个分类，调用方应当走网络。
+     */
+    fun cachedCategoryItems(key: CategoryKey): List<SearchItem>? = cachedCategory(key)
+
 
     /** 分类浏览结果缓存：切回上一个分类应当立刻出内容 */
     private val browseCache =

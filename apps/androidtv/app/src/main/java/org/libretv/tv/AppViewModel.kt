@@ -82,6 +82,8 @@ data class SearchUi(
     val outcomes: List<SourceOutcome> = emptyList(),
     val groups: List<SearchGroup> = emptyList(),
     val searched: Boolean = false,
+    /** 结果来自本地检索缓存 */
+    val fromCache: Boolean = false,
 )
 
 data class DetailUi(
@@ -109,14 +111,28 @@ data class CategoryUi(
     val groups: List<SearchGroup> = emptyList(),
     val supportedSources: Int = 0,
     val failedSources: Int = 0,
+    /** 内容来自本地缓存：界面已可用，后台仍在刷新 */
+    val fromCache: Boolean = false,
+)
+
+/** 首页的一排内容：标题 + 该分类下的一批影片 */
+data class HomeRow(
+    val key: CategoryKey,
+    val items: List<SearchItem>,
 )
 
 /** 单次详情请求的死线：超时即换下一个候选源，不让用户对着转圈等 */
 private const val PINYIN_SOURCE_KEY = "pinyin"
+
+/** 检索缓存命中时伪造的「源」，UI 上显示为「本地缓存」 */
+private const val CACHE_SOURCE_KEY = "cache"
 private const val DETAIL_TIMEOUT_MS = 9_000L
 
 /** 同时发起的候选详情请求上限（电视盒子并发能力有限） */
 private const val DETAIL_FANOUT = 3
+
+/** 首页每个分类排显示多少张海报（再多也没人横向翻） */
+private const val HOME_ROW_SIZE = 14
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = AppStore(app)
@@ -146,6 +162,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     var availableCategories by mutableStateOf<List<CategoryKey>?>(null)
         private set
+
+    /**
+     * 首页内容流：每个可用分类一排，内容全部来自本地目录缓存。
+     *
+     * 首页原来只有 Hero + 分类胶囊 + 四张统计卡，新装用户进来几乎没东西可看。
+     * 改成 row 式内容流后，一屏就能看到「继续观看 + 电影 + 电视剧 …」的真实海报。
+     */
+    var homeRows by mutableStateOf<List<HomeRow>>(emptyList())
+        private set
     private var probeJob: Job? = null
     private var probedSourceSignature: String = ""
 
@@ -155,6 +180,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var persistedIndexSize: Int = 0
 
     init {
+        // 目录缓存一有变化就落盘：loadCategory 抓到的新内容不该等到下一个小时才保住
+        repo.onCatalogChanged = { snapshot ->
+            viewModelScope.launch { runCatching { store.saveCatalog(snapshot) } }
+        }
         viewModelScope.launch {
             seedIfNeeded()
             dedupeStoredHistory()
@@ -181,6 +210,102 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             runCatching { repo.rememberItems(store.pinyinIndex()) }
         }
+        // 目录缓存：先把上次落盘的内容装进 repo，界面一开机就有内容可读
+        viewModelScope.launch {
+            runCatching { installCatalogCache() }
+        }
+        // 预热 + 每小时刷新：启动后拉一遍所有分类，之后每小时一次。
+        // 用户要求「切分类和检索时优先读缓存」，所以刷新是唯一打网络的时机。
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(1_500) // 让首帧先渲染，别和冷启动抢带宽
+            while (true) {
+                runCatching { refreshCatalog() }
+                kotlinx.coroutines.delay(org.libretv.tv.data.CatalogSnapshot.REFRESH_INTERVAL_MS)
+            }
+        }
+    }
+
+    /** 目录缓存的源签名：源或成人过滤开关一变，旧缓存整体作废 */
+    private fun catalogSignature(sources: List<VodSource>, adultFilter: Boolean): String =
+        org.libretv.tv.data.CatalogSnapshot.signatureOf(sources, adultFilter)
+
+    private suspend fun installCatalogCache() {
+        val sources = _data.value.activeSources()
+        if (sources.isEmpty()) return
+        val signature = catalogSignature(sources, _data.value.settings.adultFilter)
+        val snapshot = store.catalog(signature) ?: return
+        repo.installCatalog(snapshot)
+        refreshHomeRows()
+    }
+
+    /**
+     * 预热 / 定时刷新：把 8 个分类各拉一遍并写入本地目录缓存。
+     *
+     * 单轮用 `useCache = false` 强制刷新分类表本身；分类内容每条只抓第一页，
+     * 4 个源并发 + 每分类并发，一轮大约十几秒，放在后台跑不影响前台。
+     */
+    private suspend fun refreshCatalog() {
+        val sources = _data.value.activeSources()
+        if (sources.isEmpty()) return
+        val adultFilter = _data.value.settings.adultFilter
+        val signature = catalogSignature(sources, adultFilter)
+        // 签名不符才换新快照：签名相同要保留内存里那份，
+        // 否则刚由 loadCategory 写进去、还没来得及落盘的条目会被这里覆盖掉
+        if (repo.catalogSignature() != signature) {
+            repo.installCatalog(
+                store.catalog(signature) ?: org.libretv.tv.data.CatalogSnapshot(signature = signature)
+            )
+        }
+        val snapshot = repo.catalogSnapshot()
+        // 8 个分类 × 每分类并发拉源：串行要一分钟以上，预热就没意义了
+        coroutineScope {
+            CategoryKey.home.map { key ->
+                async {
+                    // 还新鲜就不重复打网络
+                    if (snapshot.isFresh(key) && repo.cachedCategoryItems(key) != null) return@async
+                    val items = sources.map { source ->
+                        async {
+                            val (ok, list, _) = repo.browseCategory(
+                                source,
+                                key,
+                                adultFilter = adultFilter,
+                                useCache = true,
+                            )
+                            if (ok) list else emptyList()
+                        }
+                    }.awaitAll().flatten()
+                    if (items.isNotEmpty()) {
+                        repo.cacheCatalogItems(key, items.distinctBy { "${it.sourceKey}:${it.vodId}" })
+                    }
+                }
+            }.awaitAll()
+        }
+        runCatching { store.saveCatalog(repo.catalogSnapshot()) }
+        // 缓存到位后，若用户正停在某个还没内容的分类页，顺手把它补上
+        val current = screen
+        if (current is Screen.Category && category.groups.isEmpty() && !category.loading) {
+            val filled = repo.cachedCategoryItems(current.key)
+            if (!filled.isNullOrEmpty()) {
+                category = category.copy(groups = Parsers.group(filled), fromCache = true)
+            }
+        }
+        refreshHomeRows()
+    }
+
+    /**
+     * 用本地目录缓存填首页的内容流。
+     *
+     * 只读缓存、不发请求：首页要「一进去就有海报」，网络那是 [refreshCatalog] 的事。
+     * 每个可用分类取前 [HOME_ROW_SIZE] 条，单独一个分类失败不影响其它排。
+     */
+    fun refreshHomeRows() {
+        val keys = availableCategories ?: CategoryKey.home
+        val rows = keys.mapNotNull { key ->
+            val cached = repo.cachedCategoryItems(key)
+            if (cached.isNullOrEmpty()) return@mapNotNull null
+            HomeRow(key = key, items = cached.take(HOME_ROW_SIZE))
+        }
+        homeRows = rows
     }
 
     // —— 首次启动：导入内置默认源 ——
@@ -213,8 +338,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // —— 导航 ——
-    fun go(target: Screen) {
-        screen = target
+    /**
+     * 首页内容流点海报：没有 group 就直接按单条打开详情。
+     *
+     * 首页海报可能来自另一个源（缓存里是第一页混排），group 里只有它自己，
+     * 换源候选仍会按片名自动补。
+     */
+    fun openDetailForItem(item: SearchItem) {
+        openDetail(SearchGroup(key = item.name, name = item.name, items = listOf(item)), item)
+    }
+
+    fun go(target: Screen) {        screen = target
         if (target is Screen.Search) {
             // 从详情返回搜索时保留结果
         }
@@ -291,6 +425,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             availableCategories = keys
             if (hits != null) store.saveCategoryAvailability(signature, keys.map { it.name })
+            refreshHomeRows()
         }
     }
 
@@ -322,17 +457,41 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun loadCategory(key: CategoryKey) {
         val sources = _data.value.activeSources()
         backTarget = Screen.Home
-        category = CategoryUi(key = key, loading = sources.isNotEmpty())
         if (sources.isEmpty()) {
+            category = CategoryUi(key = key)
             showToast("还没有启用任何点播源")
             return
+        }
+        // 缓存优先：切分类时先立刻出上一次的内容（进程重启后依然有效），
+        // 只有缓存缺失才显示加载态。用户反馈「每次切分类都像在重新拉播放源」
+        // 就是这一步缺失导致的。
+        val cached = runCatching { repo.cachedCategoryItems(key) }.getOrNull()
+        category = if (cached.isNullOrEmpty()) {
+            CategoryUi(key = key, loading = true)
+        } else {
+            CategoryUi(
+                key = key,
+                loading = false,
+                groups = Parsers.group(cached),
+                supportedSources = cached.map { it.sourceKey }.distinct().size,
+                failedSources = 0,
+                fromCache = true,
+            )
         }
         // 快速切分类时取消上一轮：否则旧协程回来会覆盖新分类的结果
         categoryJob?.cancel()
         categoryJob = viewModelScope.launch {
             // 并行抓取：串行时单源 14s 超时，8 个源要等近两分钟
             val results = sources.map { source ->
-                async { repo.browseCategory(source, key, adultFilter = _data.value.settings.adultFilter) }
+                async {
+                    repo.browseCategory(
+                        source,
+                        key,
+                        adultFilter = _data.value.settings.adultFilter,
+                        // 有缓存时这一轮是「后台刷新」：命中 5 分钟内存缓存就够，别把整排源再打一遍
+                        useCache = cached.isNullOrEmpty(),
+                    )
+                }
             }.awaitAll()
             val items = mutableListOf<SearchItem>()
             var supported = 0
@@ -346,14 +505,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     failed++
                 }
             }
+            if (items.isEmpty()) {
+                // 刷新失败时不要把已有缓存内容清掉
+                if (cached.isNullOrEmpty()) {
+                    category = CategoryUi(key = key, loading = false)
+                    showToast("当前源没有返回「${key.label}」内容")
+                } else {
+                    category = category.copy(loading = false, fromCache = true)
+                }
+                return@launch
+            }
+            val merged = items.distinctBy { "${it.sourceKey}:${it.vodId}" }
+            // 跨源合并后的整体结果落到本地目录缓存，下次切回来零网络
+            repo.cacheCatalogItems(key, merged)
+            refreshHomeRows()
             category = CategoryUi(
                 key = key,
                 loading = false,
-                groups = Parsers.group(items.distinctBy { "${it.sourceKey}:${it.vodId}" }),
+                groups = Parsers.group(merged),
                 supportedSources = supported,
                 failedSources = failed,
             )
-            if (items.isEmpty()) showToast("当前源没有返回「${key.label}」内容")
         }
     }
 
@@ -424,18 +596,48 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (hits.isEmpty()) showToast("没有匹配「${word.lowercase()}」的影片：拼音只查已见过的片名，先用中文搜一次即可")
                 return@launch
             }
-            repo.searchAll(sources, word, _data.value.settings.adultFilter)
+            // 检索结果缓存：同一个片名一天里会被搜好几次（没找到、隔天再搜、家里人再搜），
+            // 命中就直接出结果，不用再打 4 个源 × 3 页。缓存 1 小时，见 SearchCacheSnapshot。
+            val adultFilter = _data.value.settings.adultFilter
+            val signature = catalogSignature(sources, adultFilter)
+            val cacheSnap = runCatching { store.searchCache(signature) }.getOrNull()
+            val cachedHits = cacheSnap?.itemsOf(word, adultFilter)
+            if (!cachedHits.isNullOrEmpty()) {
+                val outcome = SourceOutcome(
+                    sourceKey = CACHE_SOURCE_KEY,
+                    sourceName = "本地缓存",
+                    ok = true,
+                    items = cachedHits,
+                )
+                search = search.copy(
+                    outcomes = listOf(outcome),
+                    groups = Parsers.group(cachedHits),
+                    loading = false,
+                    fromCache = true,
+                )
+                // 缓存先给结果，后台仍继续拉一遍最新的，拿到就覆盖
+                // （采集站新片更新很快，完全信缓存会搜不到刚上的片）
+            }
+            repo.searchAll(sources, word, adultFilter)
                 .catch { }
                 .collect { outcome ->
                     val outcomes = search.outcomes.filter { it.sourceKey != outcome.sourceKey } + outcome
                     val items = outcomes.filter { it.ok }.flatMap { it.items }
                     search = search.copy(
-                        outcomes = outcomes,
+                        outcomes = outcomes.filter { it.sourceKey != CACHE_SOURCE_KEY },
                         groups = Parsers.group(items),
                         loading = outcomes.size < sources.size,
+                        fromCache = false,
                     )
                 }
             search = search.copy(loading = false)
+            // 有结果才写缓存：空结果也缓存住的话，源临时抽风会让用户一小时内都搜不到
+            val collected = search.outcomes.filter { it.ok }.flatMap { it.items }
+            if (collected.isNotEmpty()) {
+                val base = cacheSnap ?: org.libretv.tv.data.SearchCacheSnapshot()
+                val next = base.withEntry(word, adultFilter, collected)
+                viewModelScope.launch { runCatching { store.saveSearchCache(signature, next) } }
+            }
             persistPinyinIndex()
         }
     }

@@ -10,6 +10,7 @@
 export * from './types';
 export * from './cms';
 export * from './categories';
+export * from './catalog';
 export * from './m3u';
 export * from './ad-filter';
 export * from './format';

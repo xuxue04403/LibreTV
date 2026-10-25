@@ -24,7 +24,9 @@
 | 能力 | 桌面端 | Android TV |
 | --- | --- | --- |
 | **首页分类入口**（电影 / 电视剧 / 少儿 / 综艺 / 动漫 / 纪录片 / 短剧 / 体育） | ✅ 自动隐藏无内容的分类 | ✅ 同左，且焦点移上去即加载（不用按 OK） |
-| **分类结果缓存**（切回上一个分类立刻出内容） | ✅ 5 分钟 | ✅ 5 分钟 |
+| **分类结果缓存**（切回上一个分类立刻出内容） | ✅ 内存 5 分钟 + 落盘 6 小时 | ✅ 同左 |
+| **启动预热与每小时刷新**（后台把各分类第一页抓进缓存） | ✅ | ✅ |
+| **检索结果缓存**（同片名再搜先出缓存） | ✅ 落盘 1 小时 | ✅ 同左 |
 | **拼音首字母搜索**（qmmk → 奇妙萌可） | — | ✅ 本地索引 + 各源最新列表 |
 | **播放列表广告过滤**（摘掉中插广告段） | ✅ | ✅ |
 | **首页横幅**（两栏布局，一屏内看到分类入口） | ✅ 92px | ✅ 152dp |
@@ -78,7 +80,7 @@
 
 ```
 defaults/sources.json        内置默认源（两端共用同一份）
-packages/core/               共享 TS 核心：解析 / 聚合 / 订阅 / 存储模型 / 增量解析（196 项单测）
+packages/core/               共享 TS 核心：解析 / 聚合 / 订阅 / 存储模型 / 增量解析 / 分类与检索缓存（214 项单测）
 apps/desktop/                Electron 桌面端（main / preload / renderer）
 apps/androidtv/              Android TV（Kotlin + Compose + Media3 + 自研 DLNA DMR）
 tools/mock-cms/              本地假采集站（端到端联调 + 截图）
@@ -116,9 +118,9 @@ APK 位置：`apps/androidtv/app/build/outputs/apk/debug/app-debug.apk`（debug 
 ### 测试
 
 ```bash
-npm test                     # 核心解析/聚合/换源/增量解析 + 桌面代理 196 项单测
+npm test                     # 核心解析/聚合/换源/增量解析 + 桌面代理 214 项单测
 npm run test:dlna            # DLNA 发送端链路（SSDP → 设备描述 → SOAP）
-cd apps/androidtv && gradle testDebugUnitTest   # Kotlin 解析层/换源/缩放/换台/播放器参数/观看记录去重/拼音/广告过滤 84 项单测
+cd apps/androidtv && gradle testDebugUnitTest   # Kotlin 解析层/换源/缩放/换台/播放器参数/观看记录去重/拼音/广告过滤/缓存 99 项单测
 ```
 
 端到端联调（本地假采集站 + 真实 HLS 视频）：见 [docs/build.md](docs/build.md#端到端联调)。
