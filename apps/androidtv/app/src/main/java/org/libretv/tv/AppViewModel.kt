@@ -1,6 +1,7 @@
 package org.libretv.tv
 
 import android.app.Application
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -111,6 +112,8 @@ data class CategoryUi(
     val groups: List<SearchGroup> = emptyList(),
     val supportedSources: Int = 0,
     val failedSources: Int = 0,
+    /** 失败原因摘要（如「HTTP 503×2」）：只说「N 个源失败」用户没法判断该怎么办 */
+    val failureReason: String = "",
     /** 内容来自本地缓存：界面已可用，后台仍在刷新 */
     val fromCache: Boolean = false,
 )
@@ -186,6 +189,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             seedIfNeeded()
+            dedupeStoredSources()
             dedupeStoredHistory()
             // DataStore 读盘是 IO：读失败（磁盘忙、文件被占）不该让界面永久停在空数据上。
             // 原来 `.catch { emit(AppData()) }` 会在 catch 之后正常结束整条流，
@@ -309,7 +313,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // —— 首次启动：导入内置默认源 ——
-    private suspend fun seedIfNeeded() {        val current = store.current()
+    private suspend fun seedIfNeeded() {
+        val current = store.current()
         if (current.seeded) return
         val (vod, liveSources) = Defaults.load(getApplication())
         store.update {
@@ -321,6 +326,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 seeded = true,
             )
         }
+    }
+
+    /**
+     * 合并重复配置的源（同一地址只留一条）。
+     *
+     * 老版本有可能把内置源写进存储两遍；重复条目会让分类浏览的并发请求翻倍，
+     * 采集站以 503 回敬，用户看到的就是「所有源都失败、这个分类一部片子都没有」。
+     */
+    private suspend fun dedupeStoredSources() {
+        val current = store.current()
+        val seenUrls = HashSet<String>()
+        val sources = current.sources.filter { seenUrls.add(it.url) }
+        val liveSeen = HashSet<String>()
+        val liveSources = current.liveSources.filter { liveSeen.add(it.url) }
+        if (sources.size == current.sources.size && liveSources.size == current.liveSources.size) return
+        val keys = sources.map { it.key }.toSet()
+        val liveKeys = liveSources.map { it.key }.toSet()
+        store.update {
+            it.copy(
+                sources = sources,
+                liveSources = liveSources,
+                selected = it.selected.filter { key -> key in keys },
+                liveSelected = it.liveSelected.filter { key -> key in liveKeys },
+            )
+        }
+        Log.i("LibreTV", "已合并重复源：点播 ${current.sources.size}→${sources.size}，直播 ${current.liveSources.size}→${liveSources.size}")
     }
 
     /**
@@ -496,13 +527,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val items = mutableListOf<SearchItem>()
             var supported = 0
             var failed = 0
+            val reasons = mutableListOf<String>()
             for (result in results) {
-                val (ok, list, _) = result
+                val (ok, list, note) = result
                 if (ok) {
                     supported++
                     items += list
                 } else {
                     failed++
+                    if (!note.isNullOrBlank()) reasons += note
                 }
             }
             if (items.isEmpty()) {
@@ -525,6 +558,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 groups = Parsers.group(merged),
                 supportedSources = supported,
                 failedSources = failed,
+                failureReason = reasons.groupingBy { it }.eachCount()
+                    .entries.sortedByDescending { it.value }.take(2)
+                    .joinToString("、") { (reason, count) -> if (count > 1) "$reason×$count" else reason },
             )
         }
     }

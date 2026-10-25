@@ -156,7 +156,20 @@ export function CategoryPage({
   }, [category, sources.map((s) => s.key).join(',')]);
 
   const supported = outcomes.filter((o) => o.supported).length;
-  const failed = outcomes.filter((o) => !o.ok).length;
+  const failed = outcomes.filter((o) => !o.ok);
+  // 失败原因必须写出来：只显示「N 个源失败」，用户没法判断是网络、限流还是源站改了地址
+  const failureDetail = useMemo(() => {
+    const tally = new Map<string, number>();
+    for (const outcome of failed) {
+      const reason = (outcome.error ?? '失败').replace(/^HTTP\s*/i, 'HTTP ');
+      tally.set(reason, (tally.get(reason) ?? 0) + 1);
+    }
+    return [...tally.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 2)
+      .map(([reason, count]) => (count > 1 ? `${reason}×${count}` : reason))
+      .join('、');
+  }, [failed]);
 
   return (
     <>
@@ -171,9 +184,9 @@ export function CategoryPage({
                 : `${groups.length} 部`}
           </span>
         </span>
-        <span className="hint">
+        <span className="hint" title={failed.map((o) => `${o.sourceName}：${o.error ?? '失败'}`).join('\n')}>
           {outcomes.length > 0
-            ? `${supported} 个源有此分类${failed > 0 ? ` · ${failed} 个源失败` : ''}`
+            ? `${supported} 个源有此分类${failed.length > 0 ? ` · ${failed.length} 个源失败（${failureDetail}）` : ''}`
             : ''}
         </span>
       </div>
@@ -248,11 +261,21 @@ export function CategoryPage({
       ) : (
         <div className="empty">
           <Icon name="film" size={26} />
-          <h3>这个分类暂时没有内容</h3>
+          <h3>{failed.length === outcomes.length && outcomes.length > 0 ? '所有源都没能返回内容' : '这个分类暂时没有内容'}</h3>
           <div style={{ fontSize: 12.5, lineHeight: 1.8 }}>
-            各源对分类的命名与编排不同，部分源可能没有「{label}」分类；
-            <br />
-            也可以直接搜索片名。
+            {failed.length === outcomes.length && outcomes.length > 0 ? (
+              <>
+                请求全部失败（{failureDetail}），通常是网络不通或采集站限流。
+                <br />
+                稍后点「刷新」重试。
+              </>
+            ) : (
+              <>
+                各源对分类的命名与编排不同，部分源可能没有「{label}」分类；
+                <br />
+                也可以直接搜索片名。
+              </>
+            )}
           </div>
         </div>
       )}

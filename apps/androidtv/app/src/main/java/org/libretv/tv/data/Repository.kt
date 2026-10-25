@@ -259,7 +259,7 @@ class Repository(private val net: Net = Net) {
         val cached = categoryCache[source.url]
         if (cached != null && System.currentTimeMillis() - cached.first < 6 * 60 * 60 * 1000L) return cached.second
         val base = source.url.trimEnd('/')
-        val categories = Categories.parse(net.getText("$base?ac=list&pg=1"))
+        val categories = Categories.parse(Net.gated(source.url) { net.getText("$base?ac=list&pg=1") })
         categoryCache[source.url] = System.currentTimeMillis() to categories
         return categories
     }
@@ -301,7 +301,10 @@ class Repository(private val net: Net = Net) {
                 val lists = ids.map { typeId ->
                     async {
                         runCatching {
-                            Parsers.parseSearchList(net.getText("$base?ac=videolist&t=$typeId&pg=1"), source)
+                            Parsers.parseSearchList(
+                                Net.gated(source.url) { net.getText("$base?ac=videolist&t=$typeId&pg=1") },
+                                source,
+                            )
                         }.getOrDefault(emptyList())
                     }
                 }.awaitAll()

@@ -10,6 +10,47 @@ const DEFAULT_UA =
 /** IPC 抓取（元数据接口）的响应上限；大文件走媒体代理的流式路径 */
 const MAX_IPC_BODY_BYTES = 16 * 1024 * 1024;
 
+/**
+ * 把 undici 的 `fetch failed` 翻译成人能看懂的原因。
+ *
+ * undici 在 DNS 解析失败、TLS 握手失败、连接被重置时统一抛 `TypeError: fetch failed`，
+ * 真正原因藏在 `cause` 里。原来直接把这个字符串传到界面上，用户看到的
+ * 「1 个源失败（fetch failed）」等于什么都没说。
+ */
+function describeFetchError(err: unknown): string {
+  if (!(err instanceof Error)) return '网络请求失败';
+  const cause = (err as { cause?: unknown }).cause;
+  const code =
+    cause && typeof cause === 'object'
+      ? ((cause as { code?: string }).code ?? (cause as { errno?: string }).errno)
+      : undefined;
+  switch (code) {
+    case 'ENOTFOUND':
+    case 'EAI_AGAIN':
+      return '域名解析失败';
+    case 'ECONNREFUSED':
+      return '连接被拒绝';
+    case 'ECONNRESET':
+      return '连接被重置';
+    case 'ETIMEDOUT':
+    case 'UND_ERR_CONNECT_TIMEOUT':
+      return '连接超时';
+    case 'UND_ERR_HEADERS_TIMEOUT':
+      return '响应超时';
+    case 'UND_ERR_SOCKET':
+      return '连接中断';
+    case 'CERT_HAS_EXPIRED':
+    case 'UNABLE_TO_VERIFY_LEAF_SIGNATURE':
+    case 'DEPTH_ZERO_SELF_SIGNED_CERT':
+      return '证书校验失败';
+    default:
+      break;
+  }
+  const message = typeof (cause as { message?: string })?.message === 'string' ? (cause as { message: string }).message : '';
+  if (message && message !== err.message) return `${err.message}：${message}`;
+  return err.message;
+}
+
 let win: BrowserWindow | null = null;
 let proxy: MediaProxy | null = null;
 
@@ -215,9 +256,10 @@ ipcMain.handle(
         ms: Date.now() - started,
       };
     } catch (err) {
-      const message = err instanceof Error ? err.message : '网络请求失败';
       const timeout = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
-      return fail(timeout ? 408 : 0, timeout ? '请求超时' : message);
+      // undici 在 DNS / TLS / 连接被重置时只给一个 "fetch failed"，对用户毫无信息量。
+      // 把真正的原因（cause）解出来，界面上才有可行动的提示。
+      return fail(timeout ? 408 : 0, timeout ? '请求超时' : describeFetchError(err));
     }
   }
 );

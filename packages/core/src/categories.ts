@@ -7,6 +7,7 @@
 
 import { cmsRequestHeaders, filterAdultResults, parseSearchList } from './cms';
 import { HttpError, type HttpClient } from './http';
+import { catalogLimiter, sourceLimiter } from './limiter';
 import type { SearchResultItem, SourceConfig } from './types';
 export type CategoryKey = 'movie' | 'tv' | 'variety' | 'anime' | 'kids' | 'doc' | 'short' | 'sports' | 'other';
 
@@ -153,11 +154,13 @@ export async function fetchSourceCategories(
 ): Promise<SourceCategory[]> {
   const base = source.url.replace(/\/+$/, '');
   const url = `${base}?ac=list&pg=1`;
-  const res = await http.request(url, {
-    headers: cmsRequestHeaders(),
-    timeoutMs: opts.timeoutMs ?? 10_000,
-    signal: opts.signal,
-  });
+  const res = await catalogLimiter(() =>
+    http.request(url, {
+      headers: cmsRequestHeaders(),
+      timeoutMs: opts.timeoutMs ?? 10_000,
+      signal: opts.signal,
+    })
+  );
   if (!res.ok) throw new HttpError(`HTTP ${res.status}`, res.status);
   let data: unknown;
   try {
@@ -184,11 +187,15 @@ export async function browseSourceCategory(
 ): Promise<CategoryBrowsePage> {
   const base = source.url.replace(/\/+$/, '');
   const url = `${base}?ac=videolist&t=${encodeURIComponent(typeId)}&pg=${Math.max(1, page)}`;
-  const res = await http.request(url, {
-    headers: cmsRequestHeaders(),
-    timeoutMs: opts.timeoutMs ?? 12_000,
-    signal: opts.signal,
-  });
+  const res = await catalogLimiter(() =>
+    sourceLimiter(base)(() =>
+      http.request(url, {
+        headers: cmsRequestHeaders(),
+        timeoutMs: opts.timeoutMs ?? 12_000,
+        signal: opts.signal,
+      })
+    )
+  );
   if (!res.ok) throw new HttpError(`HTTP ${res.status}`, res.status);
   let data: unknown;
   try {
@@ -310,8 +317,34 @@ export async function browseCategory(opts: CategoryBrowseOptions): Promise<Categ
     items: SearchResultItem[];
   }
 
-  const collected = await Promise.all(
-    opts.sources.map(async (source): Promise<SourceCollected> => {
+  // 同一地址被配了多条（老版本重复注入内置源、用户手抄了两遍）时只打一次上游：
+  // 否则并发直接翻倍，采集站会以 503 回敬，表现为「所有源都失败」。
+  const uniqueSources: SourceConfig[] = [];
+  const seenUrls = new Set<string>();
+  const duplicated: SourceCollected[] = [];
+  for (const source of opts.sources) {
+    if (seenUrls.has(source.url)) {
+      const first = uniqueSources.find((s) => s.url === source.url);
+      duplicated.push({
+        outcome: {
+          sourceKey: source.key,
+          sourceName: source.name,
+          ok: true,
+          supported: false,
+          count: 0,
+          error: `与「${first?.name ?? '同一地址'}」重复，已跳过`,
+          ms: 0,
+        },
+        items: [],
+      });
+      continue;
+    }
+    seenUrls.add(source.url);
+    uniqueSources.push(source);
+  }
+
+  const uniqueCollected = await Promise.all(
+    uniqueSources.map(async (source): Promise<SourceCollected> => {
       const started = Date.now();
       const finish = (
         outcome: Omit<CategorySourceOutcome, 'ms' | 'sourceKey' | 'sourceName'>,
@@ -363,6 +396,7 @@ export async function browseCategory(opts: CategoryBrowseOptions): Promise<Categ
     })
   );
 
+  const collected = [...uniqueCollected, ...duplicated];
   const outcomes = collected.map((entry) => entry.outcome);
   for (const outcome of outcomes) {
     try {

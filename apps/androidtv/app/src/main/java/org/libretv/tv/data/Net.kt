@@ -1,17 +1,39 @@
 package org.libretv.tv.data
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
 import java.io.InputStream
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /** 统一网络层：所有采集站/直播源请求都从这里走，便于注入 UA 与超时 */
 object Net {
     const val UA =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
+    /**
+     * 分类浏览的全局并发闸门。
+     *
+     * 一次分类浏览要打「源数 × 子分类数」个请求，启动预热再叠上来，
+     * 峰值能到三十几个并发；采集站的容忍度很低，会直接 503 / 断开，
+     * 表现就是「所有源都失败、这个分类一部片子都没有」。
+     */
+    private val catalogSemaphore = Semaphore(6)
+
+    /** 单个源自己的闸门：一个源内部的请求不要扎堆，否则它最容易把本机 IP 限掉 */
+    private val sourceSemaphores = ConcurrentHashMap<String, Semaphore>()
+
+    private fun sourceSemaphore(url: String): Semaphore =
+        sourceSemaphores.getOrPut(url) { Semaphore(3) }
+
+    /** 走分类闸门执行一次请求 */
+    suspend fun <T> gated(host: String, block: suspend () -> T): T =
+        catalogSemaphore.withPermit { sourceSemaphore(host).withPermit { block() } }
 
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)

@@ -30,6 +30,8 @@ export interface AppState {
   defaultsSeeded: boolean;
 
   seedDefaults: () => void;
+  /** 合并重复配置的源（同一地址只留一条），修老版本重复注入留下的数据 */
+  dedupeSources: () => void;
   restoreDefaults: () => void;
 
   updateSettings: (patch: Partial<AppSettings>) => void;
@@ -75,13 +77,54 @@ export const useAppStore = create<AppState>()(
       seedDefaults: () =>
         set((s) => {
           if (s.defaultsSeeded) return s;
+          // 老版本可能会把内置源重复写进存储（同一 url 出现多次），
+          // 这里补一次合并：先按 url 去重，再补齐 selectedKeys。
+          const existingUrls = new Set(s.sources.map((x) => x.url));
+          const merged: typeof s.sources = [];
+          const seen = new Set<string>();
+          for (const source of s.sources) {
+            if (seen.has(source.url)) continue;
+            seen.add(source.url);
+            merged.push(source);
+          }
+          const added = DEFAULT_SOURCES.filter((d) => !existingUrls.has(d.url));
+          const sources = [...merged, ...added];
           return {
-            sources: [...s.sources, ...DEFAULT_SOURCES],
-            selectedKeys: [...new Set([...s.selectedKeys, ...DEFAULT_SOURCES.map((x) => x.key)])],
-            liveSources: [...s.liveSources, ...DEFAULT_LIVE_SOURCES],
+            sources,
+            selectedKeys: [...new Set([...s.selectedKeys, ...DEFAULT_SOURCES.map((x) => x.key)])].filter(
+              (key) => sources.some((x) => x.key === key)
+            ),
+            liveSources: [...s.liveSources, ...DEFAULT_LIVE_SOURCES.filter((d) => !s.liveSources.some((x) => x.url === d.url))],
             liveSelectedKeys: [...new Set([...s.liveSelectedKeys, ...DEFAULT_LIVE_SOURCES.map((x) => x.key)])],
             defaultsSeeded: true,
           };
+        }),
+
+      dedupeSources: () =>
+        set((s) => {
+          const seen = new Set<string>();
+          const sources = s.sources.filter((source) => {
+            if (seen.has(source.url)) return false;
+            seen.add(source.url);
+            return true;
+          });
+          const liveSeen = new Set<string>();
+          const liveSources = s.liveSources.filter((source) => {
+            if (liveSeen.has(source.url)) return false;
+            liveSeen.add(source.url);
+            return true;
+          });
+          const keys = new Set(sources.map((x) => x.key));
+          const liveKeys = new Set(liveSources.map((x) => x.key));
+          const selectedKeys = [...new Set(s.selectedKeys)].filter((key) => keys.has(key));
+          const liveSelectedKeys = [...new Set(s.liveSelectedKeys)].filter((key) => liveKeys.has(key));
+          const changed =
+            sources.length !== s.sources.length ||
+            liveSources.length !== s.liveSources.length ||
+            selectedKeys.length !== s.selectedKeys.length ||
+            liveSelectedKeys.length !== s.liveSelectedKeys.length;
+          if (!changed) return s;
+          return { sources, liveSources, selectedKeys, liveSelectedKeys };
         }),
 
       restoreDefaults: () =>

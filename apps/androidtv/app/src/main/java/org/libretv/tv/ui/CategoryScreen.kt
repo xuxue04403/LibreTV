@@ -133,7 +133,10 @@ fun CategoryScreen(vm: AppViewModel, data: AppData) {
                 Spacer(Modifier.weight(1f))
                 Text(
                     if (state.groups.isEmpty()) "" else "${state.supportedSources} 个源有此分类" +
-                        if (state.failedSources > 0) " · ${state.failedSources} 个源失败" else "",
+                        if (state.failedSources > 0) {
+                            " · ${state.failedSources} 个源失败" +
+                                if (state.failureReason.isNotBlank()) "（${state.failureReason}）" else ""
+                        } else "",
                     color = TextMuted,
                     fontSize = MaterialTheme.typography.bodySmall.fontSize,
                 )
@@ -154,8 +157,16 @@ fun CategoryScreen(vm: AppViewModel, data: AppData) {
                 state.loading && state.groups.isEmpty() -> PosterGridSkeleton()
 
                 state.groups.isEmpty() -> EmptyState(
-                    "这个分类暂时没有内容",
-                    "各源对分类的命名不同，部分源可能没有「${state.key.label}」；也可以直接搜索片名。",
+                    // 「这个分类没有内容」和「所有源都没连上」是两件事，前者用户该换分类、
+                    // 后者该重试或检查网络；用同一句话会把人引到错误的方向。
+                    if (state.failedSources > 0 && state.supportedSources == 0) "所有源都没能返回内容" else "这个分类暂时没有内容",
+                    if (state.failedSources > 0 && state.supportedSources == 0) {
+                        "请求全部失败" +
+                            if (state.failureReason.isNotBlank()) "（${state.failureReason}）" else "" +
+                                "，通常是网络不通或采集站限流。稍后可重新进入本页重试。"
+                    } else {
+                        "各源对分类的命名不同，部分源可能没有「${state.key.label}」；也可以直接搜索片名。"
+                    },
                 ) {
                     TvButton("去搜索", onClick = { vm.go(Screen.Search) })
                 }
