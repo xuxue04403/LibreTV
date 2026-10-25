@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -25,6 +26,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.libretv.tv.data.AppData
 import org.libretv.tv.data.AppSettings
 import org.libretv.tv.data.AppStore
+import org.libretv.tv.data.CatalogSnapshot
 import org.libretv.tv.data.CategoryKey
 import org.libretv.tv.data.Defaults
 import org.libretv.tv.data.HistoryDedupe
@@ -137,6 +139,14 @@ private const val DETAIL_FANOUT = 3
 /** 首页每个分类排显示多少张海报（再多也没人横向翻） */
 private const val HOME_ROW_SIZE = 14
 
+/**
+ * 目录落盘的合并窗口。
+ *
+ * 一轮 refreshCatalog 会写 8+1 次快照，每份序列化约 557KB 且 DataStore 是整文件
+ * 重写；不等一等就是九次连续大文件写，和播放抢磁盘。500ms 足以把一轮合并成一次。
+ */
+private const val CATALOG_SAVE_DEBOUNCE_MS = 500L
+
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = AppStore(app)
     private val repo = Repository()
@@ -177,15 +187,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var probeJob: Job? = null
     private var probedSourceSignature: String = ""
 
+    /** 待落盘的目录快照：合并同一轮刷新里的多次变更，只写最后一次 */
+    private var pendingCatalogSave: CatalogSnapshot? = null
+    private var catalogSaveJob: Job? = null
+
     private var searchJob: Job? = null
+
+    /** 检索序号：见 [startSearch] 里的说明 */
+    private var searchSeq: Int = 0
 
     /** 上次落盘的拼音索引条数，用来判断「攒够没有」 */
     private var persistedIndexSize: Int = 0
 
     init {
-        // 目录缓存一有变化就落盘：loadCategory 抓到的新内容不该等到下一个小时才保住
+        // 目录缓存一有变化就落盘：loadCategory 抓到的新内容不该等到下一个小时才保住。
+        //
+        // 但要合流：一轮 refreshCatalog 会逐分类写 8 次、再加末尾一次，每份快照
+        // 序列化后约 557KB，DataStore 又是整文件重写 —— 9 次连续写会把 IO 打满，
+        // 还和播放抢同一块磁盘。这里改成「记下最新值 + 500ms 延迟合并」，
+        // 期间再来的只覆盖不排队，一次刷新最终只落一次盘。
         repo.onCatalogChanged = { snapshot ->
-            viewModelScope.launch { runCatching { store.saveCatalog(snapshot) } }
+            pendingCatalogSave = snapshot
+            if (catalogSaveJob?.isActive != true) {
+                catalogSaveJob = viewModelScope.launch {
+                    delay(CATALOG_SAVE_DEBOUNCE_MS)
+                    val latest = pendingCatalogSave
+                    pendingCatalogSave = null
+                    if (latest != null) runCatchingCancellable { store.saveCatalog(latest) }
+                }
+            }
         }
         viewModelScope.launch {
             seedIfNeeded()
@@ -273,13 +303,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                                 source,
                                 key,
                                 adultFilter = adultFilter,
-                                useCache = true,
+                                // 后台刷新必须真的回源：useCache=true 会命中 5 分钟内存缓存，
+                                // 这一轮就白跑了（注释与实现曾经不一致）
+                                useCache = false,
                             )
                             if (ok) list else emptyList()
                         }
                     }.awaitAll().flatten()
-                    if (items.isNotEmpty()) {
-                        repo.cacheCatalogItems(key, items.distinctBy { "${it.sourceKey}:${it.vodId}" })
+                    val merged = items.distinctBy { "${it.sourceKey}:${it.vodId}" }
+                    if (merged.isNotEmpty()) {
+                        repo.cacheCatalogItems(key, merged)
+                    } else if (repo.cachedCategoryItems(key) == null) {
+                        // 空分类也要记一笔「刚查过」，否则它永远不算新鲜，
+                        // 每小时都重打一轮请求，用户看到的还是同一片空白
+                        repo.markCatalogChecked(key)
                     }
                 }
             }.awaitAll()
@@ -336,19 +373,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     private suspend fun dedupeStoredSources() {
         val current = store.current()
-        val seenUrls = HashSet<String>()
-        val sources = current.sources.filter { seenUrls.add(it.url) }
-        val liveSeen = HashSet<String>()
-        val liveSources = current.liveSources.filter { liveSeen.add(it.url) }
+        // 记下「被删掉的 key → 保留下来的 key」：同地址的两条源里，用户启用的
+        // 可能正好是后一条。直接按 key 过滤会把这种源静默停用，用户会以为
+        // 「我明明开着这个源，怎么没内容了」。
+        val keepByUrl = HashMap<String, String>()
+        val sources = current.sources.filter { keepByUrl.getOrPut(it.url) { it.key } == it.key }
+        val liveKeepByUrl = HashMap<String, String>()
+        val liveSources = current.liveSources
+            .filter { liveKeepByUrl.getOrPut(it.url) { it.key } == it.key }
         if (sources.size == current.sources.size && liveSources.size == current.liveSources.size) return
         val keys = sources.map { it.key }.toSet()
         val liveKeys = liveSources.map { it.key }.toSet()
+        val remap = current.selected.mapNotNull { key ->
+            if (key in keys) key else keepByUrl[current.sources.firstOrNull { it.key == key }?.url]
+        }.distinct()
+        val liveRemap = current.liveSelected.mapNotNull { key ->
+            if (key in liveKeys) key else liveKeepByUrl[current.liveSources.firstOrNull { it.key == key }?.url]
+        }.distinct()
         store.update {
             it.copy(
                 sources = sources,
                 liveSources = liveSources,
-                selected = it.selected.filter { key -> key in keys },
-                liveSelected = it.liveSelected.filter { key -> key in liveKeys },
+                selected = remap,
+                liveSelected = liveRemap,
             )
         }
         Log.i("LibreTV", "已合并重复源：点播 ${current.sources.size}→${sources.size}，直播 ${current.liveSources.size}→${liveSources.size}")
@@ -490,9 +537,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         probedSourceSignature = signature
         probeJob?.cancel()
         probeJob = viewModelScope.launch {
-            val hits = runCatching {
+            // 必须用「保留取消」的版本：普通 runCatching 会把 CancellationException
+            // 当成「探测失败」，于是下面的兜底把所有分类都点亮，用户看到入口
+            // 全亮又突然收窄——正是注释里想避免的那种抖动。
+            val hits = runCatchingCancellable {
                 repo.probeCategories(sources, _data.value.settings.adultFilter)
             }.getOrNull()
+            val cancelled = !isActive || probeJob?.isActive == false
+            if (cancelled) return@launch
             val keys = if (hits == null) {
                 // 探测整体失败就退回显示全部，不能把入口全藏起来
                 CategoryKey.home
@@ -522,6 +574,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 分类加载任务：切分类时取消上一轮，避免旧结果覆盖新结果 */
     private var categoryJob: Job? = null
+
+    /**
+     * 分类加载序号。
+     *
+     * 光靠 `categoryJob?.cancel()` 不够：取消是协作式的，`browseCategory` 内部的
+     * 阻塞 IO 不会立刻返回，那一轮仍可能在取消后跑到「边收边渲染」的赋值处，
+     * 把旧分类的海报显示到新分类页上。每次 loadCategory 领一个号，只有号码还是
+     * 最新的那一轮才允许改 category（桌面端对应的就是 Category.tsx 的 runId）。
+     */
+    private var categorySeq: Int = 0
 
     /** 详情加载任务：连续打开多个详情时取消上一轮，避免旧结果回填到新页面 */
     private var detailJob: Job? = null
@@ -556,6 +618,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         // 快速切分类时取消上一轮：否则旧协程回来会覆盖新分类的结果
         categoryJob?.cancel()
+        val mySeq = ++categorySeq
         categoryJob = viewModelScope.launch {
             // 边收边渲染：4 个源 × 4 个子分类全回来要 3~6 秒，
             // 而第一个源通常 1~3 秒就有内容了。等全部回来才出画面，
@@ -579,7 +642,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         done += result
                         snapshot()
                     }
-                    if (partial.isNotEmpty()) {
+                    if (partial.isNotEmpty() && mySeq == categorySeq) {
                         val okCount = doneLock.withLock { done.count { it.first } }
                         category = category.copy(
                             key = key,
@@ -592,6 +655,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     result
                 }
             }.awaitAll()
+            if (mySeq != categorySeq) return@launch
             val items = mutableListOf<SearchItem>()
             var supported = 0
             var failed = 0
@@ -601,6 +665,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (ok) {
                     supported++
                     items += list
+                } else if (repo.isUnsupported(note)) {
+                    // 源正常答复、只是没有这个分类：既不算成功也不算失败。
+                    // 记成失败会让标题多出「N 个源失败」，用户以为网络出了问题。
                 } else {
                     failed++
                     if (!note.isNullOrBlank()) reasons += note
@@ -673,6 +740,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (word.isEmpty()) return
         searchJob?.cancel()
         search = SearchUi(keyword = word, loading = true, searched = true)
+        // 序号守卫：取消是协作式的，被取消的那一轮仍可能跑到 collect 之后的
+        // 「收尾」语句（loading=false、写缓存、落拼音索引），把新一次检索的
+        // 状态改掉。只有号码最新的那一轮才允许收尾。
+        val mySeq = ++searchSeq
         searchJob = viewModelScope.launch {
             val sources = _data.value.activeSources()
             if (sources.isEmpty()) {
@@ -723,8 +794,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // （采集站新片更新很快，完全信缓存会搜不到刚上的片）
             }
             repo.searchAll(sources, word, adultFilter)
-                .catch { }
+                .catch { e ->
+                    // 取消不是错误：吞掉它会让下面的收尾逻辑照常执行，
+                    // 从而把用户新一次检索的状态覆盖掉
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                }
                 .collect { outcome ->
+                    if (mySeq != searchSeq) return@collect
                     val outcomes = search.outcomes.filter { it.sourceKey != outcome.sourceKey } + outcome
                     val items = outcomes.filter { it.ok }.flatMap { it.items }
                     search = search.copy(
@@ -734,6 +810,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         fromCache = false,
                     )
                 }
+            if (mySeq != searchSeq) return@launch
             search = search.copy(loading = false)
             // 有结果才写缓存：空结果也缓存住的话，源临时抽风会让用户一小时内都搜不到
             val collected = search.outcomes.filter { it.ok }.flatMap { it.items }

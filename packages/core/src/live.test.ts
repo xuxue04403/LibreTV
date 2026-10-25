@@ -153,4 +153,19 @@ describe('fetchLivePlaylist', () => {
       fetchLivePlaylist('https://example.com/list.m3u', plainHttp('#EXTM3U\n'), {})
     ).rejects.toThrow(/未解析到可用频道/);
   });
+
+  it('流式路径遇到 HTTP 错误页时报状态码，而不是「格式不支持」', async () => {
+    const html = '<!doctype html><html><body>404 not found</body></html>';
+    const { res } = responseOf(html);
+    const failing: HttpClient = {
+      request: async () => res,
+      async stream(_url, options: HttpStreamOptions) {
+        options.onChunk(new TextEncoder().encode(html));
+        return { ...res, ok: false, status: 404 };
+      },
+    };
+    await expect(
+      fetchLivePlaylist('https://example.com/list.m3u', failing, { onChannels: () => undefined })
+    ).rejects.toThrow(/HTTP 404/);
+  });
 });

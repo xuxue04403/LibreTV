@@ -66,7 +66,7 @@ import org.libretv.tv.ui.theme.TextPrimary
 private const val SEEK_STEP_MS = 10_000L
 
 /** HLS 播放列表判定：只有 HLS 才有分片可预取 */
-private val HLS_URL = Regex("""\.m3u8(\?|$)""", RegexOption.IGNORE_CASE)
+private val HLS_URL = Regex("""\.m3u8($|[?#&/])""", RegexOption.IGNORE_CASE)
 /** 连续缓冲超过这个时长就判定为卡死并换源（秒） */
 private const val STALL_SECONDS = 15
 
@@ -130,13 +130,18 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
      */
     fun play(url: String) {
         val item = MediaItem.fromUri(url)
-        val isHls = url.contains(".m3u8", ignoreCase = true)
-        if (isHls && vm.data.value.settings.adFilter) {
-            exo.setMediaSource(
-                HlsMediaSource.Factory(Playback.dataSourceFactory())
-                    .setPlaylistParserFactory(AdFilteringPlaylistParserFactory(true))
-                    .createMediaSource(item)
-            )
+        if (HLS_URL.containsMatchIn(url)) {
+            // 这里必须用 `prefetchingDataSourceFactory()`，不能是裸的 dataSourceFactory：
+            // 手工构造的 HlsMediaSource 自带数据源工厂，会绕开 `Playback.build()` 里
+            // `setMediaSourceFactory(...)` 的配置。用错了预取就 100% 失效 —— 分片被
+            // 预取进内存，播放器却重新从网上下一遍，等于每个分片白下两次。
+            val factory = Playback.prefetchingDataSourceFactory()
+            val hls = if (vm.data.value.settings.adFilter) {
+                HlsMediaSource.Factory(factory).setPlaylistParserFactory(AdFilteringPlaylistParserFactory(true))
+            } else {
+                HlsMediaSource.Factory(factory)
+            }
+            exo.setMediaSource(hls.createMediaSource(item))
         } else {
             exo.setMediaItem(item)
         }
@@ -147,6 +152,9 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
         onDispose {
             vm.saveProgress(current, currentIndex, exo.currentPosition.coerceAtLeast(0), exo.duration.coerceAtLeast(0))
             exo.release()
+            // 预取缓存是进程级单例，退出播放页就该还给系统：
+            // 电视盒子 heap 常见只有 192MB，留着几十 MB 的 ByteArray 没有收益
+            SegmentPrefetch.clear()
         }
     }
 
@@ -185,7 +193,9 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
         val url = current.episodes.getOrNull(index) ?: return@LaunchedEffect
         // 先让预取跑起来，再 prepare：m3u8 要现拉，分片预取与它并行，
         // 等播放器要点首个分片时它多半已经在内存里了。非 HLS 直链没有分片可预取。
-        if (HLS_URL.containsMatchIn(url)) SegmentPrefetch.start(url)
+        if (HLS_URL.containsMatchIn(url)) {
+            SegmentPrefetch.start(url, adFilter = vm.data.value.settings.adFilter)
+        }
         play(url)
         exo.playWhenReady = true
         if (!resumedOnce) {

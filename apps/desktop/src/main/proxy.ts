@@ -51,6 +51,25 @@ const PREFETCH_MAX_SEGMENT = 8 * 1024 * 1024;
 const PREFETCH_DEFAULT_COUNT = 8;
 /** 预取并发：和播放抢带宽，别开太大 */
 const PREFETCH_CONCURRENCY = 3;
+/** 单个分片的预取超时：上游半死不活时不能把整条链路挂住 */
+const PREFETCH_TIMEOUT_MS = 8_000;
+/** 预取时最多往下钻几层播放列表（master → 变体 → 分片） */
+const PREFETCH_MAX_DEPTH = 2;
+
+/**
+ * 抓上游媒体用的请求头。
+ *
+ * `Referer` 必须带：采集站/CDN 常见防盗链，少了它分片直接 403。
+ * 正常播放路径与预取路径必须用同一份逻辑，否则会出现「能播但预取永远 0 命中」
+ * 这种无声失效。
+ */
+function mediaRequestHeaders(target: URL): Record<string, string> {
+  return {
+    'User-Agent': DEFAULT_UA,
+    Accept: '*/*',
+    Referer: `${target.origin}/`,
+  };
+}
 
 export interface MediaProxy {
   base: string;
@@ -248,6 +267,7 @@ interface PrefetchEntry {
   body: Buffer;
   contentType: string;
   status: number;
+  /** 上游的 206 相关头（目前只在完整 200 时为空），留着给将来做 Range 切片用 */
   headers: Record<string, string>;
 }
 
@@ -266,6 +286,8 @@ class SegmentCache {
 
   put(key: string, entry: PrefetchEntry): void {
     if (entry.body.byteLength > PREFETCH_MAX_SEGMENT) return;
+    // 空响应不进缓存：它不贡献配额，却会让 map 无限增长
+    if (entry.body.byteLength === 0) return;
     const existing = this.map.get(key);
     if (existing) {
       this.bytes -= existing.body.byteLength;
@@ -316,6 +338,35 @@ export interface PrefetchResult {
   error?: string;
 }
 
+/**
+ * master 播放列表（多码率）判定。
+ *
+ * 它的「分片行」其实是子播放列表地址，不能当分片去预取，也不能进缓存
+ * （否则命中时会把未改写的 m3u8 原样回给播放器）。
+ */
+function isMasterPlaylist(playlistText: string): boolean {
+  return /#EXT-X-STREAM-INF/i.test(playlistText);
+}
+
+/** 取某个变体在 master 里声明的带宽（找不到就当 0，排序时排最前） */
+function bandwidthOf(playlistText: string, variantUrl: string): number {
+  const lines = playlistText.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!/^#EXT-X-STREAM-INF/i.test(line)) continue;
+    const match = /BANDWIDTH=(\d+)/i.exec(line);
+    const bandwidth = match ? Number(match[1]) : 0;
+    // 下一行非注释行就是这个变体的地址
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const next = lines[j].trim();
+      if (next === '' || next.startsWith('#')) continue;
+      if (next === variantUrl || variantUrl.endsWith(next)) return bandwidth;
+      break;
+    }
+  }
+  return 0;
+}
+
 /** 从 m3u8 文本里按顺序取出分片绝对地址（跳过广告与加密 key） */
 function segmentUrls(playlistText: string, baseUrl: string): string[] {
   const out: string[] = [];
@@ -335,6 +386,16 @@ export async function startMediaProxy(): Promise<MediaProxy> {
   const token = crypto.randomBytes(16).toString('hex');
   let base = '';
   const cache = new SegmentCache();
+  /**
+   * 正在下载中的分片。
+   *
+   * 桌面端有两条预热入口：渲染层点击播放时调 `/prefetch`，代理自己回 m3u8 时
+   * 也会后台预热。两条链路几乎同时启动，只在 `cache.get()` 判重是挡不住的——
+   * 双方都在对方 `put` 之前看到「没缓存」，同一批分片就被下了两遍。
+   */
+  const inflight = new Set<string>();
+  /** 命中率统计：只看计数，不含任何上游内容 */
+  const stats = { hits: 0, misses: 0 };
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     void handle(req, res).catch((err: unknown) => {
@@ -367,7 +428,7 @@ export async function startMediaProxy(): Promise<MediaProxy> {
         'Access-Control-Allow-Origin': '*',
         'Cache-Control': 'no-store',
       });
-      res.end(JSON.stringify({ segments: cache.size, bytes: cache.bytesCached }));
+      res.end(JSON.stringify({ segments: cache.size, bytes: cache.bytesCached, hits: stats.hits, misses: stats.misses }));
       return;
     }
 
@@ -417,9 +478,17 @@ export async function startMediaProxy(): Promise<MediaProxy> {
 
     // —— /p 预取命中（必须在回源之前查，否则等于没省）——
     // 点击播放时后台已经把前几个分片抓进内存，播放器来要时直接给，省掉整个上游 RTT。
-    if (route === '/p') {
+    //
+    // 带 Range 的请求**绝不能**吃缓存：缓存里存的是完整分片（预取用的是没有 Range
+    // 的 GET），而命中分支只会按 200 回整段。`#EXT-X-BYTERANGE` 的源（hls.js 会发
+    // `Range: bytes=X-Y`）拿到整段却按自己的范围去切片，解出来是错位的字节 —— 花屏，
+    // 比慢一点糟糕得多。这类请求一律回源，让上游自己回 206。
+    const rangeHeader = req.headers.range;
+    const cacheEligible = route === '/p' && !rangeHeader;
+    if (cacheEligible) {
       const cached = cache.get(targetUrl.href);
       if (cached) {
+        stats.hits += 1;
         // 缓存里也可能是播放列表，但它带 token、必须每次重写，不能按 hour 缓存
         const cachedPlaylist = looksLikePlaylistHead(cached.body);
         res.writeHead(cached.status, {
@@ -432,16 +501,11 @@ export async function startMediaProxy(): Promise<MediaProxy> {
         res.end(cached.body);
         return;
       }
+      stats.misses += 1;
     }
 
-    const headers: Record<string, string> = {
-      'User-Agent': DEFAULT_UA,
-      Accept: '*/*',
-      // 采集站/图床常见防盗链要求
-      Referer: `${targetUrl.origin}/`,
-    };
-    const range = req.headers.range;
-    if (range) headers.Range = String(range);
+    const headers = mediaRequestHeaders(targetUrl);
+    if (rangeHeader) headers.Range = String(rangeHeader);
     const encoding = req.headers['accept-encoding'];
     if (encoding) headers['Accept-Encoding'] = String(encoding);
 
@@ -514,17 +578,21 @@ export async function startMediaProxy(): Promise<MediaProxy> {
 
       // 把分片地址顺手预热：播放器拿到这份 m3u8 才会去要分片，
       // 此刻开始抓，等它真的来要时前几片大概率已经在内存里。
-      // 注意用**改写前**的文本：改写后全是本机代理地址，拿去预热等于自己请求自己。
+      // 注意两点：
+      // 1) 必须用**改写前**的文本：改写后全是本机代理地址，拿去预热等于自己请求自己；
+      // 2) 必须用**已切广告**的文本：开了广告过滤时播放器根本不会去要那几段广告，
+      //    照原样预热等于白下几 MB，还挤占真正要看的分片的带宽。
       // 故意不 await：响应已经发出去了，预热是纯后台动作，失败也不影响播放。
       if (upstream.ok) {
-        const warmList = segmentUrls(text, playlistBase).slice(0, PREFETCH_DEFAULT_COUNT);
-        if (warmList.length > 0) {
-          void warmSegments(
-            warmList,
-            { headers: { 'User-Agent': DEFAULT_UA, Accept: '*/*' }, redirect: 'manual' },
-            allowPrivate
-          ).catch(() => undefined);
-        }
+        const warmBody = adFilter ? stripAdGroups(text) : text;
+        // master 列表里列的是子播放列表，按「分片」去抓只会白下一个 m3u8，
+        // 真正的分片要等播放器挑了码率才知道。这种情况交给客户端后的 /prefetch
+        // （它会往下钻一层挑变体），这里不做无用功。
+        if (!isMasterPlaylist(warmBody)) {
+          const warmList = segmentUrls(warmBody, playlistBase).slice(0, PREFETCH_DEFAULT_COUNT);
+          if (warmList.length > 0) {
+            void warmSegments(warmList, allowPrivate).catch(() => undefined);
+          }        }
       }
       return;
     }
@@ -538,7 +606,7 @@ export async function startMediaProxy(): Promise<MediaProxy> {
       res,
       contentType,
       req,
-      req.method !== 'HEAD' && upstream.status === 200,
+      req.method !== 'HEAD' && upstream.status === 200 && !rangeHeader,
       targetUrl.href
     );
   }
@@ -564,75 +632,142 @@ export async function startMediaProxy(): Promise<MediaProxy> {
     allowPrivate: boolean
   ): Promise<PrefetchResult> {
     const wanted = Math.max(1, Math.min(32, Number.isFinite(count) ? count : PREFETCH_DEFAULT_COUNT));
-    const init: RequestInit = {
-      headers: { 'User-Agent': DEFAULT_UA, Accept: '*/*' },
-      redirect: 'manual',
-    };
 
     const first = await assertAllowedTarget(target, allowPrivate);
-    const playlistRes = await fetchChecked(first, init, allowPrivate);
-    if (!playlistRes.ok) {
-      return { ok: false, cached: 0, bytes: cache.bytesCached, playlist: false, error: `HTTP ${playlistRes.status}` };
-    }
-    const text = (await readLimited(playlistRes)).toString('utf8');
-    const playlistBase = playlistRes.url || first.href;
-    const body = adFilter ? stripAdGroups(text) : text;
-    const segments = segmentUrls(body, playlistBase).slice(0, wanted);
-    if (segments.length === 0) {
-      // 不是播放列表（直链 mp4 之类）：把这条直链本身读进缓存
-      const single = await fetchChecked(first, init, allowPrivate);
-      if (!single.ok) {
-        return { ok: false, cached: 0, bytes: cache.bytesCached, playlist: false, error: `HTTP ${single.status}` };
-      }
-      const buf = await readLimited(single, PREFETCH_MAX_SEGMENT);
-      cache.put(first.href, {
-        body: buf,
-        contentType: single.headers.get('content-type') || 'application/octet-stream',
-        status: single.status,
-        headers: {},
-      });
-      return { ok: true, cached: Math.min(1, segments.length), bytes: cache.bytesCached, playlist: false };
-    }
+    const init: RequestInit = { headers: mediaRequestHeaders(first), redirect: 'manual' };
 
-    const cachedCount = await warmSegments(segments, init, allowPrivate);
-    return { ok: true, cached: cachedCount, bytes: cache.bytesCached, playlist: true };
+    // master 播放列表里列的是子播放列表而不是分片。遇到这种必须往下钻一层
+    // 再取分片，否则「预取」在多码率源（国内采集站的主流形态）上恒等于空操作，
+    // 却还返回 ok:true —— 调用方完全看不出它什么都没做。
+    let listUrl = first;
+    let text = '';
+    let lastBody = '';
+    for (let depth = 0; depth <= PREFETCH_MAX_DEPTH; depth += 1) {
+      const playlistRes = await fetchChecked(listUrl, init, allowPrivate);
+      if (!playlistRes.ok) {
+        return { ok: false, cached: 0, bytes: cache.bytesCached, playlist: false, error: `HTTP ${playlistRes.status}` };
+      }
+      lastBody = (await readLimited(playlistRes)).toString('utf8');
+      text = adFilter ? stripAdGroups(lastBody) : lastBody;
+      const listed = segmentUrls(text, playlistRes.url || listUrl.href);
+      if (listed.length === 0) {
+        // 不是播放列表（直链 mp4 之类）：把这条直链本身读进缓存
+        const single = await fetchChecked(first, init, allowPrivate);
+        if (!single.ok) {
+          return { ok: false, cached: 0, bytes: cache.bytesCached, playlist: false, error: `HTTP ${single.status}` };
+        }
+        const buf = await readLimited(single, PREFETCH_MAX_SEGMENT);
+        if (looksLikePlaylistHead(buf)) {
+          return { ok: false, cached: 0, bytes: cache.bytesCached, playlist: true, error: '请用播放列表路径预取' };
+        }
+        cache.put(first.href, {
+          body: buf,
+          contentType: single.headers.get('content-type') || 'application/octet-stream',
+          status: single.status,
+          headers: {},
+        });
+        return { ok: true, cached: 1, bytes: cache.bytesCached, playlist: false };
+      }
+      // 判断这一层列的是分片还是子播放列表：只有前者才值得预取
+      if (!isMasterPlaylist(text)) {
+        const { created, already } = await warmSegments(listed.slice(0, wanted), allowPrivate);
+        const usable = created + already;
+        if (usable === 0) {
+          return {
+            ok: false,
+            cached: 0,
+            bytes: cache.bytesCached,
+            playlist: true,
+            error: '这些分片都没能抓到（可能被防盗链拦下或全部失败）',
+          };
+        }
+        return { ok: true, cached: usable, bytes: cache.bytesCached, playlist: true };
+      }
+      // 是 master：按带宽取中间那档往下钻
+      const variants = listed.slice().sort((a, b) => bandwidthOf(text, a) - bandwidthOf(text, b));
+      const picked = variants[Math.floor(variants.length / 2)] ?? variants[0];
+      if (!picked) break;
+      try {
+        listUrl = await assertAllowedTarget(picked, allowPrivate);
+      } catch {
+        break;
+      }
+    }
+    // 钻到这里说明 master 里没有可用的变体，如实上报而不是假装成功
+    return {
+      ok: false,
+      cached: 0,
+      bytes: cache.bytesCached,
+      playlist: true,
+      error: lastBody ? '播放列表里没有可预取的分片' : '播放列表为空',
+    };
   }
 
   /**
-   * 把一组分片抓进内存缓存，返回成功条数。
+   * 把一组分片抓进内存缓存。
    *
    * 顺序 + 小并发：不要打乱顺序（播放器是按顺序取前几个），也不要全开抢带宽。
+   *
+   * 返回值区分「这次新抓到的」与「本来就在缓存里的」：调用方判断成功与否要看
+   * 两者之和，否则「重复预取同一批分片」会被误判成失败。
    */
-  async function warmSegments(segments: string[], init: RequestInit, allowPrivate: boolean): Promise<number> {
-    let cachedCount = 0;
+  async function warmSegments(segments: string[], allowPrivate: boolean): Promise<{ created: number; already: number }> {
+    let created = 0;
+    let already = 0;
     let index = 0;
     const worker = async (): Promise<void> => {
       for (;;) {
         const current = index++;
         if (current >= segments.length) return;
         const segmentUrl = segments[current];
+        let key = segmentUrl;
+        // 同一分片可能被两条预热链路同时盯上（渲染层 /prefetch + 代理回 m3u8 时自动预热）。
+        // 只查 cache 是挡不住的：双方都在对方 put 之前看到「没缓存」。
+        if (inflight.has(key)) continue;
+        inflight.add(key);
         try {
           const segmentTarget = await assertAllowedTarget(segmentUrl, allowPrivate);
+          key = segmentTarget.href;
           // 已经预热过就跳过：代理返回 m3u8 时会自动预热，客户端可能又显式请求一次
-          if (cache.get(segmentTarget.href)) continue;
-          const res = await fetchChecked(segmentTarget, init, allowPrivate);
-          if (!res.ok) continue;
+          if (cache.get(key)) {
+            already += 1;
+            continue;
+          }
+          const res = await fetchChecked(
+            segmentTarget,
+            {
+              headers: mediaRequestHeaders(segmentTarget),
+              redirect: 'manual',
+              // 上游半死不活时不能把整条链路挂住：超时算这一片失败，继续下一片
+              signal: AbortSignal.timeout(PREFETCH_TIMEOUT_MS),
+            },
+            allowPrivate
+          );
+          // 只认 200：206 是局部响应，当整段缓存会给出错位数据
+          if (res.status !== 200) continue;
           const buf = await readLimited(res, PREFETCH_MAX_SEGMENT);
-          cache.put(segmentTarget.href, {
+          // **不能缓存播放列表**。master m3u8 里的「分片」其实还是子播放列表；
+          // 把它的原始内容塞进缓存后，/p 命中时会把**未改写**的 m3u8 原样返回，
+          // 播放器于是拿到直连 CDN 的地址 → 跨域被拦、或者丢了 Referer 被判盗链，
+          // 表现为「某些片子起播直接黑屏」。这类响应交给正常的改写路径处理。
+          if (looksLikePlaylistHead(buf)) continue;
+          cache.put(key, {
             body: buf,
             contentType: res.headers.get('content-type') || 'video/mp2t',
             status: res.status,
             headers: {},
           });
-          cachedCount += 1;
+          created += 1;
         } catch {
           /* 单个分片失败不影响其它分片 */
+        } finally {
+          inflight.delete(key);
         }
       }
     };
     await Promise.all(Array.from({ length: Math.min(PREFETCH_CONCURRENCY, segments.length) }, worker));
 
-    return cachedCount;
+    return { created, already };
   }
 
   async function pipeStream(
@@ -678,6 +813,7 @@ export async function startMediaProxy(): Promise<MediaProxy> {
     });
 
     let total = 0;
+    let completed = false;
     // 边发边攒一份副本进预取缓存：播放器回头 seek/重播同一个分片时直接命中内存。
     // 只在分片不大时攒，避免把大文件整份留在堆里。
     const mirrored: Buffer[] = [];
@@ -717,14 +853,25 @@ export async function startMediaProxy(): Promise<MediaProxy> {
       }
       for (;;) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          // 只有 reader 明确报告「读完了」才算完整：`write()` 返回 false 而跳出
+          // 循环的情况（超长截断、下游断开）拿到的都是半截数据，绝不能进缓存。
+          completed = true;
+          break;
+        }
         if (!(await write(value))) break;
       }
     } catch {
       /* 上游中途断流：已发出的部分保留，直接结束响应 */
     } finally {
-      // 完整收到才写缓存：中途断流的分片不完整，缓存住会让播放器拿到坏数据
-      if (cacheable && !closed && mirrorBytes > 0) {
+      // 只有完整收到才写缓存。中途断流/超长截断的分片缓存住的话，播放器下次
+      // 命中缓存会拿到半截数据 —— 表现为花屏、噪点、或者干脆卡住不前进。
+      //
+      // 另外还要比对 content-length：chunked 的上游如果干净地提前 EOF，
+      // `done === true` 但字节数不足，同样会缓存残缺分片。
+      const declared = Number(contentLength ?? Number.NaN);
+      const lengthOk = !Number.isFinite(declared) || total === declared;
+      if (completed && lengthOk && cacheable && !closed && mirrorBytes > 0) {
         cache.put(cacheKey, {
           body: Buffer.concat(mirrored),
           contentType,

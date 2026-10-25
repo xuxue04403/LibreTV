@@ -2,7 +2,6 @@ import { browseCategory, CATALOG_REFRESH_MS, HOME_CATEGORIES, type CategoryKey }
 import { http } from './bridge';
 import { cachedItems, missingCategories, rememberItems } from './catalog-cache';
 import { useAppStore } from './store';
-
 /**
  * 分类目录预热与后台刷新。
  *
@@ -10,30 +9,36 @@ import { useAppStore } from './store';
  * 分类切换和检索时都是优先读取缓存」。
  *
  * 这里只负责「把内容抓进缓存」：读缓存的逻辑在 `catalog-cache.ts`，页面直接命中即可。
- * 抓取刻意串行（一次只打一个分类）：启动时的首屏请求不该和用户主动点击抢带宽。
+ * 抓取刻意压到两路并发：启动时的首屏请求不该和用户主动点击抢带宽，
+ * 但完全串行会让 8 个分类的首次预热拖到一分钟以上。
  */
 
 const CONCURRENCY = 2;
 
 interface WarmState {
   timer: number | null;
+  boot: number | null;
   running: boolean;
 }
 
-const state: WarmState = { timer: null, running: false };
+const state: WarmState = { timer: null, boot: null, running: false };
 
-/** 与分类可用性探测同源的结论：有缓存条目的分类才算「这个源支持它」 */
+/**
+ * 预热哪些分类。
+ *
+ * 不再用「哪些分类已经有缓存」反推：那会自锁——首启只写 movie/tv，之后
+ * available 恒为这两个，剩下 6 个分类永远轮不到预热。改成直接遍历首页全部分类，
+ * 由 `staleCategories` 决定这次真正要抓哪些（每小时的刷新本来就该覆盖全部）。
+ */
 function targetCategories(): CategoryKey[] {
   const store = useAppStore.getState();
-  const sources = store.sources.filter((s) => store.selectedKeys.includes(s.key));
-  if (sources.length === 0) return [];
-  const available = HOME_CATEGORIES.filter(
-    (bucket) => (cachedItems(sources, store.settings.adultFilter, bucket.key)?.length ?? 0) > 0
-  ).map((bucket) => bucket.key);
-  // 还没有任何缓存时（首次启动）先抓电影和电视剧两个最常看的分支，
+  const available = HOME_CATEGORIES.map((bucket) => bucket.key);
+  // 完全没有任何缓存时（首次启动）先抓电影和电视剧两个最常看的分支，
   // 而不是一次把 8 个分类全抓完——那会让首屏多等好几秒。
-  if (available.length === 0) return ['movie', 'tv'];
-  return available;
+  const seeded = available.some(
+    (key) => (cachedItems(store.sources, store.settings.adultFilter, key)?.length ?? 0) > 0
+  );
+  return seeded ? available : ['movie', 'tv'];
 }
 
 async function warmOnce(): Promise<void> {
@@ -87,12 +92,20 @@ async function warmOnce(): Promise<void> {
  */
 export function startCatalogWarmup(): void {
   if (state.timer !== null) return;
-  // 首屏先让 Hero / 继续观看渲染完，再悄悄抓分类内容
-  setTimeout(() => void warmOnce(), 1_500);
+  // 首屏先让内容渲染完，再悄悄抓分类内容
+  state.boot = window.setTimeout(() => {
+    state.boot = null;
+    void warmOnce();
+  }, 1_500);
   state.timer = window.setInterval(() => void warmOnce(), CATALOG_REFRESH_MS);
 }
 
 export function stopCatalogWarmup(): void {
+  // 启动定时器也要清：只清 interval 的话，卸载后那个 1.5 秒的回调仍会发出整批请求
+  if (state.boot !== null) {
+    window.clearTimeout(state.boot);
+    state.boot = null;
+  }
   if (state.timer !== null) {
     window.clearInterval(state.timer);
     state.timer = null;

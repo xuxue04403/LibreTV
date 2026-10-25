@@ -17,8 +17,10 @@ import java.io.InputStream
  * 这一层在正式发起请求之前先查缓存：命中就直接把字节喂给 ExoPlayer，
  * 命中不了再原样交给底层数据源，行为与原来完全一致。
  *
- * 只对**从头开始的整段请求**走缓存。seek 要的是字节区间，缓存里存的是完整分片，
- * 交给网络层更稳妥（CDN 对 Range 的支持比我们自己切片可靠）。
+ * 只对**从头开始的整段请求**走缓存。两个条件缺一不可：
+ * `position == 0` 且 `length == LENGTH_UNSET`。缓存里存的是完整分片，
+ * `#EXT-X-BYTERANGE` 这类源会从 0 开始但要一个有限长度，命中后整段喂出去
+ * 会让调用方按错误的边界切字节 —— 帧边界错乱、解复用失败。
  */
 @UnstableApi
 class PrefetchAwareDataSource(private val upstream: DataSource) : BaseDataSource(true) {
@@ -30,7 +32,9 @@ class PrefetchAwareDataSource(private val upstream: DataSource) : BaseDataSource
 
     private var cacheStream: InputStream? = null
     private var fromCache = false
-    private var opened = false
+    /** 底下那个数据源是否真的被打开过：缓存命中路径从不调 upstream.open() */
+    private var upstreamOpened = false
+    private var ended = false
     private var currentUri: Uri? = null
     private var bytesRemaining = C.LENGTH_UNSET.toLong()
 
@@ -40,26 +44,34 @@ class PrefetchAwareDataSource(private val upstream: DataSource) : BaseDataSource
         currentUri = dataSpec.uri
         transferInitializing(dataSpec)
 
-        val hit =
-            if (dataSpec.position == 0L) SegmentPrefetch.take(dataSpec.uri.toString()) else null
+        // 只有「整段从头」才可能命中缓存，见类注释
+        val wholeFromStart = dataSpec.position == 0L && dataSpec.length == C.LENGTH_UNSET.toLong()
+        val hit = if (wholeFromStart) SegmentPrefetch.take(dataSpec.uri.toString()) else null
 
         if (hit != null) {
             val body = hit.first
             cacheStream = ByteArrayInputStream(body)
             fromCache = true
-            opened = true
+            ended = false
             bytesRemaining = body.size.toLong()
             transferStarted(dataSpec)
             return bytesRemaining
         }
 
-        // 没命中：交给底层数据源正常请求
-        val length = upstream.open(dataSpec)
-        fromCache = false
-        opened = true
-        bytesRemaining = length
-        transferStarted(dataSpec)
-        return length
+        // 没命中：交给底层数据源正常请求。抛异常时也要把 transferEnded 补上，
+        // 否则监听方的统计会一直挂在「传输中」。
+        try {
+            val length = upstream.open(dataSpec)
+            upstreamOpened = true
+            fromCache = false
+            ended = false
+            bytesRemaining = length
+            transferStarted(dataSpec)
+            return length
+        } catch (e: Exception) {
+            transferEnded()
+            throw e
+        }
     }
 
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
@@ -82,9 +94,13 @@ class PrefetchAwareDataSource(private val upstream: DataSource) : BaseDataSource
         val stream = cacheStream
         if (stream != null) runCatching { stream.close() }
         cacheStream = null
-        if (opened) {
+        // 只关真正打开过的那个：缓存命中路径从没碰过 upstream
+        if (upstreamOpened) {
             runCatching { upstream.close() }
-            opened = false
+            upstreamOpened = false
+        }
+        if (!ended) {
+            ended = true
             transferEnded()
         }
         bytesRemaining = C.LENGTH_UNSET.toLong()

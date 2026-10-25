@@ -21,6 +21,13 @@ function stableId(input: string): string {
 export function normalizeStreamUrl(raw: string, baseUrl?: string): string | undefined {
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
+  // 上游返回 HTML 错误页时（404/503 常见），`<!doctype html><html>404 not found…`
+  // 这类整行会被 URL 解析器当成相对路径「成功」解析，最后变成一条名字叫「html>」
+  // 的幽灵频道——界面上表现为「列表有内容但全部播不了」。
+  // 判据：带尖括号/引号的一定是标记语言；含空白又不以 http(s) 开头的一定不是地址
+  // （真正的空格在 URL 里应写成 %20；绝对地址里的裸空格浏览器能容忍，保留兼容）。
+  if (/[<>"]/.test(trimmed)) return undefined;
+  if (/\s/.test(trimmed) && !/^https?:\/\//i.test(trimmed)) return undefined;
   try {
     const resolved = new URL(trimmed, baseUrl);
     if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') return undefined;

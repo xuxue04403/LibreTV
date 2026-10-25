@@ -26,6 +26,8 @@ export function App() {
   const [view, setView] = useState<View>('home');
   const [category, setCategory] = useState<CategoryKey>('movie');
   const [keyword, setKeyword] = useState('');
+  // 每提交一次搜索 +1，让「同一个词再搜一遍」也能触发重新请求
+  const [searchNonce, setSearchNonce] = useState(0);
   const [input, setInput] = useState('');
   const [watch, setWatch] = useState<WatchTarget | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -79,6 +81,8 @@ export function App() {
   const startSearch = (kw: string) => {
     setInput(kw);
     setKeyword(kw);
+    // 点最近搜索/分类里的词时关键词可能和当前一样，靠 nonce 保证仍会重跑
+    if (kw) setSearchNonce((n) => n + 1);
     setView('search');
     if (!kw) setTimeout(() => inputRef.current?.focus(), 0);
   };
@@ -87,6 +91,9 @@ export function App() {
     e.preventDefault();
     const kw = input.trim();
     if (!kw) return;
+    // 同一个词再搜一次也得重新跑：只 setKeyword(kw) 时值没变，React 不重渲染，
+    // 搜索页的 useEffect 也不会再触发，用户会觉得「点了没反应」。
+    setSearchNonce((n) => n + 1);
     setKeyword(kw);
     setView('search');
   };
@@ -173,7 +180,12 @@ export function App() {
               />
             ) : null}
             {view === 'search' ? (
-              <SearchPage keyword={keyword} onPlay={setWatch} onOpenSettings={() => setView('settings')} />
+              <SearchPage
+                keyword={keyword}
+                nonce={searchNonce}
+                onPlay={setWatch}
+                onOpenSettings={() => setView('settings')}
+              />
             ) : null}
             {view === 'live' ? <LivePage onOpenSettings={() => setView('settings')} /> : null}
             {view === 'settings' ? <SettingsPage /> : null}

@@ -50,6 +50,8 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
   const triedRef = useRef<Set<string>>(new Set());
   /** 本集已尝试恢复的次数（不进 state，避免每次报错都触发重渲染） */
   const recoverRef = useRef(0);
+  /** 已经发过预取的地址：effect 会因错误恢复重跑，同一条不必再抢一次带宽 */
+  const prefetchedRef = useRef<string | null>(null);
   /** 是否已经按片名反查过补充候选（只查一次） */
   const discoveredRef = useRef(false);
   /** 进行中的换源任务：同一时刻只跑一轮，避免并发换源互相覆盖状态 */
@@ -203,7 +205,13 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     const src = proxify(episodeUrl, { ad: settings.adFilter });
     // HLS 起播要串两跳：先等 m3u8，再等首个分片。真流交给 hls.js 之前，
     // 先让主进程把接下来的分片抓进内存缓存，播放器随后直接命中——这是「点开就播」的关键。
-    if (isHls) prefetchSegments(episodeUrl, { ad: settings.adFilter });
+    //
+    // 同一个地址只预取一次：这个 effect 会因 `reloadToken`（错误恢复）与
+    // StrictMode 开发期双跑而重入，重发请求只会在网络本来就不好的时候再抢一次带宽。
+    if (isHls && prefetchedRef.current !== episodeUrl) {
+      prefetchedRef.current = episodeUrl;
+      prefetchSegments(episodeUrl, { ad: settings.adFilter });
+    }
     let hls: Hls | null = null;
     let disposed = false;
 

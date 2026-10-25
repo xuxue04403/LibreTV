@@ -59,6 +59,19 @@ class Repository(private val net: Net = Net) {
         onCatalogChanged?.invoke(next)
     }
 
+    /**
+     * 只记「这个分类刚查过」，不动内容。
+     *
+     * 空结果分不清「本来就没有」和「这次网络抽风」，两种情况都不该清空已有内容；
+     * 但不记时间的话，空分类永远不算新鲜，后台每小时都为它重打一轮请求。
+     */
+    fun markCatalogChecked(key: CategoryKey) {
+        val current = catalog ?: return
+        val next = current.markChecked(key)
+        catalog = next
+        onCatalogChanged?.invoke(next)
+    }
+
     /** 缓存里这个分类的内容；已过期也返回（界面先用旧内容顶上，后台再刷） */
     fun cachedCategory(key: CategoryKey): List<SearchItem>? = catalog?.itemsOf(key)
 
@@ -297,7 +310,13 @@ class Repository(private val net: Net = Net) {
             val result = withTimeoutOrNull(timeoutMs) {
                 val categories = categoriesOf(source)
                 val ids = Categories.typeIds(categories, key, typeLimit)
-                if (ids.isEmpty()) return@withTimeoutOrNull Triple(false, emptyList(), null)
+                if (ids.isEmpty()) {
+                    // 「源答了，但它没有这个分类」既不是成功也不是失败：算失败会让
+                    // 界面上多出一个「N 个源失败」，用户以为网络出问题；算成功又会
+                    // 把 supportedSources 抬高。用标记值单独表达，与桌面端
+                    // categories.ts 的 ok:true + supported:false 对齐。
+                    return@withTimeoutOrNull Triple(false, emptyList(), UNSUPPORTED_NOTE)
+                }
                 val base = source.url.trimEnd('/')
                 // 子分类并行抓取：父分类不聚合子分类内容
                 val lists = ids.map { typeId ->
@@ -339,7 +358,13 @@ class Repository(private val net: Net = Net) {
 
     private companion object {
         const val BROWSE_TTL_MS = 5 * 60 * 1000L
+
+        /** 「源没有这个分类」的标记：既不计数成功，也不计入失败数 */
+        const val UNSUPPORTED_NOTE = "__unsupported__"
     }
+
+    /** 这个源是否只是「没有该分类」，而不是请求失败 */
+    fun isUnsupported(note: String?): Boolean = note == UNSUPPORTED_NOTE
 
     /**
      * 拼音首字母检索。

@@ -66,6 +66,26 @@ object Net {
         }
 
     /**
+     * 读文本，同时把**最终地址**（跟随重定向之后）带回来。
+     *
+     * 预取分片时必须用最终地址当相对路径的基准：CDN 常把 m3u8 302 到另一个目录，
+     * 用入口地址去拼相对分片会拼到错的路径上，结果是「预取静默抓一堆 404、
+     * 播放本身却正常」，几乎不可能靠现象发现。
+     */
+    suspend fun getTextWithUrl(
+        url: String,
+        headers: Map<String, String> = emptyMap()
+    ): Pair<String, String> = withContext(Dispatchers.IO) {
+        val builder = Request.Builder().url(url).header("User-Agent", UA).header("Accept", "*/*")
+        headers.forEach { (k, v) -> builder.header(k, v) }
+        client.newCall(builder.build()).execute().use { response ->
+            if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
+            val body = response.body?.string() ?: ""
+            body to response.request.url.toString()
+        }
+    }
+
+    /**
      * 整块读取字节（预取分片用）。
      *
      * 和 [getText] 分开是因为分片是二进制，走 string 会先按 UTF-8 解码再编码回来，

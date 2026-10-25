@@ -57,14 +57,37 @@ class CatalogSnapshotTest {
     }
 
     @Test
-    fun `超过 TTL 判为不新鲜但内容仍在`() {
+    fun `超过刷新周期就判为待刷新（而不是等满 TTL）`() {
         val now = 1_000_000L
         val snap = CatalogSnapshot(signature = "sig")
             .withEntry(CategoryKey.MOVIE, listOf(item("沙丘", "1")), now = now)
         assertTrue(snap.isFresh(CategoryKey.MOVIE, now + 1000))
-        assertFalse(snap.isFresh(CategoryKey.MOVIE, now + CatalogSnapshot.TTL_MS + 1))
+        // 判据是「距上次刷新是否满 1 小时」，不是 6 小时 TTL：
+        // 拿 TTL 去判会让每小时的定时刷新 5 次空转，实际变成 6 小时一次
+        assertFalse(snap.isFresh(CategoryKey.MOVIE, now + CatalogSnapshot.REFRESH_INTERVAL_MS + 1))
         // 不新鲜只意味着「该刷新了」，内容要留着先用
         assertNotNull(snap.itemsOf(CategoryKey.MOVIE))
+    }
+
+    @Test
+    fun `markChecked 只记时间，不清掉已有内容`() {
+        val now = 1_000_000L
+        val snap = CatalogSnapshot(signature = "sig")
+            .withEntry(CategoryKey.MOVIE, listOf(item("沙丘", "1")), now = now)
+        val later = now + CatalogSnapshot.REFRESH_INTERVAL_MS + 1
+        val checked = snap.markChecked(CategoryKey.MOVIE, now = later)
+        // 内容还在，但已经算「刚查过」
+        assertEquals(1, checked.itemsOf(CategoryKey.MOVIE)?.size)
+        assertTrue(checked.isFresh(CategoryKey.MOVIE, later + 1000))
+    }
+
+    @Test
+    fun `markChecked 让空分类也进入新鲜状态`() {
+        val now = 1_000_000L
+        val snap = CatalogSnapshot(signature = "sig").markChecked(CategoryKey.KIDS, now = now)
+        // 空分类若不记时间，后台每小时都重打一轮请求，用户看到的还是同一片空白
+        assertTrue(snap.isFresh(CategoryKey.KIDS, now + 1000))
+        assertNull(snap.itemsOf(CategoryKey.KIDS))
     }
 
     @Test

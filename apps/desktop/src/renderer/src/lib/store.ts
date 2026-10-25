@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import { DEFAULT_LIVE_SOURCES, DEFAULT_SOURCES } from './defaults';
 import {
   DEFAULT_SETTINGS,
@@ -60,6 +60,53 @@ function uniqueKey(prefix: string, existing: string[]): string {
   return key;
 }
 
+/**
+ * 包装过的 localStorage：写失败时不再向调用方抛异常。
+ *
+ * zustand 的 `persist` 在 `setItem` 上没有 try/catch，而 `setState` 是同步
+ * `return setItem(...)`——所以一旦配额写满，**每次 `recordHistory` 都会抛**，
+ * 后面那句 `savedRef.current = …` 就被跳过，播放进度链路直接断掉，
+ * 而且异常发生在事件处理器里，ErrorBoundary 也捕获不到。
+ *
+ * 这里退一步：写不下就先把「可有可无」的缓存键清掉再试一次，仍失败就只打日志。
+ * 进度存不下来是遗憾，比整个历史记录写不进去、还连带抛异常好得多。
+ */
+const quotaSafeStorage = {
+  getItem(name: string): string | null {
+    try {
+      return localStorage.getItem(name);
+    } catch {
+      return null;
+    }
+  },
+  setItem(name: string, value: string): void {
+    try {
+      localStorage.setItem(name, value);
+    } catch {
+      // 配额满了：先释放纯缓存（分类目录 / 检索 / 直播频道），它们下次能重新抓
+      for (const key of ['libretv-live-cache-v1', 'libretv-search-cache-v1', 'libretv-catalog-v1']) {
+        try {
+          localStorage.removeItem(key);
+        } catch {
+          /* ignore */
+        }
+      }
+      try {
+        localStorage.setItem(name, value);
+      } catch (err) {
+        console.warn('[libretv] 本地存储写入失败，本次状态未持久化', err);
+      }
+    }
+  },
+  removeItem(name: string): void {
+    try {
+      localStorage.removeItem(name);
+    } catch {
+      /* ignore */
+    }
+  },
+};
+
 export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
@@ -102,22 +149,33 @@ export const useAppStore = create<AppState>()(
 
       dedupeSources: () =>
         set((s) => {
-          const seen = new Set<string>();
+          // 记下「被删掉的 key → 保留的 key」：同地址的两条源里，用户启用的可能
+          // 正好是后一条。只按 key 过滤会把这种源静默停用，用户会以为「我明明
+          // 开着这个源，怎么没内容了」——把启用状态搬到留下来的那条上。
+          const keepByUrl = new Map<string, string>();
           const sources = s.sources.filter((source) => {
-            if (seen.has(source.url)) return false;
-            seen.add(source.url);
-            return true;
+            if (!keepByUrl.has(source.url)) keepByUrl.set(source.url, source.key);
+            return keepByUrl.get(source.url) === source.key;
           });
-          const liveSeen = new Set<string>();
+          const liveKeepByUrl = new Map<string, string>();
           const liveSources = s.liveSources.filter((source) => {
-            if (liveSeen.has(source.url)) return false;
-            liveSeen.add(source.url);
-            return true;
+            if (!liveKeepByUrl.has(source.url)) liveKeepByUrl.set(source.url, source.key);
+            return liveKeepByUrl.get(source.url) === source.key;
           });
           const keys = new Set(sources.map((x) => x.key));
           const liveKeys = new Set(liveSources.map((x) => x.key));
-          const selectedKeys = [...new Set(s.selectedKeys)].filter((key) => keys.has(key));
-          const liveSelectedKeys = [...new Set(s.liveSelectedKeys)].filter((key) => liveKeys.has(key));
+          const remap = (list: string[], kept: Set<string>, pool: { key: string; url: string }[], byUrl: Map<string, string>) =>
+            [
+              ...new Set(
+                list
+                  .map((key) =>
+                    kept.has(key) ? key : byUrl.get(pool.find((x) => x.key === key)?.url ?? ''),
+                  )
+                  .filter((key): key is string => Boolean(key)),
+              ),
+            ];
+          const selectedKeys = remap(s.selectedKeys, keys, s.sources, keepByUrl);
+          const liveSelectedKeys = remap(s.liveSelectedKeys, liveKeys, s.liveSources, liveKeepByUrl);
           const changed =
             sources.length !== s.sources.length ||
             liveSources.length !== s.liveSources.length ||
@@ -251,6 +309,7 @@ export const useAppStore = create<AppState>()(
     {
       name: 'libretv-desktop-v1',
       version: 1,
+      storage: createJSONStorage(() => quotaSafeStorage),
       partialize: (s) => ({
         settings: s.settings,
         sources: s.sources,

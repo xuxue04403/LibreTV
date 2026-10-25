@@ -474,8 +474,13 @@ export async function browseCategory(opts: CategoryBrowseOptions): Promise<Categ
     outcomes,
     supportedSources: outcomes.filter((outcome) => outcome.supported).length,
   };
-  // 中途被取消的结果不能写缓存，否则用户下次切回来看到的是半截列表
-  if (cacheKey && !opts.signal?.aborted) browseCache.set(cacheKey, { at: Date.now(), result });
+  // 中途被取消的结果不能写缓存，否则用户下次切回来看到的是半截列表。
+  // 同样地，一条源都没成功答复时也不写：那种结果要么是网络打嗝、要么是采集站
+  // 正在限流，缓存 5 分钟只会让用户反复看到同一个空页面，还找不到原因。
+  const answered = outcomes.some((outcome) => outcome.ok);
+  if (cacheKey && answered && !opts.signal?.aborted) {
+    browseCache.set(cacheKey, { at: Date.now(), result });
+  }
   return result;
 }
 
@@ -534,6 +539,11 @@ export async function probeCategories(opts: ProbeCategoriesOptions): Promise<Cat
   const cached = probeCache.get(cacheKey);
   if (cached && Date.now() - cached.at < PROBE_TTL_MS) return cached.results;
 
+  // 只要有一个分类拿到了「源确实答复过」的结论，这次探测就是可采信的；
+  // 全部源都超时/拒绝时不写缓存，否则用户等 10 分钟才有机会重试，
+  // 而这 10 分钟里首页会一直显示「所选源暂未返回任何分类内容」。
+  let meaningful = false;
+
   const results = await Promise.all(
     keys.map(async (key): Promise<CategoryAvailability> => {
       try {
@@ -548,6 +558,9 @@ export async function probeCategories(opts: ProbeCategoriesOptions): Promise<Cat
           signal: opts.signal,
         });
         const hits = result.outcomes.filter((o) => o.supported && o.count > 0).length;
+        // 「有源成功答复」与「有源有内容」是两件事：源答了但没有这个分类，
+        // 同样是可信结论，必须能被缓存下来。
+        if (result.outcomes.some((o) => o.ok)) meaningful = true;
         const availability: CategoryAvailability = {
           key,
           available: result.items.length > 0,
@@ -578,7 +591,9 @@ export async function probeCategories(opts: ProbeCategoriesOptions): Promise<Cat
     })
   );
   // 被取消的探测不写缓存，避免把「全空」结论固化下来
-  if (!opts.signal?.aborted) probeCache.set(cacheKey, { at: Date.now(), results });
+  if (!opts.signal?.aborted && meaningful) {
+    probeCache.set(cacheKey, { at: Date.now(), results });
+  }
   return results;
 }
 

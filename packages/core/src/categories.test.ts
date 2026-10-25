@@ -10,6 +10,7 @@ import {
   matchTypeIds,
   parseSourceCategories,
   probeCategories,
+  clearProbeCache,
   setCachedCategories,
   clearCategoryCache,
 } from './categories';
@@ -419,5 +420,40 @@ describe('probeCategories（首页隐藏空分类）', () => {
     const results = await probeCategories({ sources: [source], http, keys: ['movie'] });
     // 唯一的条目被成人过滤拦下，电影分类实际为空
     expect(results[0].available).toBe(false);
+  });
+
+  it('所有源都失败时不缓存结论，下次还会重新探测', async () => {
+    clearCategoryCache();
+    clearProbeCache();
+    let calls = 0;
+    const broken: HttpClient = {
+      async request() {
+        calls += 1;
+        throw new Error('连接超时');
+      },
+    };
+    await probeCategories({ sources: [source], http: broken, keys: ['movie'] });
+    const after = calls;
+    expect(after).toBeGreaterThan(0);
+    // 第二次必须再打一遍：把「全源失败」缓存 10 分钟，用户只能干等
+    await probeCategories({ sources: [source], http: broken, keys: ['movie'] });
+    expect(calls).toBeGreaterThan(after);
+  });
+
+  it('源正常答复但没有内容时算可信结论，可以被缓存', async () => {
+    clearCategoryCache();
+    clearProbeCache();
+    let calls = 0;
+    const empty: HttpClient = {
+      async request(url) {
+        calls += 1;
+        if (url.includes('ac=list')) return res({ class: [{ type_id: 1, type_name: '电影片' }] });
+        return res({ pagecount: 0, list: [] });
+      },
+    };
+    await probeCategories({ sources: [source], http: empty, keys: ['movie'] });
+    const after = calls;
+    await probeCategories({ sources: [source], http: empty, keys: ['movie'] });
+    expect(calls).toBe(after);
   });
 });

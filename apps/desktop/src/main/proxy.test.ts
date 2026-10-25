@@ -240,12 +240,46 @@ describe('媒体代理 HTTP 行为', () => {
         res.end(Buffer.alloc(4096, 9));
         return;
       }
+      if (req.url && /^\/rg\d\.ts$/.test(req.url)) {
+        segmentHits.set(req.url, (segmentHits.get(req.url) ?? 0) + 1);
+        res.writeHead(200, { 'Content-Type': 'video/mp2t' });
+        res.end(Buffer.alloc(4096, 5));
+        return;
+      }
       if (req.url === '/prefetch.m3u8') {
         res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' });
         res.end(
           '#EXTM3U\n#EXT-X-TARGETDURATION:6\n' +
             '#EXTINF:6,\npf1.ts\n#EXTINF:6,\npf2.ts\n#EXTINF:6,\npf3.ts\n#EXT-X-ENDLIST\n'
         );
+        return;
+      }
+      // master 播放列表：里面列的是**子播放列表**而不是分片。
+      // 这种响应绝不能进预取缓存，否则命中时会把未改写的 m3u8 原样回给播放器。
+      if (req.url === '/master.m3u8') {
+        res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' });
+        res.end(
+          '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nchild.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=400000\nchild2.m3u8\n'
+        );
+        return;
+      }
+      if (req.url === '/child.m3u8' || req.url === '/child2.m3u8') {
+        segmentHits.set(req.url, (segmentHits.get(req.url) ?? 0) + 1);
+        res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' });
+        res.end('#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\npf1.ts\n#EXT-X-ENDLIST\n');
+        return;
+      }
+      if (req.url === '/range.m3u8') {
+        res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' });
+        res.end('#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nrg1.ts\n#EXT-X-ENDLIST\n');
+        return;
+      }
+      // 上游写到一半直接断开：用来验证残缺分片不会被缓存
+      if (req.url === '/truncated.ts') {
+        segmentHits.set(req.url, (segmentHits.get(req.url) ?? 0) + 1);
+        res.writeHead(200, { 'Content-Type': 'video/mp2t', 'Content-Length': '8192' });
+        res.write(Buffer.alloc(1024, 7));
+        setTimeout(() => res.destroy(), 20);
         return;
       }
       res.writeHead(200, { 'Content-Type': 'video/mp2t' });
@@ -392,5 +426,82 @@ describe('媒体代理 HTTP 行为', () => {
     expect(res.status).toBe(200);
     expect(result.ok).toBe(false);
     expect(result.cached).toBe(0);
+  });
+
+  /**
+   * master 播放列表里列的是子播放列表，不是分片。
+   *
+   * 如果把子播放列表原样缓存，`/p` 命中时会把它**未经改写**地返回给播放器，
+   * 播放器拿到的是直连 CDN 的地址 —— 跨域被拦或丢 Referer 被判盗链，
+   * 表现为「某些片子起播直接黑屏」。所以这类响应必须留在改写路径上。
+   */
+  it('不缓存播放列表，命中路径不会把未改写的内容回给播放器', async () => {
+    segmentHits.clear();
+    // 用一个没被前面用例碰过的分片集合，避免「已经预热过就跳过」让 cached 恒为 0
+    const warmed = (await (
+      await fetch(`${proxyBase}/prefetch?url=${encodeURIComponent(`${upstreamUrl}/prefetch.m3u8`)}&count=3`)
+    ).json()) as { ok: boolean; cached: number };
+    expect(warmed.ok).toBe(true);
+
+    // 对 master 走一次预取：子播放列表不应被缓存
+    await fetch(`${proxyBase}/prefetch?url=${encodeURIComponent(`${upstreamUrl}/master.m3u8`)}&count=2`);
+    const hitsAfterPrefetch = segmentHits.get('/child.m3u8') ?? 0;
+
+    // 播放器请求子播放列表：必须经过改写，且不能吃缓存
+    const res = await proxyGet('/child.m3u8');
+    const text = await res.text();
+    expect(text).toContain('/p?');
+    expect(text).not.toContain('#EXT-X-STREAM-INF');
+    expect(segmentHits.get('/child.m3u8')).toBe(hitsAfterPrefetch + 1);
+  });
+
+  /**
+   * 上游中途断开时，已发出的部分会照常给下游，但**不能**留在缓存里。
+   * 否则播放器下次命中缓存会拿到半截分片 —— 花屏、噪点、或直接卡住。
+   *
+   * 注意：下游也会收到「Content-Length 声明 8KB 但只来了 1KB」的残缺响应，
+   * 所以请求本身会以 terminated 报错——这正是预期行为，不是代理的 bug。
+   */
+  /**
+   * 带 Range 的请求不能吃预取缓存。
+   *
+   * 缓存里存的是完整分片（预取用无 Range 的 GET），而命中分支只按 200 回整段。
+   * `#EXT-X-BYTERANGE` 的源（hls.js 会发 `Range: bytes=X-Y`）拿到整段却按自己的
+   * 范围切片，解出来是错位字节 —— 花屏。这类请求必须回源，让上游自己回 206。
+   */
+  it('带 Range 的请求不吃预取缓存', async () => {
+    segmentHits.clear();
+    // 用一个前面用例没碰过的分片，避免「已经预热过就跳过」让计数对不上
+    await fetch(`${proxyBase}/prefetch?url=${encodeURIComponent(`${upstreamUrl}/range.m3u8`)}&count=1`);
+    const before = segmentHits.get('/rg1.ts') ?? 0;
+    expect(before).toBeGreaterThanOrEqual(1);
+
+    // 不带 Range：命中缓存，不回源
+    await proxyGet('/rg1.ts').then((r) => r.arrayBuffer());
+    expect(segmentHits.get('/rg1.ts')).toBe(before);
+
+    const res = await fetch(`${proxyBase}/p?url=${encodeURIComponent(`${upstreamUrl}/rg1.ts`)}`, {
+      headers: { Range: 'bytes=0-511' },
+    });
+    await res.arrayBuffer();
+    // 必须回源：上游计数 +1
+    expect(segmentHits.get('/rg1.ts')).toBe(before + 1);
+  });
+
+  it('上游中途断开的分片不进缓存', async () => {
+    segmentHits.clear();
+    const hitsBefore = segmentHits.get('/truncated.ts') ?? 0;
+
+    // 第一次：上游断流，下游拿到的是残缺响应
+    await proxyGet('/truncated.ts')
+      .then((r) => r.arrayBuffer())
+      .catch(() => undefined);
+    expect(segmentHits.get('/truncated.ts')).toBe(hitsBefore + 1);
+
+    // 第二次：必须重新回源，而不是命中那份残缺缓存
+    await proxyGet('/truncated.ts')
+      .then((r) => r.arrayBuffer())
+      .catch(() => undefined);
+    expect(segmentHits.get('/truncated.ts')).toBe(hitsBefore + 2);
   });
 });

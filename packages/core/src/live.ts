@@ -121,6 +121,11 @@ export async function fetchLivePlaylist(
     emit(parser.push(decoder.flush()), false);
     emit(parser.end(), true);
 
+    // 上游返回 404/503 时通常是一段 HTML 错误页，逐行喂给解析器只会得到 0 个频道，
+    // 报「格式不支持」会把人引到错误方向：真正该说的是状态码。
+    if (!res.ok && all.length === 0) {
+      throw new Error(`直播源返回 HTTP ${res.status}`);
+    }
     if (all.length === 0) throw new Error('未解析到可用频道（可能是 txt 格式或不支持的列表）');
     const text = res.text || head;
     return {

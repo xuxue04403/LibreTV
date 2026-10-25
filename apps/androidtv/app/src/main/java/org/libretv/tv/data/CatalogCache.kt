@@ -24,6 +24,8 @@ data class CachedItem(
     val a: String? = null,
     val r: String? = null,
     val u: String? = null,
+    /** 源级成人标记：丢掉它会让「被过滤掉的源」在还原后重新出现 */
+    val g: Boolean = false,
 ) {
     fun toItem() = SearchItem(
         sourceKey = sk,
@@ -36,6 +38,7 @@ data class CachedItem(
         area = a,
         remarks = r,
         sourceUrl = u,
+        isAdult = g,
     )
 
     companion object {
@@ -50,6 +53,7 @@ data class CachedItem(
             a = item.area,
             r = item.remarks,
             u = item.sourceUrl,
+            g = item.isAdult,
         )
     }
 }
@@ -90,9 +94,16 @@ data class CatalogSnapshot(
     fun itemsOf(key: CategoryKey): List<SearchItem>? =
         entries[key.name]?.items?.takeIf { it.isNotEmpty() }?.map { it.toItem() }
 
+    /**
+     * 是否「最近刷过一次」。
+     *
+     * 用 [REFRESH_INTERVAL_MS]（1 小时）而不是 [TTL_MS]（6 小时）判：后台刷新的
+     * 目的就是「每小时更新一次缓存」，拿 6 小时的 TTL 去判会让每小时醒来 6 次、
+     * 5 次直接空转，用户要求的「每小时自动拉取」实际变成 6 小时一次。
+     */
     fun isFresh(key: CategoryKey, now: Long = System.currentTimeMillis()): Boolean {
         val entry = entries[key.name] ?: return false
-        return now - entry.at < TTL_MS
+        return now - entry.at < REFRESH_INTERVAL_MS
     }
 
     fun withEntry(key: CategoryKey, items: List<SearchItem>, now: Long = System.currentTimeMillis()): CatalogSnapshot {
@@ -101,6 +112,19 @@ data class CatalogSnapshot(
             at = now,
             items = items.take(MAX_ITEMS_PER_CATEGORY).map { CachedItem.from(it) },
         )
+        return copy(entries = entries + (key.name to entry))
+    }
+
+    /**
+     * 只记「刚查过」，不动已有内容。
+     *
+     * 一趟刷新拿回空结果有两种可能：分类本来就空，或者这次网络抽风。两种情况下
+     * 都不该清空已显示的内容，但**都必须记下时间**——否则空分类永远不算新鲜，
+     * 后台每小时都为它重打一轮请求（4 源 × 8 分类 = 32 个），用户看到的还是同一片空白。
+     */
+    fun markChecked(key: CategoryKey, now: Long = System.currentTimeMillis()): CatalogSnapshot {
+        val existing = entries[key.name]
+        val entry = CatalogEntry(at = now, items = existing?.items ?: emptyList())
         return copy(entries = entries + (key.name to entry))
     }
 }

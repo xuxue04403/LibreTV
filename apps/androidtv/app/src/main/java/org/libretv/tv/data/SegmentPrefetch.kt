@@ -47,14 +47,28 @@ object SegmentPrefetch {
      *
      * 故意不阻塞调用方：预取是锦上添花，失败了正常播放也照常进行。
      * 已经缓存或在途的分片直接跳过。
+     *
+     * @param adFilter 与播放时一致地切掉中插广告段。播放器挂的是
+     *   [AdFilteringPlaylistParserFactory]，被它摘掉的那几组广告分片永远不会被请求；
+     *   预取若照原样抓，等于白下几 MB、还挤占 [permits] 与缓存配额，把真正要看的
+     *   前几片挤到后面去。
      */
-    fun start(playlistUrl: String, count: Int = DEFAULT_COUNT) {
+    fun start(playlistUrl: String, count: Int = DEFAULT_COUNT, adFilter: Boolean = true) {
         scope.launch {
-            val text =
-                runCatching { Net.getText(playlistUrl) }
+            // 必须拿**最终地址**当基准：m3u8 常被 302 到另一个 CDN 目录，
+            // 用入口地址拼相对分片会全部拼错（404），且现象只有「预取毫无效果」。
+            val (raw, finalUrl) =
+                runCatching { Net.getTextWithUrl(playlistUrl) }
                     .onFailure { android.util.Log.d("LibreTV", "预取播放列表失败 $playlistUrl: ${it.message}") }
                     .getOrNull() ?: return@launch
-            val segments = segmentUrls(text, playlistUrl).take(count.coerceIn(1, 32))
+            // master 播放列表里列的是子播放列表，按分片去抓只会白下一个 m3u8
+            val master = raw.contains("#EXT-X-STREAM-INF", ignoreCase = true)
+            val body = if (adFilter) AdFilter.strip(raw) else raw
+            val segments = segmentUrls(body, finalUrl).take(count.coerceIn(1, 32))
+            if (segments.isEmpty()) {
+                android.util.Log.d("LibreTV", "预取跳过：${if (master) "master 列表" else "列表为空"} $playlistUrl")
+                return@launch
+            }
             segments.forEach { segment ->
                 scope.launch {
                     if (!inflight.add(segment)) return@launch

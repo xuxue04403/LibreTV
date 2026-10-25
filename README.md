@@ -39,7 +39,7 @@
 | **点播即预取**（点击播放就把开头 8 个分片抓进内存，起播少一跳 RTT） | ✅ | ✅ |
 | HLS / MP4 播放、倍速、快捷键 | ✅ | ✅ 遥控器方向键 |
 | **分片完整性**（上游 gzip 时不再截断分片，消除偶发花屏/噪点） | ✅ | ✅ 不经过代理，无此问题 |
-| 广告分片过滤（m3u8 `adjump` / 超短片头段） | ✅ | ⏳ 路线图 |
+| 广告分片过滤（m3u8 `adjump` / 超短片头段） | ✅ | ✅ `AdFilteringPlaylistParserFactory` |
 | 直播 / IPTV（M3U、分组、收藏） | ✅ | ✅ |
 | **直播列表渐进加载**（缓存优先 + 边下边解析边显示，万级频道首屏 < 1.5 秒） | ✅ | ✅ |
 | **直播换台** | ✅ `↑ / ↓` 换台、`M` 静音、`Esc` 退出 | ✅ 遥控器 `↑ / ↓ / ← / →`、`CH+ / CH-` |
@@ -83,7 +83,7 @@
 
 ```
 defaults/sources.json        内置默认源（两端共用同一份）
-packages/core/               共享 TS 核心：解析 / 聚合 / 订阅 / 存储模型 / 增量解析 / 分类与检索缓存（223 项单测）
+packages/core/               共享 TS 核心：解析 / 聚合 / 订阅 / 存储模型 / 增量解析 / 分类与检索缓存（229 项单测）
 apps/desktop/                Electron 桌面端（main / preload / renderer）
 apps/androidtv/              Android TV（Kotlin + Compose + Media3 + 自研 DLNA DMR）
 tools/mock-cms/              本地假采集站（端到端联调 + 截图）
@@ -121,9 +121,9 @@ APK 位置：`apps/androidtv/app/build/outputs/apk/debug/app-debug.apk`（debug 
 ### 测试
 
 ```bash
-npm test                     # 核心解析/聚合/换源/增量解析 + 桌面代理 223 项单测
+npm test                     # 核心解析/聚合/换源/增量解析 \+ 桌面代理 229 项单测
 npm run test:dlna            # DLNA 发送端链路（SSDP → 设备描述 → SOAP）
-cd apps/androidtv && gradle testDebugUnitTest   # Kotlin 解析层/换源/缩放/换台/播放器参数/观看记录去重/拼音/广告过滤/缓存 106 项单测
+cd apps/androidtv && gradle testDebugUnitTest   # Kotlin 解析层/换源/缩放/换台/播放器参数/观看记录去重/拼音/广告过滤/缓存 108 项单测
 ```
 
 端到端联调（本地假采集站 + 真实 HLS 视频）：见 [docs/build.md](docs/build.md#端到端联调)。

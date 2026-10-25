@@ -7,8 +7,10 @@ package org.libretv.tv.data
  * 只按条数限制是不够的，一条 8MB 的分片乘几十条就能把进程撑死。
  */
 internal class SegmentLru(
-    private val maxBytes: Long = 64L * 1024 * 1024,
-    private val maxSegment: Int = 8 * 1024 * 1024,
+    // 电视盒子常见 heap 上限 192MB，ExoPlayer 自己还要缓冲几十秒。
+    // 32MB 约合 30~60 秒 1080p，够盖住起播与首次 seek，又不至于把进程逼到 OOM。
+    private val maxBytes: Long = 32L * 1024 * 1024,
+    private val maxSegment: Int = 4 * 1024 * 1024,
 ) {
 
     private class Entry(val body: ByteArray, val contentType: String)

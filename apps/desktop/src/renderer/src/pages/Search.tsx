@@ -21,10 +21,13 @@ interface SearchState {
 
 export function SearchPage({
   keyword,
+  nonce,
   onPlay,
   onOpenSettings,
 }: {
   keyword: string;
+  /** 每次提交搜索 +1：同一个词再搜一遍时 keyword 不变，只能靠它触发重新请求 */
+  nonce: number;
   onPlay: (target: WatchTarget) => void;
   onOpenSettings: () => void;
 }) {
@@ -118,8 +121,9 @@ export function SearchPage({
 
   useEffect(() => {
     if (keyword.trim()) void run(keyword);
+    // nonce 变化说明用户又点了一次搜索，哪怕关键词没变也要重跑
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [keyword]);
+  }, [keyword, nonce]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 

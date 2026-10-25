@@ -74,6 +74,10 @@
 2. **hls.js 参数**：`maxBufferLength 30` / `maxMaxBufferLength 90` / `backBufferLength 30` / `maxBufferSize 60MB`，`startLevel: -1`（自动选码率）；重试次数压到 1–2 次并配 `fragLoadingRetryDelay 500`，让失败快速暴露给换源逻辑，而不是无限重试卡住。
 3. **卡顿看门狗**：`waiting` 事件起 12 秒计时器，`playing` 清除；超时直接触发换源。TV 端同理（`STALL_SECONDS = 15`）。
 4. **点播即预取**：`Watch.tsx` 在创建 hls.js 之前调 `prefetchSegments(episodeUrl)`，主进程 `/prefetch?url=…&count=8` 解析 m3u8 并把开头 8 个分片抓进 `SegmentCache`（64MB 上限、单条 8MB、LRU、并发 3）。`/p` 路由**在回源之前**先查这份缓存，命中直接回内存副本。起播原本要串「等 m3u8 → 等首个分片」两跳 RTT，现在第二跳是内存命中。注意 `/prefetch` 必须允许从内网地址取（联调 mock CMS 时），且失败要返回 `ok:false` 而不是 5xx——预取失败不能影响正常播放。
+   - **带 `Range` 的请求一律回源**（`cacheEligible` 判断）。缓存里存的是完整分片（预取用的是无 Range 的 GET），命中分支只按 200 回整段；`#EXT-X-BYTERANGE` 的源会拿到整段却按自己的范围切片，解出来是错位字节 —— 花屏，比慢一点糟糕得多。
+   - **两条预热链路要做 in-flight 去重**：渲染层 `/prefetch` 与代理回 m3u8 时的自动预热几乎同时启动，只查 `cache.get()` 挡不住（双方都在对方 `put` 之前看到"没缓存"），同一批分片会下两遍。
+   - **master 播放列表要往下钻一层**：多码率源（国内采集站主流形态）的 m3u8 里列的是子播放列表，直接当分片抓只会白下一个 m3u8，却还返回 `ok:true`。`/prefetch` 按 `BANDWIDTH` 取中间档再解析一次；`cached === 0` 时如实报 `ok:false`。
+   - 只缓存 `status === 200`（206 是局部响应，当整段缓存会给出错位数据），且 `Content-Length` 与实收字节不符时不入缓存（chunked 上游干净地提前 EOF 也会产生残缺分片）。
 
 失败转移分两级，桌面与 TV 行为一致：
 
@@ -237,7 +241,13 @@ adb -s emulator-5556 shell am start -n org.libretv.tv/.MainActivity
 - **这些数字不能随手改**：Media3 有三条硬约束——`maxBufferMs >= minBufferMs`、`minBufferMs >= bufferForPlaybackMs`、`minBufferMs >= bufferForPlaybackAfterRebufferMs`。违反任意一条，`DefaultLoadControl.build()` 会抛 `IllegalArgumentException`，而它发生在 Compose 的帧回调里，**用户看到的就是「按播放整个 App 闪退」**，编译器与 lint 都查不出来。曾经 `MIN_BUFFER_MS 1500` 配 `AFTER_REBUFFER 3000` 就踩过，装上 APK 一点播放必崩。现在约束由 `PlaybackTuning.violations()` 表达（返回全部违规项而非撞第一条就抛），`PlaybackTuningTest` 守着当前参数合法、且拿历史坏值能复现违规；`Playback.build()` 里另有一道 `check` 兜底。
 - `DefaultHttpDataSource.Factory`：固定 `Net.UA`、`connectTimeout 12s` / `readTimeout 20s`、`allowCrossProtocolRedirects`、`Accept-Encoding: identity`（避免拿到 gzip 的分片流）。OkHttp 无 CORS 概念，也不需要回环代理。
 - `setHandleAudioBecomingNoisy(true)` 让拔耳机/切输出时自动暂停。
-- **分片预取**：`PlayerScreen` 在 `prepare()` 之前先调 `SegmentPrefetch.start(url)`，后台解析 m3u8 并把开头 8 个分片抓进内存（`SegmentLru`，64MB 上限、单条 8MB 上限、LRU 淘汰、并发 3）。播放器的数据源换成 `PrefetchAwareDataSource`——它在发起 HTTP 之前先查这份缓存，命中就直接把字节喂给 ExoPlayer，没命中再原样交给 `DefaultHttpDataSource`。**两条路径必须接上，否则预取只是白跑一遍网络**；只对 `position == 0` 的整段请求走缓存，seek 要字节区间，交给 CDN 更可靠。桌面端同理（见「播放性能与失败转移」的 `/prefetch`）。
+- **分片预取**：`PlayerScreen` 在 `prepare()` 之前先调 `SegmentPrefetch.start(url)`，后台解析 m3u8 并把开头 8 个分片抓进内存（`SegmentLru`，**32MB 上限、单条 4MB 上限**、LRU 淘汰、并发 3）。播放器的数据源换成 `PrefetchAwareDataSource`——它在发起 HTTP 之前先查这份缓存，命中就直接把字节喂给 ExoPlayer，没命中再原样交给 `DefaultHttpDataSource`。**两条路径必须接上，否则预取只是白跑一遍网络**。
+  - HLS 走的是手工构造的 `HlsMediaSource`（为了挂 `AdFilteringPlaylistParserFactory`），它自带数据源工厂、会**绕开** `Playback.build()` 里的 `setMediaSourceFactory(...)`。所以这里必须显式写 `Playback.prefetchingDataSourceFactory()`——用成裸 `dataSourceFactory()` 的话预取 100% 失效，反而让每个分片多下一次。
+  - 只对 `position == 0` **且** `length == LENGTH_UNSET` 的整段请求走缓存。`#EXT-X-BYTERANGE` 从 0 开始但要有限长度，命中后整段喂出去会让调用方按错边界切字节（帧边界错乱）。
+  - 预取必须先 `AdFilter.strip(...)` 再取分片，并与播放侧用同一个 `adFilter` 开关：被摘掉的广告段播放器永远不会请求，照原样预取等于白下几 MB、还挤占并发闸门与配额。
+  - 基准地址要用**跟随重定向之后的最终 URL**（`Net.getTextWithUrl`）：CDN 常把 m3u8 302 到另一个目录，用入口地址拼相对分片会全部 404，而现象只有"预取毫无效果"，几乎不可能靠现象发现。
+  - 缓存要在 `PlayerScreen` 卸载时与 `Application.onTrimMemory`/`onLowMemory` 时清空：32MB 的 `ByteArray` 对 heap 常见只有 192MB 的盒子不是小数目。
+  - 桌面端同理（见「播放性能与失败转移」的 `/prefetch`）。
 
 失败转移与桌面端同构：`Player.Listener.onPlayerError` 和 15 秒缓冲看门狗都调 `AppViewModel.failoverPlayback(player, tried, episodeIndex, discovered)`，它返回 `FailoverResult`（新 `Screen.Player` + 对齐后的集数）；候选链空了会 `repo.discoverCandidates` 按片名补一轮，补过仍失败才报错。`openDetail` 也做了候选扇出：前 3 个候选并行拉详情，谁先成功就展示谁（`DETAIL_FANOUT = 3`、`DETAIL_TIMEOUT_MS = 9000`）。
 
@@ -310,13 +320,16 @@ adb -s emulator-5556 shell am start -n org.libretv.tv/.MainActivity
 | 落盘 | `localStorage`（`libretv-catalog-v1`、`libretv-search-cache-v1`） | DataStore（`catalog-cache`、`search-cache`，格式 `签名\tJSON`） |
 | 适配层 | `lib/catalog-cache.ts` | `AppStore.catalog()` / `saveCatalog()` |
 
-规则（两端逐条对齐，`packages/core/src/catalog.test.ts` 18 项 + `CatalogCacheTest.kt` 15 项覆盖）：
+规则（两端逐条对齐，`packages/core/src/catalog.test.ts` 18 项 + `CatalogCacheTest.kt` 17 项覆盖）：
 
 - **签名**：启用源地址排序拼接 + `|` + 成人过滤开关。源顺序变化不作废缓存，源集合或开关变化整体作废；
-- **TTL**：目录 6 小时、检索 1 小时，过期只是「该刷新了」，界面仍先用旧内容顶上（空页面比旧内容糟得多）；
-- **条目上限**：每分类 240 条、每关键词 300 条、关键词最多留 20 个（按时间戳丢最旧）；
-- **空结果不覆盖**：刷新失败或源临时抽风时写空会把已有内容清空，所以 `withEntry` 遇到空列表原样返回；
+- **TTL**：目录 6 小时、检索 30 分钟，过期只是「该刷新了」，界面仍先用旧内容顶上（空页面比旧内容糟得多）；
+- **刷新判据与 TTL 分开**：`staleCategories` 用 `CATALOG_REFRESH_MS`（1 小时）判，不用 6 小时 TTL——拿 TTL 去判会让每小时的定时刷新醒来 6 次、5 次空转，「每小时刷新」实际变成 6 小时一次；
+- **条目上限**：每分类 240 条、每关键词 100 条、关键词最多留 12 个（按时间戳丢最旧）；
+- **空结果不覆盖**：刷新失败或源临时抽风时写空会把已有内容清空，所以 `withEntry` 遇到空列表原样返回；空分类用 `markCatalogChecked` 只记时间不动内容，否则它永远不算新鲜，后台每小时都重打一轮；
 - **没缓存过返回 `undefined` 而不是空数组**：界面要区分「还在加载（显示骨架）」与「确实没有（显示空态）」。
+
+**上限为什么从 20×300 收到 12×100**：`localStorage` 按 UTF-16 计费，20 × 300 条实测占 **3.41MB**，加上目录的 1.09MB 共 4.5MB，逼近 Chromium 单源 10MB 配额（=5M 字符）。一旦写满，`writeJson` 会吞掉 `QuotaExceeded` 导致目录永远停在旧值；更麻烦的是 zustand persist 的 `setItem` 没有 try/catch，`recordHistory` 会开始抛异常，播放进度链路直接断掉。所以桌面端 `lib/store.ts` 额外包了一层 `quotaSafeStorage`：写入失败时先清掉三个纯缓存键再重试，仍失败就只告警——**宁可丢缓存，也不能让观看记录写不进去**。
 
 实测（桌面端，4 内置源）：
 
@@ -334,12 +347,13 @@ TV 端 DataStore 文件从 967 B 增长到 **333 KB**（两个分类各 240 条�
 
 用户要求「程序启动时自动拉取刷新播放源数据，后台每小时自动拉取一次并更新缓存」：
 
-- 桌面端 `lib/catalog-warmer.ts`：`startCatalogWarmup()` 在 `initBridge()` 之后调用，延迟 1.5 秒（让 Hero / 继续观看先渲染完）再抓，之后 `setInterval(CATALOG_REFRESH_MS)`；`stopCatalogWarmup()` 在 `App` 卸载时清掉定时器；
+- 桌面端 `lib/catalog-warmer.ts`：`startCatalogWarmup()` 在 `initBridge()` 之后调用，延迟 1.5 秒（让 Hero / 继续观看先渲染完）再抓，之后 `setInterval(CATALOG_REFRESH_MS)`；`stopCatalogWarmup()` 在 `App` 卸载时同时清掉 interval 和那一次 1.5 秒的 boot 定时器（原来只清 interval，卸载后仍会发出整批请求）；
 - TV 端 `AppViewModel.init` 里一条 `while (true) { refreshCatalog(); delay(REFRESH_INTERVAL_MS) }`；
 - 只抓**没缓存过或已过期**的分类（`staleCategories` / `missingCategories`），命中缓存的不重复请求；
-- 首启还没有任何缓存时只抓电影 + 电视剧两个分支，而不是一次抓 8 个——那会让首屏多等好几秒；
+- 目标分类**不能靠「已有缓存」反推**：桌面端曾用「首启只抓电影 + 电视剧，其余靠已有缓存判断」的写法，结果首启只写进这两个，另外 6 个永远判不出「缺」，与 TV 端遍历全部 8 个的行为漂移。现在固定遍历 `HOME_CATEGORIES`，只有「一条缓存都没有」时才退回先抓两个；
 - 并发度刻意压到 2（桌面）而不是全开：预热不该和用户主动点击抢带宽；
-- 预热失败一律吞掉：用户点进分类时页面自己还会再拉一次。
+- 预热失败一律吞掉：用户点进分类时页面自己还会再拉一次；
+- TV 端目录落盘有 500ms 合并窗口（`CATALOG_SAVE_DEBOUNCE_MS`）：一轮刷新会逐分类写 8 次、每份序列化约 557KB，DataStore 又是整文件重写，不合并就是九次连续大文件写，和播放抢磁盘。
 
 #### 分类浏览边收边渲染
 

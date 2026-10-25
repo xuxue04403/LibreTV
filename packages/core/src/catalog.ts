@@ -22,7 +22,7 @@ export interface CatalogSnapshot {
   entries: Partial<Record<CategoryKey, CatalogEntry>>;
 }
 
-/** 缓存有效期：超过就刷新，但界面仍先用旧内容顶上（总比空白好） */
+/** 缓存有效期：超过就不再当「新鲜」用，但界面仍先用旧内容顶上（总比空白好） */
 export const CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
 
 /** 后台刷新周期：用户要求「每小时自动拉一次」 */
@@ -31,13 +31,22 @@ export const CATALOG_REFRESH_MS = 60 * 60 * 1000;
 /** 单分类最多缓存这么多条：首页每个分类只展示十几条，分类页首屏也就一两屏 */
 export const MAX_CATALOG_ITEMS = 240;
 
-export const SEARCH_CACHE_TTL_MS = 60 * 60 * 1000;
+/** 检索结果缓存 30 分钟：新片上线以天计，半小时足够挡掉重复搜索 */
+export const SEARCH_CACHE_TTL_MS = 30 * 60 * 1000;
 
 /** 只保留最近这么多个关键词，避免无限增长 */
-export const MAX_SEARCH_KEYWORDS = 20;
+export const MAX_SEARCH_KEYWORDS = 12;
 
-/** 单个关键词最多缓存这么多条 */
-export const MAX_SEARCH_ITEMS = 300;
+/**
+ * 单个关键词最多缓存这么多条。
+ *
+ * 这个上限直接决定 localStorage（桌面端）的占用：按 UTF-16 计，
+ * `MAX_KEYWORDS × MAX_ITEMS` 每 100 条 ≈ 0.4MB。原先是 20×300，
+ * 实测搜索缓存单份就有 3.4MB，加上目录 1.1MB、直播频道 1~3MB，
+ * 已经顶到 Chromium 的 10MB 配额——一旦写不进去，目录缓存会永远停在旧值，
+ * 于是每次冷启动都全量重拉，正好是用户抱怨的那个现象。
+ */
+export const MAX_SEARCH_ITEMS = 100;
 
 /**
  * 快照签名。
@@ -100,13 +109,46 @@ export function withCatalogEntry(
   };
 }
 
-/** 还该刷新的分类（没缓存过或已过期） */
+/**
+ * 只记「刚查过」，不动已有内容。
+ *
+ * 一趟刷新拿回空结果有两种可能：分类本来就空，或者这次网络抽风。
+ * 两种情况下都不该清空已显示的内容；但**都必须记下时间**，否则
+ * 「空分类」永远不算新鲜，后台每小时都会为它重打一轮请求（4 源 × 8 分类 = 32 个），
+ * 而用户看到的还是同一片空白。
+ */
+export function markCatalogChecked(
+  snapshot: CatalogSnapshot,
+  key: CategoryKey,
+  now: number = Date.now()
+): CatalogSnapshot {
+  const existing = snapshot.entries[key];
+  return {
+    ...snapshot,
+    entries: {
+      ...snapshot.entries,
+      [key]: { at: now, items: existing?.items ?? [] },
+    },
+  };
+}
+
+/**
+ * 还该刷新的分类。
+ *
+ * 用 `CATALOG_REFRESH_MS`（1 小时）而不是 `CATALOG_TTL_MS`（6 小时）判：
+ * 后台刷新的目的就是「每小时更新一次缓存」，拿 6 小时的 TTL 去判会让
+ * 每小时醒来 6 次、5 次直接空转，用户要求的「每小时自动拉取」实际变成 6 小时一次。
+ */
 export function staleCategories(
   snapshot: CatalogSnapshot,
   keys: CategoryKey[],
   now: number = Date.now()
 ): CategoryKey[] {
-  return keys.filter((key) => !isCatalogFresh(snapshot, key, now));
+  return keys.filter((key) => {
+    const entry = snapshot.entries[key];
+    if (!entry) return true;
+    return now - entry.at >= CATALOG_REFRESH_MS;
+  });
 }
 
 export interface SearchCacheEntry {

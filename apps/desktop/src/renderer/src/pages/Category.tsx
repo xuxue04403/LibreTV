@@ -47,6 +47,10 @@ export function CategoryPage({
   const [selected, setSelected] = useState<AggregatedGroup | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const runId = useRef(0);
+  // `load` 是 useCallback 且依赖里没有 groups（那会让每次列表变化都重建回调），
+  // 但收尾判断「界面还留着内容吗」需要读到最新的值，所以额外存一份 ref。
+  const groupsRef = useRef<AggregatedGroup[]>([]);
+  groupsRef.current = groups;
 
   const label = HOME_CATEGORIES.find((c) => c.key === category)?.label ?? '分类';
 
@@ -117,26 +121,33 @@ export function CategoryPage({
         // 追加模式：只保留本次新增页的结果，与已有结果合并去重
         const incoming = groupSearchResults(result.items);
         setGroups((prev) => {
-          if (!append) return incoming;
-          const map = new Map(prev.map((g) => [g.key, g]));
-          for (const group of incoming) {
-            const existing = map.get(group.key);
-            if (!existing) {
-              map.set(group.key, group);
-              continue;
+          if (append) {
+            const map = new Map(prev.map((g) => [g.key, g]));
+            for (const group of incoming) {
+              const existing = map.get(group.key);
+              if (!existing) {
+                map.set(group.key, group);
+                continue;
+              }
+              const seen = new Set(existing.items.map((i) => `${i.sourceKey}:${i.vodId}`));
+              const merged = [...existing.items];
+              for (const item of group.items) {
+                if (!seen.has(`${item.sourceKey}:${item.vodId}`)) merged.push(item);
+              }
+              map.set(group.key, { ...existing, items: merged });
             }
-            const seen = new Set(existing.items.map((i) => `${i.sourceKey}:${i.vodId}`));
-            const merged = [...existing.items];
-            for (const item of group.items) {
-              if (!seen.has(`${item.sourceKey}:${item.vodId}`)) merged.push(item);
-            }
-            map.set(group.key, { ...existing, items: merged });
+            return [...map.values()];
           }
-          return [...map.values()];
+          // 空结果不清屏：磁盘缓存里还有内容，界面上却把 240 条换成空白，
+          // 用户再点一次刷新内容又回来，表现成「分类忽有忽无」。
+          // 真正该保留的是「上一轮已经显示的东西」，哪怕是缓存。
+          return incoming.length === 0 ? prev : incoming;
         });
         setOutcomes(result.outcomes);
         setPage(targetPage);
-        setFromCache(false);
+        // 内容为空时界面留住的是缓存内容，就别再说「已是最新」：
+        // 标题继续标「本地缓存」，用户才知道看到的是上次抓到的结果。
+        if (result.items.length > 0) setFromCache(false);
         // 任一源还有下一页就允许继续加载
         setHasMore(result.outcomes.some((o) => o.supported && o.count > 0) && targetPage < 8);
         // 第一页拿到就落盘：下次切回这个分类是 0 延迟
@@ -144,7 +155,13 @@ export function CategoryPage({
           rememberItems(sources, adultFilter, category, result.items);
         }
         if (result.items.length === 0 && !append) {
-          toast.push(`当前源没有返回「${label}」内容`);
+          // 界面上还留着上一轮（通常是磁盘缓存）的内容：说「没有内容」会自相矛盾
+          const kept = groupsRef.current.length > 0;
+          toast.push(
+            kept
+              ? `「${label}」这次没抓到新内容，先显示上次缓存`
+              : `当前源没有返回「${label}」内容`
+          );
         }
       } catch (err) {
         if (myRun === runId.current && !(err instanceof DOMException && err.name === 'AbortError')) {
@@ -161,8 +178,10 @@ export function CategoryPage({
     if (sources.length === 0) return;
     void load(1, false);
     return () => abortRef.current?.abort();
+    // 成人过滤开关必须在这里：它是 load 的入参之一，改了却重载旧结果，
+    // 用户会看到「关了过滤但列表里还是那些」。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [category, sources.map((s) => s.key).join(',')]);
+  }, [category, adultFilter, sources.map((s) => s.key).join(',')]);
 
   const supported = outcomes.filter((o) => o.supported).length;
   const failed = outcomes.filter((o) => !o.ok);
