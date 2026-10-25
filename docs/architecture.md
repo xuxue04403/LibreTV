@@ -334,6 +334,23 @@ TV 端 DataStore 文件从 967 B 增长到 **333 KB**（两个分类各 240 条�
 
 TV 端 `CatalogSnapshot.itemsOf()` 对没缓存过的分类返回 `null`（Kotlin 的 `List?`）、core 的 `catalogItems()` 返回 `undefined`。如果图省事返回空列表，`refreshHomeRows()` 会认为「所有分类都缓存过了但都是空的」，首页内容流永远不渲染——而真正的空态和加载态也没法区分。
 
+### 并发闸门：别把采集站打挂
+
+用户报过「竟然没有电影分类？8 个源失败」，而内置源只有 4 个。两个原因叠在一起：
+
+1. **源被重复写入**：`seedDefaults` 只按 flag 幂等，不按 URL 去重，被调用两次就变成 8 条同样的源；
+2. **没有总闸门**：分类浏览是「每源 × 每分类」的笛卡尔积。实测「预热 movie+tv」与「用户点 documentary」同时发生时，4 个源发出了 **45 个请求、峰值并发 33**，耗时 5125ms。采集站对这种流量一律回 503 或直接断连——于是**所有源同时失败，分类渲染成空**，看起来像「这个站没有电影分类」。
+
+这条坑值得单独记：**「全部源失败」在界面上和「这个分类真的没内容」长得一样**，而前者的诱因往往是客户端自己打太猛。
+
+修法三层：
+
+- `packages/core/src/limiter.ts`：`createLimiter(n)` 是信号量 + 队列（`size` 反映「执行中 + 排队中」，用 `Object.defineProperty` 定义 getter——`Object.assign` 会在赋值那一刻求值 getter，把 `size` 固化成 0）。`catalogLimiter = createLimiter(6)` 是全局总闸，`sourceLimiter(key) = createLimiter(3)` 是**每个源**各自的闸；两层叠加，单个站最多 3 个并发，所有站合计最多 6 个。TV 端同语义的 `Net.gated(host) { ... }`。
+- **同地址源只打一次**：`browseCategory` 在 `Promise.all` 之前按 `source.url` 分组，重复的源不请求，直接产出一条 `ok: true, supported: false, error: "与「X」重复，已跳过"`。实测 8 条重复源：不同地址去重让魔都从 503 变成功，结果从 340 部涨到 460 部。
+- **存储层去重**：桌面 `store.dedupeSources()` 与 TV `AppViewModel.dedupeStoredSources()` 在启动时按 URL 合并 `sources`/`liveSources`，并重建 `selectedKeys`（**只去重 sources 不够**，`selectedKeys` 里也会堆重复的 key）。
+
+最后，失败原因必须显示出来。undici 在 DNS/TLS/重置时统一抛 `TypeError: fetch failed`，真因在 `err.cause.code` 里；`apps/desktop/src/main/index.ts` 的 `describeFetchError()` 把它映射成「域名解析失败 / 连接被拒绝 / 连接超时 / 证书校验失败」等中文短语，分类页的 hint 与空态都会带上（`HTTP 503×2`、`连接超时`）。同时区分两种空态：**「所有源都没能返回内容」**（该重试或检查网络）与**「这个分类暂时没有内容」**（该换个分类），混用会把用户引到错误方向。
+
 ### 首页只显示有内容的分类
 
 「少儿」这类分类在部分源里一条内容都没有，入口点进去只能是空页面。因此 `probeCategories` 会在首页挂载时并发探测 8 个分类的可用性：
