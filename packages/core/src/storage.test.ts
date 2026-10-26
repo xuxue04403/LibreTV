@@ -4,13 +4,14 @@ import {
   DEFAULT_SETTINGS,
   dedupeHistory,
   findResumeByTitle,
+  normalizeHistoryEntry,
   normalizeSettings,
   parseSnapshot,
   toggleFavorite,
   upsertHistory,
 } from './storage';
 import { currentAndNext, parseXmltv, parseXmltvTime } from './live';
-import { episodeLabel, formatTime, stableKey, trimSlash } from './format';
+import { clampEpisodeIndex, episodeLabel, formatTime, stableKey, trimSlash } from './format';
 
 describe('parseSubscription', () => {
   it('解析 LibreTV-SourceList', () => {
@@ -261,7 +262,34 @@ describe('format 辅助', () => {
     expect(trimSlash('https://a/b///')).toBe('https://a/b');
     expect(stableKey('abc')).toBe(stableKey('abc'));
     expect(stableKey('abc')).not.toBe(stableKey('abd'));
-    expect(episodeLabel('https://cdn/12.m3u8', 0)).toBe('第 12 集');
-    expect(episodeLabel('https://cdn/abc.m3u8', 3)).toBe('第 4 集');
+    // 集号只按数组下标，不再从 URL 里抠数字：采集站地址里的数字和「第几集」不是一回事
+    expect(episodeLabel(0)).toBe('第 1 集');
+    expect(episodeLabel(3)).toBe('第 4 集');
+  });
+
+  it('clampEpisodeIndex 把越界集数收回列表范围', () => {
+    expect(clampEpisodeIndex(14, 16)).toBe(14);
+    expect(clampEpisodeIndex(16, 16)).toBe(15); // 最后一集看完会写成 episodeCount
+    expect(clampEpisodeIndex(-3, 16)).toBe(0);
+    expect(clampEpisodeIndex(5, 0)).toBe(0); // 空列表不能返回负数
+    expect(clampEpisodeIndex(Number.NaN, 16)).toBe(0);
+  });
+
+  it('normalizeHistoryEntry 修掉存量的越界集数', () => {
+    const base = {
+      id: 'q:1',
+      sourceKey: 'q',
+      vodId: '1',
+      title: '盲眼驭诡师',
+      sourceName: '量子资源',
+      position: 120,
+      duration: 545,
+      updatedAt: 1,
+    };
+    // 「第 17 / 16 集」这种卡片就是从这里来的
+    expect(normalizeHistoryEntry({ ...base, episodeIndex: 16, episodeCount: 16 }).episodeIndex).toBe(15);
+    expect(normalizeHistoryEntry({ ...base, episodeIndex: 14, episodeCount: 16 }).episodeIndex).toBe(14);
+    // 没有集数上限的旧记录原样返回，不能把它错误地归零
+    expect(normalizeHistoryEntry({ ...base, episodeIndex: 3, episodeCount: 0 }).episodeIndex).toBe(3);
   });
 });

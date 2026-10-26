@@ -512,6 +512,24 @@ interface AppData {
 
 `onEnded` 写历史时不能传 `position = 0` 了事：写入路径有「位置 ≤ 0 视为无效」的守卫，那样这一集永远记不成「已看完」，首页进度条恒为 100%，「继续观看」永远从 0 开始。正确做法是走 `persistProgress(..., finished = true)`：位置写 0、集数推到下一集。
 
+### 集号必须只有一份真相
+
+用户报过「点继续观看第 15 集，结果播的是第 2 集」，根因是集号有三套互不相干的口径：
+
+1. **历史记录里的 `episodeIndex`**——只对写入它的那个采集源成立。同一部剧在非凡/量子/魔都/360 的集数就不一样（实测《盲眼驭诡师》是 17/17/16/16），跨源续播的下标必然错位；
+2. **`episodeLabel` 原本从 URL 里抠数字**——采集站地址形如 `https://vod1.maowushi.com/20261026/6jTWq7rf/index.m3u8`，抠出来的是日期和随机串，与数组下标毫无关系；
+3. **详情页按钮文案**曾经读 `resume.episodeIndex`，而点击时执行的是 `startIndex: episodeIndex`（用户刚点的那一格）——两处脱钩，于是按钮写着「继续播放 · 第 16 集」、点下去却从第 2 集开始。
+
+现在统一为：`clampEpisodeIndex(index, length)` 是唯一的下标兜底（`packages/core/src/format.ts`，TV 侧对应 `HistoryDedupe.clampEpisodeIndex`），`episodeLabel(index)` 只认下标，`normalizeHistoryEntry` 在读取时把老记录里越界的下标收回来（「看完最后一集」曾把下标写成 `episodeCount`，首页于是显示「第 17 / 16 集」）。**跨源续播靠夹紧，不靠对齐集号**——这是唯一在数据不可靠时仍然正确的做法。
+
+### 「点了没反应」要能看见
+
+首页「继续观看」的卡片曾经只是 `disabled`：取详情要串两次请求（`?ac=videolist&ids=` 失败再爬 `/index.php/vod/detail/id/{id}.html`），最长约 20 秒，期间卡片既不转圈也不改字，用户只会判定点击没生效。现在的做法是：
+
+- 卡片给 `card loading` 类 + `.card-busy` 遮罩（转圈），徽章与 `title` 变成「正在打开…」；
+- 进行中的 id 记在 `openingRef`（`Set`）里而不是 `disabled`，同一张重复点直接忽略，不同卡片互不影响；
+- 完成时只从集合里删掉**自己那条**——同时点开两张卡时，先返回的那张不能把后一张的转圈一起抹掉。
+
 ## 数据安全
 
 ### 磁盘上的快照要能失败

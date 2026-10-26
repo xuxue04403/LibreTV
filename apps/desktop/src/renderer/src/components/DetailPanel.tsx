@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   buildPlaybackCandidates,
+  clampEpisodeIndex,
   fetchDetail,
   findResumeByTitle,
   historyId,
@@ -80,7 +81,7 @@ export function DetailPanel({
         const resume =
           historySnapshot.find((h) => h.id === historyId(source.key, selected.vodId)) ??
           findResumeByTitle(historySnapshot, selected.name, selected.year);
-        setEpisodeIndex(resume ? Math.min(resume.episodeIndex, d.episodes.length - 1) : 0);
+        setEpisodeIndex(resume ? clampEpisodeIndex(resume.episodeIndex, d.episodes.length) : 0);
       })
       .catch((err: unknown) => {
         if (!alive) return;
@@ -99,6 +100,10 @@ export function DetailPanel({
   const resume =
     history.find((h) => h.id === historyId(selected.sourceKey, selected.vodId)) ??
     findResumeByTitle(history, selected.name, selected.year);
+  // 按钮文案必须跟着「实际要播的那一集」走。
+  // 原来写的是 `resume.episodeIndex + 1`，而点击时播的是 `episodeIndex`（用户刚点的选集），
+  // 于是出现「按钮写着继续第 15 集、点下去从第 2 集开始」这种自相矛盾的观感。
+  const resumeLabel = resume ? `继续播放 · 第 ${episodeIndex + 1} 集` : '立即播放';
 
   return (
     <div className="overlay" onClick={onClose}>
@@ -138,7 +143,7 @@ export function DetailPanel({
                 }}
               >
                 <Icon name="play" size={16} filled />
-                {resume ? `继续播放 · 第 ${resume.episodeIndex + 1} 集` : '立即播放'}
+                {resumeLabel}
               </button>
               <button
                 className="btn"

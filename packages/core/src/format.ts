@@ -47,9 +47,28 @@ export function trimSlash(url: string): string {
   return url.replace(/\/+$/, '');
 }
 
-/** 剧集标题：数字集用「第 N 集」，其余原样 */
-export function episodeLabel(url: string, index: number): string {
-  const m = /(?:^|\/)(?:第)?(\d+)(?:集)?(?:\.m3u8|\.mp4)?(?:\?|$)/.exec(url);
-  if (m && Number(m[1]) > 0) return `第 ${Number(m[1])} 集`;
-  return `第 ${index + 1} 集`;
+/**
+ * 把集数下标夹进合法范围。
+ *
+ * 观看记录里的 `episodeIndex` 合法值是 `[0, episodeCount-1]`，但「看完一集」时
+ * 会把它推到下一集，最后一集看完就写成了 `episodeCount`——直接拿去渲染就是
+ * 「第 17 / 16 集」这种自相矛盾的卡片，拿去当播放起点则会被各处不同的
+ * `Math.min` 兜住，于是「显示第 15 集、实际播第 2 集」这类错位到处冒。
+ * 所有读写集数的地方都走这里，只留一个口径。
+ */
+export function clampEpisodeIndex(index: number, length: number): number {
+  if (!Number.isFinite(length) || length <= 0) return 0;
+  if (!Number.isFinite(index)) return 0;
+  return Math.max(0, Math.min(Math.trunc(index), Math.trunc(length) - 1));
+}
+
+/**
+ * 剧集标题：一律按数组下标编号。
+ *
+ * 原来优先取 URL 里的数字当集号，但采集站的地址千奇百怪（`/1.m3u8`、`/20260914/xxx/index.m3u8`），
+ * 同一个列表里还可能混着预告片，结果就是「选集面板显示第 2 集、播放页头部显示第 15 集」。
+ * 用户看到的集号必须等同于他点的那一格、也等同于真正播放的那一格，所以统一用下标。
+ */
+export function episodeLabel(index: number): string {
+  return `第 ${Math.max(0, Math.trunc(index)) + 1} 集`;
 }

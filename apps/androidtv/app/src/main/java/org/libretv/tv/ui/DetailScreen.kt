@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import org.libretv.tv.AppViewModel
 import org.libretv.tv.Screen
 import org.libretv.tv.data.AppData
+import org.libretv.tv.data.HistoryDedupe
 import org.libretv.tv.data.Parsers
 import org.libretv.tv.ui.theme.Accent
 import org.libretv.tv.ui.theme.Panel
@@ -46,8 +47,13 @@ fun DetailScreen(vm: AppViewModel, target: Screen.Detail, data: AppData) {
     val favoriteId = "${item.sourceKey}:${item.vodId}"
     val favorite = data.favorites.any { it.id == favoriteId }
     // 观看记录按片名去重，换了采集源也能续播：先按 id 精确找，找不到再按片名兜底
-    val resume = data.history.firstOrNull { it.id == favoriteId }
+    val rawResume = data.history.firstOrNull { it.id == favoriteId }
         ?: data.history.firstOrNull { Parsers.normalizeTitle(it.title) == Parsers.normalizeTitle(item.name) }
+    // 续播下标必须按**当前这份分集列表**夹紧：历史可能是别的源写的，长度不一样。
+    // 夹紧后按钮文案与点击行为才指向同一集，不会出现「写着第 15 集、播的是第 2 集」。
+    val resumeIndex = rawResume?.let { entry ->
+        if (vod?.episodes.isNullOrEmpty()) null else HistoryDedupe.clampEpisodeIndex(entry.episodeIndex, vod.episodes.size)
+    }
 
     LaunchedEffect(target.item.vodId) { runCatching { playFocus.requestFocus() } }
 
@@ -83,10 +89,8 @@ fun DetailScreen(vm: AppViewModel, target: Screen.Detail, data: AppData) {
                 Spacer(Modifier.height(18.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     TvButton(
-                        text = if (resume != null) "继续播放 · 第 ${resume.episodeIndex + 1} 集" else "立即播放",
-                        onClick = {
-                            if (resume != null) vm.playFromDetail(resume.episodeIndex) else vm.playFromDetail(0)
-                        },
+                        text = if (resumeIndex != null) "继续播放 · 第 ${resumeIndex + 1} 集" else "立即播放",
+                        onClick = { vm.playFromDetail(resumeIndex ?: 0) },
                         primary = true,
                         focusRequester = playFocus,
                     )

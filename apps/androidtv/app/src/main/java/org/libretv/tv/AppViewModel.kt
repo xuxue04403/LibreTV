@@ -901,7 +901,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             year = current.item.year,
             cover = vod.cover ?: current.item.pic,
             episodes = vod.episodes,
-            startIndex = index.coerceIn(0, (vod.episodes.size - 1).coerceAtLeast(0)),
+            startIndex = HistoryDedupe.clampEpisodeIndex(index, vod.episodes.size),
             sourceName = current.item.sourceName,
             // 聚合结果里同片源的其它条目就是天然的备份播放源
             candidates = PlaybackCandidate.build(
@@ -932,7 +932,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             year = entry.year ?: vod.year,
                     cover = vod.cover ?: entry.cover,
                     episodes = vod.episodes,
-                    startIndex = entry.episodeIndex.coerceIn(0, vod.episodes.size - 1),
+                    // 历史里的下标只对写入它的那个源有效（各采集站分集列表长度不同），
+                    // 必须按这份新列表夹紧；大小已由上面的空判断保证 >= 1
+                    startIndex = HistoryDedupe.clampEpisodeIndex(entry.episodeIndex, vod.episodes.size),
                     sourceName = entry.sourceName,
                     // 历史里只有一个源：先建单元素链，播放页失败时会按片名反查补充
                     candidates = listOf(PlaybackCandidate(source, entry.vodId, entry.sourceName)),
@@ -997,7 +999,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             year = player.year,
             cover = player.cover,
             sourceName = player.sourceName,
-            episodeIndex = if (finished) (index + 1).coerceAtMost(player.episodes.size) else index,
+            // 看完一集推到下一集，但不能越界：原先写 `.coerceAtMost(size)` 会存下
+            // 等于列表长度的下标，首页卡片于是显示「第 17 / 16 集」
+            episodeIndex = HistoryDedupe.clampEpisodeIndex(if (finished) index + 1 else index, player.episodes.size),
             episodeCount = player.episodes.size,
             positionMs = effectivePosition,
             durationMs = durationMs,

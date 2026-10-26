@@ -3,6 +3,7 @@ import Hls from 'hls.js';
 import {
   candidateLabel,
   candidateKey,
+  clampEpisodeIndex,
   discoverCandidates,
   episodeLabel,
   fetchDetail,
@@ -107,7 +108,9 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     (position: number, epIndex: number, total: number, finished = false) => {
       if (!settings.resumePlayback) return;
       if (!finished && (!Number.isFinite(position) || position <= 0)) return;
-      const nextIndex = finished ? Math.min(epIndex + 1, episodes.length) : epIndex;
+      // 集数必须留在列表范围内：最后一集看完若写成 episodes.length，
+      // 首页卡片就会出现「第 17 / 16 集」这种自相矛盾的数字
+      const nextIndex = clampEpisodeIndex(finished ? epIndex + 1 : epIndex, episodes.length);
       recordHistory({
         id: historyId(currentSource.key, active?.vodId ?? target.vodId),
         sourceKey: currentSource.key,
@@ -617,7 +620,7 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
         {loading && !error && (
           <div className="player-loading">
             <div className="spinner" />
-            <div>正在加载 {episodeLabel(episodeUrl, index)}…</div>
+            <div>正在加载 {episodeLabel(index)}…</div>
           </div>
         )}
         {failoverNote && (
@@ -667,7 +670,7 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
           <div>
             <div className="player-title">{target.title}</div>
             <div className="player-sub">
-              {currentSourceName} · {episodeLabel(episodeUrl, index)} · 共 {episodes.length} 集
+              {currentSourceName} · {episodeLabel(index)} · 共 {episodes.length} 集
               {candidates.length > 1 ? ` · ${candidates.length} 个片源` : ''}
             </div>
           </div>
@@ -753,7 +756,7 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
       {castOpen && episodeUrl ? (
         <CastDialog
           url={episodeUrl}
-          title={`${target.title} · ${episodeLabel(episodeUrl, index)}`}
+          title={`${target.title} · ${episodeLabel(index)}`}
           onClose={() => setCastOpen(false)}
           onCast={(deviceName) => toast.ok(`已投屏到「${deviceName}」`)}
         />
@@ -817,7 +820,7 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
                     className={`ep${i === index ? ' active' : ''}`}
                     onClick={() => changeEpisode(i)}
                   >
-                    {episodeLabel(url, i)}
+                    {episodeLabel(i)}
                   </button>
                 ))}
               </div>

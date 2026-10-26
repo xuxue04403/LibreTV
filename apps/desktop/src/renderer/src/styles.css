@@ -613,6 +613,26 @@ textarea.input {
   }
 }
 
+/* 「继续观看」卡片正在取详情：盖一层遮罩，别让用户以为点不动 */
+.card-busy {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(8, 10, 14, 0.55);
+  backdrop-filter: blur(2px);
+  border-radius: inherit;
+  pointer-events: none;
+}
+.card.loading {
+  cursor: progress;
+}
+.card.loading:hover {
+  transform: none;
+  border-color: transparent;
+  box-shadow: none;
+}
+
 .player-top {
   position: absolute;
   top: 0;

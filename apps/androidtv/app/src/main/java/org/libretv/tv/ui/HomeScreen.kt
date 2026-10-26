@@ -36,6 +36,7 @@ import org.libretv.tv.data.AppData
 import org.libretv.tv.data.CategoryKey
 import org.libretv.tv.data.FavoriteEntry
 import org.libretv.tv.data.HistoryEntry
+import org.libretv.tv.data.HistoryDedupe
 import org.libretv.tv.data.LiveFavoriteEntry
 import org.libretv.tv.data.SearchItem
 import org.libretv.tv.ui.theme.Accent
@@ -348,20 +349,27 @@ private fun StatCard(label: String, value: String, modifier: Modifier = Modifier
 
 @Composable
 private fun HistoryCard(entry: HistoryEntry, onClick: () -> Unit) {
+    // 记录里的下标可能越界（老版本「看完一集」会把下标推到列表长度），
+    // 卡片是用户判断「从哪一集续播」的唯一依据，必须先夹紧再显示
+    val shown = HistoryDedupe.clampEntry(entry)
     TvCard(onClick = onClick, modifier = Modifier.width(158.dp)) {
         Column {
-            Poster(entry.cover, entry.title, Modifier.fillMaxWidth().height(228.dp))
+            Poster(shown.cover, shown.title, Modifier.fillMaxWidth().height(228.dp))
             Column(Modifier.padding(10.dp)) {
-                EllipsizedText(entry.title, fontSize = MaterialTheme.typography.titleMedium.fontSize)
+                EllipsizedText(shown.title, fontSize = MaterialTheme.typography.titleMedium.fontSize)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "第 ${entry.episodeIndex + 1}/${entry.episodeCount} 集 · ${entry.sourceName}",
+                    if (shown.episodeCount > 0) {
+                        "第 ${shown.episodeIndex + 1}/${shown.episodeCount} 集 · ${shown.sourceName}"
+                    } else {
+                        shown.sourceName
+                    },
                     color = TextMuted,
                     fontSize = MaterialTheme.typography.bodySmall.fontSize,
                     maxLines = 1,
                 )
                 Spacer(Modifier.height(8.dp))
-                val progress = if (entry.durationMs > 0) entry.positionMs.toFloat() / entry.durationMs else 0f
+                val progress = if (shown.durationMs > 0) shown.positionMs.toFloat() / shown.durationMs else 0f
                 ProgressBar(progress, Modifier.fillMaxWidth())
             }
         }

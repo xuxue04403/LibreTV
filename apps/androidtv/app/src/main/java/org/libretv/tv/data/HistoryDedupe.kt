@@ -42,12 +42,31 @@ object HistoryDedupe {
     }
 
     /**
+     * 把记录里的集数收回合法范围。
+     *
+     * 「看完一集」会把 `episodeIndex` 推到 `episodeCount`，最后一集看完就写成了
+     * 列表长度——首页卡片于是显示「第 17 / 16 集」，续播时各处 `coerceIn` 兜的
+     * 边界又不一致，很容易演成「显示第 15 集、实际播第 2 集」。
+     */
+    fun clampEntry(entry: HistoryEntry): HistoryEntry {
+        if (entry.episodeCount <= 0) return entry
+        val index = clampEpisodeIndex(entry.episodeIndex, entry.episodeCount)
+        return if (index == entry.episodeIndex) entry else entry.copy(episodeIndex = index)
+    }
+
+    /** 集数下标夹进 `[0, length-1]`；空列表返回 0 */
+    fun clampEpisodeIndex(index: Int, length: Int): Int {
+        if (length <= 0) return 0
+        return index.coerceIn(0, length - 1)
+    }
+
+    /**
      * 顶置一条新记录：同一部片子（含跨源）的旧记录全部被替换掉。
      *
      * [limit] 为保留上限，默认与 [AppStore] 落盘的上限一致。
      */
     fun upsert(list: List<HistoryEntry>, entry: HistoryEntry, limit: Int = 100): List<HistoryEntry> {
         val rest = list.filter { it.id != entry.id && !sameWork(it, entry.title, entry.year) }
-        return (listOf(entry) + rest).take(limit)
+        return (listOf(clampEntry(entry)) + rest).take(limit)
     }
 }

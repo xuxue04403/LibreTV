@@ -2,6 +2,7 @@ package org.libretv.tv.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -96,5 +97,30 @@ class HistoryDedupeTest {
         val merged = HistoryDedupe.upsert(old, entry("b:2", "大夏守夜人", year = "2026"))
         assertEquals(1, merged.size)
         assertEquals("2026", merged[0].year)
+    }
+
+    @Test
+    fun `看完最后一集写下的越界下标会被收回`() {
+        // 老版本把「看完」记成 index + 1，最后一集于是存成 16/16
+        val entry = entry("a:1", "盲眼驭诡师").copy(episodeIndex = 16, episodeCount = 16)
+        assertEquals(15, HistoryDedupe.clampEntry(entry).episodeIndex)
+    }
+
+    @Test
+    fun `合法下标原样返回同一个对象`() {
+        val entry = entry("a:1", "盲眼驭诡师").copy(episodeIndex = 14, episodeCount = 16)
+        assertSame(entry, HistoryDedupe.clampEntry(entry))
+        // 集数未知（老记录）时不猜，保持原样
+        val unknown = entry.copy(episodeIndex = 3, episodeCount = 0)
+        assertSame(unknown, HistoryDedupe.clampEntry(unknown))
+    }
+
+    @Test
+    fun `clampEpisodeIndex 处理边界与空列表`() {
+        assertEquals(15, HistoryDedupe.clampEpisodeIndex(16, 16))
+        assertEquals(0, HistoryDedupe.clampEpisodeIndex(-3, 16))
+        assertEquals(0, HistoryDedupe.clampEpisodeIndex(5, 0))
+        assertEquals(0, HistoryDedupe.clampEpisodeIndex(0, 1))
+        assertEquals(2, HistoryDedupe.clampEpisodeIndex(2, 3))
     }
 }

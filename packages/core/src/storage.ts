@@ -15,6 +15,7 @@ import type {
   SourceConfig,
 } from './types';
 import { normalizeTitle } from './cms';
+import { clampEpisodeIndex } from './format';
 
 export const DEFAULT_SETTINGS: AppSettings = {
   adultFilter: true,
@@ -87,6 +88,20 @@ export function upsertHistory(
   const item: HistoryEntry = { ...entry, updatedAt: entry.updatedAt ?? Date.now() };
   const rest = list.filter((h) => h.id !== item.id && !isSameWork(h, item));
   return [item, ...rest].slice(0, limit);
+}
+
+/**
+ * 把记录里的集数夹进 `[0, episodeCount-1]`。
+ *
+ * 「看完一集」原本会把 `episodeIndex` 推到 `episodeCount`（见播放页的 finished 分支），
+ * 于是首页卡片出现「第 17 / 16 集」这种自相矛盾的数字，而且各处 `Math.min`
+ * 兜的边界不同，很容易演成「显示第 15 集、实际播第 2 集」。
+ * 读取时统一走这里，历史数据即使已经越界也能正确显示。
+ */
+export function normalizeHistoryEntry(entry: HistoryEntry): HistoryEntry {
+  if (!Number.isFinite(entry.episodeCount) || entry.episodeCount <= 0) return entry;
+  const index = clampEpisodeIndex(entry.episodeIndex, entry.episodeCount);
+  return index === entry.episodeIndex ? entry : { ...entry, episodeIndex: index };
 }
 
 /**

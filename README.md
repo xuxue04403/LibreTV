@@ -83,7 +83,7 @@
 
 ```
 defaults/sources.json        内置默认源（两端共用同一份）
-packages/core/               共享 TS 核心：解析 / 聚合 / 订阅 / 存储模型 / 增量解析 / 分类与检索缓存（229 项单测）
+packages/core/               共享 TS 核心：解析 / 聚合 / 订阅 / 存储模型 / 增量解析 / 分类与检索缓存（231 项单测）
 apps/desktop/                Electron 桌面端（main / preload / renderer）
 apps/androidtv/              Android TV（Kotlin + Compose + Media3 + 自研 DLNA DMR）
 tools/mock-cms/              本地假采集站（端到端联调 + 截图）
@@ -121,9 +121,9 @@ APK 位置：`apps/androidtv/app/build/outputs/apk/debug/app-debug.apk`（debug 
 ### 测试
 
 ```bash
-npm test                     # 核心解析/聚合/换源/增量解析 \+ 桌面代理 229 项单测
+npm test                     # 核心解析/聚合/换源/增量解析 \+ 桌面代理 231 项单测
 npm run test:dlna            # DLNA 发送端链路（SSDP → 设备描述 → SOAP）
-cd apps/androidtv && gradle testDebugUnitTest   # Kotlin 解析层/换源/缩放/换台/播放器参数/观看记录去重/拼音/广告过滤/缓存 108 项单测
+cd apps/androidtv && gradle testDebugUnitTest   # Kotlin 解析层/换源/缩放/换台/播放器参数/观看记录去重/拼音/广告过滤/缓存 111 项单测
 ```
 
 端到端联调（本地假采集站 + 真实 HLS 视频）：见 [docs/build.md](docs/build.md#端到端联调)。

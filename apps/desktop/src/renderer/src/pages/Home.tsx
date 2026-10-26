@@ -1,5 +1,12 @@
-import { useCallback, useState } from 'react';
-import { buildPlaybackCandidates, fetchDetail, formatRelativeTime, type HistoryEntry } from '@libretv/core';
+import { useCallback, useRef, useState } from 'react';
+import {
+  buildPlaybackCandidates,
+  clampEpisodeIndex,
+  fetchDetail,
+  formatRelativeTime,
+  normalizeHistoryEntry,
+  type HistoryEntry,
+} from '@libretv/core';
 import { http } from '../lib/bridge';
 import { useAppStore } from '../lib/store';
 import { Poster } from '../components/Poster';
@@ -32,36 +39,54 @@ export function HomePage({
   const favorites = useAppStore((s) => s.favorites);
   const recentSearches = useAppStore((s) => s.recentSearches);
   const toast = useToast();
-  const [opening, setOpening] = useState<string | null>(null);
+  // 用 Set 而不是单个 id：连着点两张卡时，两张都该有转圈，
+  // 先完成的那张也不能把后一张的状态抹掉
+  const [opening, setOpening] = useState<ReadonlySet<string>>(() => new Set());
+  /** 正在取详情的卡片 id：同一张不重复发请求，不同卡片互不影响 */
+  const openingRef = useRef<Set<string>>(new Set());
 
-  const resume = useCallback(
+  const openHistory = useCallback(
     async (entry: HistoryEntry) => {
-      const source = sources.find((s) => s.key === entry.sourceKey);
+      const record = normalizeHistoryEntry(entry);
+      // 「点了没反应」的根源之一：取详情要串两次请求（接口 + 详情页兜底），
+      // 最长能等 20 秒，而卡片只是被 disabled——没有转圈、没有文字变化，
+      // 用户看到的就是「点不动」。所以这里既要有可见状态，也要能重复点。
+      if (openingRef.current.has(record.id)) return;
+      const source = sources.find((s) => s.key === record.sourceKey);
       if (!source) {
-        toast.err('该片源已被删除');
+        toast.err('该片源已被删除，可在设置里重新添加');
         return;
       }
-      setOpening(entry.id);
+      openingRef.current.add(record.id);
+      setOpening((set) => new Set(set).add(record.id));
       try {
-        const detail = await fetchDetail(source, entry.vodId, http);
+        const detail = await fetchDetail(source, record.vodId, http, { timeoutMs: 12_000 });
         if (detail.episodes.length === 0) {
           toast.err('该片源暂无可用播放地址');
           return;
         }
+        // 集数以刚取回来的列表为准：历史里存的可能是另一份列表的长度
         onPlay({
           source,
-          vodId: entry.vodId,
-          title: detail.videoInfo.title ?? entry.title,
-          year: entry.year,
-          cover: detail.videoInfo.cover ?? entry.cover,
+          vodId: record.vodId,
+          title: detail.videoInfo.title ?? record.title,
+          year: record.year,
+          cover: detail.videoInfo.cover ?? record.cover,
           episodes: detail.episodes,
-          startIndex: Math.min(entry.episodeIndex, detail.episodes.length - 1),
-          candidates: soloCandidate(source, entry.vodId),
+          startIndex: clampEpisodeIndex(record.episodeIndex, detail.episodes.length),
+          candidates: soloCandidate(source, record.vodId),
         });
       } catch (err) {
         toast.err(err instanceof Error ? err.message : '打开失败');
       } finally {
-        setOpening(null);
+        openingRef.current.delete(record.id);
+        // 只去掉自己那一个：同时点开两张卡时，先完成的那张不能把后一张的转圈抹掉
+        setOpening((set) => {
+          if (!set.has(record.id)) return set;
+          const next = new Set(set);
+          next.delete(record.id);
+          return next;
+        });
       }
     },
     [onPlay, sources, toast]
@@ -69,14 +94,16 @@ export function HomePage({
 
   const playFavorite = useCallback(
     async (fav: { sourceKey: string; vodId: string; title: string; year?: string; cover?: string; id: string }) => {
+      if (openingRef.current.has(fav.id)) return;
       const source = sources.find((s) => s.key === fav.sourceKey);
       if (!source) {
-        toast.err('该片源已被删除');
+        toast.err('该片源已被删除，可在设置里重新添加');
         return;
       }
-      setOpening(fav.id);
+      openingRef.current.add(fav.id);
+      setOpening((set) => new Set(set).add(fav.id));
       try {
-        const detail = await fetchDetail(source, fav.vodId, http);
+        const detail = await fetchDetail(source, fav.vodId, http, { timeoutMs: 12_000 });
         if (detail.episodes.length === 0) {
           toast.err('该片源暂无可用播放地址');
           return;
@@ -89,13 +116,19 @@ export function HomePage({
           year: fav.year,
           cover: detail.videoInfo.cover ?? fav.cover,
           episodes: detail.episodes,
-          startIndex: saved ? Math.min(saved.episodeIndex, detail.episodes.length - 1) : 0,
+          startIndex: saved ? clampEpisodeIndex(saved.episodeIndex, detail.episodes.length) : 0,
           candidates: soloCandidate(source, fav.vodId),
         });
       } catch (err) {
         toast.err(err instanceof Error ? err.message : '打开失败');
       } finally {
-        setOpening(null);
+        openingRef.current.delete(fav.id);
+        setOpening((set) => {
+          if (!set.has(fav.id)) return set;
+          const next = new Set(set);
+          next.delete(fav.id);
+          return next;
+        });
       }
     },
     [onPlay, sources, toast]
@@ -132,12 +165,21 @@ export function HomePage({
         </div>
       ) : (
         <div className="grid">
-          {history.slice(0, 12).map((h) => {
+          {history.slice(0, 12).map((raw) => {
+            const h = normalizeHistoryEntry(raw);
             const progress = h.duration > 0 ? Math.min(100, (h.position / h.duration) * 100) : 0;
+            const busy = opening.has(h.id);
             return (
-              <button key={h.id} className="card" onClick={() => void resume(h)} disabled={opening === h.id}>
+              <button
+                key={h.id}
+                className={`card${busy ? ' loading' : ''}`}
+                onClick={() => void openHistory(h)}
+                title={busy ? '正在打开…' : h.title}
+              >
                 <Poster src={h.cover} alt={h.title} />
-                <span className="badge">第 {h.episodeIndex + 1} / {h.episodeCount} 集</span>
+                <span className="badge">
+                  {busy ? '正在打开…' : `第 ${h.episodeIndex + 1} / ${h.episodeCount > 0 ? h.episodeCount : '?'} 集`}
+                </span>
                 <div className="card-body">
                   <div className="card-title" title={h.title}>
                     {h.title}
@@ -150,6 +192,11 @@ export function HomePage({
                     <div className="played" style={{ width: `${progress}%` }} />
                   </div>
                 </div>
+                {busy ? (
+                  <div className="card-busy">
+                    <div className="spinner" style={{ width: 22, height: 22 }} />
+                  </div>
+                ) : null}
               </button>
             );
           })}
@@ -167,17 +214,32 @@ export function HomePage({
         </div>
       ) : (
         <div className="grid">
-          {favorites.slice(0, 18).map((f) => (
-            <button key={f.id} className="card" onClick={() => void playFavorite(f)} disabled={opening === f.id}>
-              <Poster src={f.cover} alt={f.title} />
-              <div className="card-body">
-                <div className="card-title" title={f.title}>
-                  {f.title}
+          {favorites.slice(0, 18).map((f) => {
+            const busy = opening.has(f.id);
+            return (
+              <button
+                key={f.id}
+                className={`card${busy ? ' loading' : ''}`}
+                onClick={() => void playFavorite(f)}
+                title={busy ? '正在打开…' : f.title}
+              >
+                <Poster src={f.cover} alt={f.title} />
+                <div className="card-body">
+                  <div className="card-title" title={f.title}>
+                    {f.title}
+                  </div>
+                  <div className="card-meta">
+                    {busy ? '正在打开…' : `收藏于 ${formatRelativeTime(f.createdAt)}`}
+                  </div>
                 </div>
-                <div className="card-meta">收藏于 {formatRelativeTime(f.createdAt)}</div>
-              </div>
-            </button>
-          ))}
+                {busy ? (
+                  <div className="card-busy">
+                    <div className="spinner" style={{ width: 22, height: 22 }} />
+                  </div>
+                ) : null}
+              </button>
+            );
+          })}
         </div>
       )}
     </>
