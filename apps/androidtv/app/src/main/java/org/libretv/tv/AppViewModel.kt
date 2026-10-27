@@ -349,18 +349,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         homeRows = rows
     }
 
-    // —— 首次启动：导入内置默认源 ——
+    // —— 首次启动 / 内置源清单升级：导入内置默认源 ——
     private suspend fun seedIfNeeded() {
         val current = store.current()
-        if (current.seeded) return
+        val version = Defaults.version(getApplication())
+        val upgraded = current.defaultsVersion < version
+        // 首次启动与「内置源清单升级」走同一条路径：两边都只补本地没有的 url，
+        // 因此重复执行是安全的。只靠 `seeded` 布尔量的话，老用户永远拿不到新源。
+        if (current.seeded && !upgraded) return
         val (vod, liveSources) = Defaults.load(getApplication())
+        // 用户删掉过的内置源不要再塞回来
+        val removed = current.removedDefaultUrls.toSet()
+        val addedVod = vod.filter { s -> current.sources.none { it.url == s.url } && s.url !in removed }
+        val addedLive = liveSources.filter { s -> current.liveSources.none { it.url == s.url } && s.url !in removed }
         store.update {
             it.copy(
-                sources = (it.sources + vod).distinctBy { s -> s.url },
-                selected = (it.selected + vod.map { s -> s.key }).distinct(),
-                liveSources = (it.liveSources + liveSources).distinctBy { s -> s.url },
-                liveSelected = (it.liveSelected + liveSources.map { s -> s.key }).distinct(),
+                sources = (it.sources + addedVod).distinctBy { s -> s.url },
+                selected = (it.selected + addedVod.map { s -> s.key }).distinct(),
+                liveSources = (it.liveSources + addedLive).distinctBy { s -> s.url },
+                liveSelected = (it.liveSelected + addedLive.map { s -> s.key }).distinct(),
                 seeded = true,
+                defaultsVersion = version,
             )
         }
     }
@@ -1327,13 +1336,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun removeSource(key: String) {
+        val defaults = Defaults.load(getApplication()).first.map { it.url }.toSet()
         viewModelScope.launch {
             store.update { data ->
+                val target = data.sources.firstOrNull { it.key == key }
+                // 记下被删掉的内置源地址：内置源清单升级时不能再把它塞回来
+                val removed =
+                    if (target != null && target.url in defaults) {
+                        (data.removedDefaultUrls + target.url).distinct()
+                    } else {
+                        data.removedDefaultUrls
+                    }
                 data.copy(
                     sources = data.sources.filter { it.key != key },
                     selected = data.selected - key,
                     history = data.history.filter { it.sourceKey != key },
                     favorites = data.favorites.filter { it.sourceKey != key },
+                    removedDefaultUrls = removed,
                 )
             }
         }
@@ -1373,11 +1392,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun removeLiveSource(key: String) {
+        val defaults = Defaults.load(getApplication()).second.map { it.url }.toSet()
         viewModelScope.launch {
             store.update { data ->
+                val target = data.liveSources.firstOrNull { it.key == key }
+                val removed =
+                    if (target != null && target.url in defaults) {
+                        (data.removedDefaultUrls + target.url).distinct()
+                    } else {
+                        data.removedDefaultUrls
+                    }
                 data.copy(
                     liveSources = data.liveSources.filter { it.key != key },
                     liveSelected = data.liveSelected - key,
+                    removedDefaultUrls = removed,
                 )
             }
         }
@@ -1426,11 +1454,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             store.update { data ->
                 val newVod = vod.filter { s -> data.sources.none { it.url == s.url } }
                 val newLive = lives.filter { s -> data.liveSources.none { it.url == s.url } }
+                // 用户明确点了「恢复」：把「不再自动补回」的名单一并清掉，
+                // 否则下次升级补源时这些刚恢复的地址又会被当成「用户删掉的」。
+                val restored = (newVod.map { it.url } + newLive.map { it.url }).toSet()
                 data.copy(
                     sources = data.sources + newVod,
                     selected = (data.selected + newVod.map { it.key }).distinct(),
                     liveSources = data.liveSources + newLive,
                     liveSelected = (data.liveSelected + newLive.map { it.key }).distinct(),
+                    removedDefaultUrls = data.removedDefaultUrls.filter { it !in restored },
                 )
             }
             showToast("已恢复内置默认源")

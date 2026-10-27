@@ -7,6 +7,20 @@ import kotlinx.serialization.json.jsonObject
 
 /** 读取打包进 assets 的默认源清单（与仓库 defaults/sources.json 同一份内容） */
 object Defaults {
+    /**
+     * 内置源清单的版本号（`defaults/sources.json` 的 `version`）。
+     *
+     * 加新内置源时必须同时把这个数字加一，否则老用户的 `seeded` 已经是 true，
+     * 后续新增的源永远补不进来。
+     */
+    fun version(context: Context): Int {
+        val text = runCatching {
+            context.assets.open("default-sources.json").bufferedReader().use { it.readText() }
+        }.getOrNull() ?: return 0
+        val root = runCatching { LooseJson.parseToJsonElement(text).jsonObject }.getOrNull() ?: return 0
+        return root.str("version")?.trim()?.toIntOrNull() ?: 0
+    }
+
     fun load(context: Context): Pair<List<VodSource>, List<LiveSource>> {
         val text = runCatching {
             context.assets.open("default-sources.json").bufferedReader().use { it.readText() }

@@ -9,9 +9,25 @@ enum class CategoryKey(val label: String, val keywords: List<String>) {
     DOC("纪录片", listOf("纪录片", "记录片", "纪实", "纪录")),
     ANIME("动漫", listOf("动漫", "动画", "番剧", "国漫", "日漫")),
     VARIETY("综艺", listOf("综艺", "真人秀", "脱口秀", "选秀", "晚会")),
-    SHORT("短剧", listOf("短剧", "微短剧", "竖屏剧")),
-    TV("电视剧", listOf("电视剧", "连续剧", "剧集", "国产剧", "港台剧", "日韩剧", "欧美剧", "海外剧", "泰剧", "美剧", "韩剧", "日剧")),
-    SPORTS("体育", listOf("体育", "赛事", "足球", "篮球")),
+    // 后半段是采集站给短剧起的题材名（红牛/百度把它们摆成独立顶级分类，没有父分类可继承）
+    SHORT(
+        "短剧",
+        listOf(
+            "短剧", "微短剧", "竖屏剧", "爽文短剧",
+            "古装仙侠", "现代都市", "穿越年代", "年代穿越", "言情总裁", "重生民国",
+            "反转爽剧", "脑洞悬疑", "AI漫剧", "女频恋爱", "成长逆袭",
+        )
+    ),
+    TV(
+        "电视剧",
+        listOf(
+            "电视剧", "连续剧", "剧集", "国产剧", "港台剧", "日韩剧", "欧美剧", "海外剧",
+            "泰剧", "美剧", "韩剧", "日剧",
+            // 按地区拆的子分类是真实采集站的标准做法（电影天堂/百度/红牛都有）
+            "香港剧", "台湾剧", "韩国剧", "日本剧", "泰国剧", "港澳剧", "大陆剧", "内地剧", "其他剧",
+        )
+    ),
+    SPORTS("体育", listOf("体育", "赛事", "足球", "篮球", "台球", "网球", "斯诺克", "NBA")),
     MOVIE("电影", listOf("电影", "片")),
     OTHER("其他", emptyList());
 
@@ -48,6 +64,30 @@ object Categories {
         return CategoryKey.OTHER
     }
 
+    /** 「未分类」「其他」这类桶不跟着父分类混进正经分类 */
+    private val INHERIT_BLOCKLIST = setOf("未分类", "其他", "其它", "预告片", "花絮", "待定")
+
+    /**
+     * 判定分类属于哪个桶，必要时**继承父分类**。
+     *
+     * 采集站普遍把题材当子分类挂在「短剧」「体育」「连续剧」下面，名字里不含父级关键词，
+     * 只按名字判桶会让这些分类全部落到 OTHER 而不被展示。
+     */
+    fun bucketOf(category: SourceCategory, byId: Map<String, SourceCategory>): CategoryKey {
+        val own = classify(category.name)
+        if (own != CategoryKey.OTHER) return own
+        if (INHERIT_BLOCKLIST.contains(category.name.trim())) return CategoryKey.OTHER
+        val seen = HashSet<String>()
+        var parentId = category.parentId
+        while (parentId != null && seen.add(parentId)) {
+            val parent = byId[parentId] ?: break
+            val key = classify(parent.name)
+            if (key != CategoryKey.OTHER) return key
+            parentId = parent.parentId
+        }
+        return CategoryKey.OTHER
+    }
+
     fun parse(data: String): List<SourceCategory> {
         val root = runCatching { LooseJson.parseToJsonElement(data) as? JsonObject }.getOrNull() ?: return emptyList()
         val raw = (root["class"] ?: root["classes"]) as? JsonArray ?: return emptyList()
@@ -66,7 +106,8 @@ object Categories {
 
     /** 某分类桶对应的 type_id 列表：叶子优先，必要时回退父分类 */
     fun typeIds(categories: List<SourceCategory>, key: CategoryKey, limit: Int = 6): List<String> {
-        val matched = categories.filter { classify(it.name) == key }
+        val byId = categories.associateBy { it.id }
+        val matched = categories.filter { bucketOf(it, byId) == key }
         if (matched.isEmpty()) return emptyList()
 
         val childCount = categories.mapNotNull { it.parentId }.groupingBy { it }.eachCount()

@@ -35,6 +35,11 @@ interface PlaylistState {
 
 /** 频道列表每批挂载的数量，见下方增量揭示的说明 */
 const PAGE_SIZE = 240;
+// 直播流的 fatal 错误先自救这么多次，超过才把错误显示给用户。
+const MAX_RECOVERY = 2;
+// 换台后多久没出画面就判定「这个台不通」。iptv 列表里死链很常见，
+// 不设死线的话界面会永远停在「正在连接直播流…」。
+const LIVE_START_TIMEOUT_MS = 20_000;
 
 export function LivePage({ onOpenSettings }: { onOpenSettings: () => void }) {
   const allLiveSources = useAppStore((s) => s.liveSources);
@@ -551,6 +556,8 @@ function LivePlayer({
     setSwitching(false);
     let hls: Hls | null = null;
     let flv: mpegts.Player | null = null;
+    // 直播流出现 fatal 错误时先自救若干次，超过才真的报错。
+    let recovery = 0;
     // 换台时要立刻断开上一个流：否则旧流会在后台继续占用带宽/解码器
     const startedAt = Date.now();
 
@@ -589,7 +596,17 @@ function LivePlayer({
         hls.loadSource(src);
         hls.attachMedia(video);
         hls.on(Hls.Events.ERROR, (_e, data) => {
-          if (data.fatal) setError('直播流加载失败，可能已下线');
+          if (!data.fatal) return;
+          // 直播流的「致命」错误大多是临时性抖动：单个分片 404、切片 CDN 换节点、
+          // 索引重新签名。hls.js 自己重试 2 次仍失败就判 fatal，但接着 startLoad()
+          // 往往立刻恢复。先自救，别急着把错误糊到用户脸上。
+          if (recovery < MAX_RECOVERY) {
+            recovery += 1;
+            if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls?.recoverMediaError();
+            else hls?.startLoad();
+            return;
+          }
+          setError('直播流加载失败，可能已下线');
         });
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = src;
@@ -603,16 +620,29 @@ function LivePlayer({
     const onPlaying = (): void => {
       setLoading(false);
       setSwitching(false);
+      // 已经在放了，之前报的错就是过期信息：hls.js 对直播流会把「某一分片
+      // 404/超时」也报成 fatal（外层再重试就能恢复），如果不清掉，错误浮层会
+      // 一直盖在正常画面上——用户看到的是「黑屏 + 加载失败」，实际后台在播。
+      setError(null);
     };
     const onWaiting = (): void => {
       // 换台后短时间内不显示 loading，避免闪烁；超过 300ms 才认为真的在等
       if (Date.now() - startedAt > 300) setLoading(true);
     };
+    // 看门狗：有些台返回的是 HTML 错误页（不是 404），hls.js 解析失败后既不
+    // 触发播放也不一定报 fatal，界面会永远停在「正在连接直播流…」。超过 20 秒
+    // 还没画面就直接给结论，让用户按 ↓ 换台，别让人干等。
+    const watchdog = window.setTimeout(() => {
+      if (video.readyState >= 2 || Date.now() - startedAt < LIVE_START_TIMEOUT_MS) return;
+      setLoading(false);
+      setError('这个频道 20 秒内没有出画面，可能已下线或被地区限制');
+    }, LIVE_START_TIMEOUT_MS);
     video.addEventListener('playing', onPlaying);
     video.addEventListener('waiting', onWaiting);
     void video.play().catch(() => undefined);
 
     return () => {
+      window.clearTimeout(watchdog);
       video.removeEventListener('playing', onPlaying);
       video.removeEventListener('waiting', onWaiting);
       hls?.destroy();

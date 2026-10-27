@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import { DEFAULT_LIVE_SOURCES, DEFAULT_SOURCES } from './defaults';
+import { DEFAULTS_VERSION, DEFAULT_LIVE_SOURCES, DEFAULT_SOURCES } from './defaults';
 import {
   DEFAULT_SETTINGS,
   dedupeHistory as dedupeHistoryList,
@@ -28,7 +28,17 @@ export interface AppState {
   recentSearches: string[];
   /** 是否已完成首次启动的内置默认源导入 */
   defaultsSeeded: boolean;
+  /**
+   * 已经同步过的内置源清单版本（见 `defaults/sources.json` 的 `version`）。
+   *
+   * 光有 `defaultsSeeded` 布尔量不够：老用户早就 seeded 过，新增的内置源
+   * 永远进不来。这个数字让「内置源升级」只在版本前进时补一次。
+   */
+  defaultsVersion: number;
+  /** 用户主动删掉的内置源地址：升级补源时不要把它们又塞回来 */
+  removedDefaultUrls: string[];
 
+  /** 首次导入 + 版本升级时补齐新增的内置源（幂等） */
   seedDefaults: () => void;
   /** 合并重复配置的源（同一地址只留一条），修老版本重复注入留下的数据 */
   dedupeSources: () => void;
@@ -120,10 +130,17 @@ export const useAppStore = create<AppState>()(
       liveFavorites: [],
       recentSearches: [],
       defaultsSeeded: false,
+      defaultsVersion: 0,
+      removedDefaultUrls: [],
 
       seedDefaults: () =>
         set((s) => {
-          if (s.defaultsSeeded) return s;
+          const version = DEFAULTS_VERSION;
+          const upgraded = s.defaultsVersion < version;
+          // 首次启动与「内置源清单升级」走同一条路径：两边都只补「本地没有的 url」，
+          // 因此重复执行是安全的。老用户升级时不能只靠 defaultsSeeded 布尔量，
+          // 否则新增的内置源永远进不来（这正是加 defaultsVersion 的原因）。
+          if (s.defaultsSeeded && !upgraded) return s;
           // 老版本可能会把内置源重复写进存储（同一 url 出现多次），
           // 这里补一次合并：先按 url 去重，再补齐 selectedKeys。
           const existingUrls = new Set(s.sources.map((x) => x.url));
@@ -134,16 +151,27 @@ export const useAppStore = create<AppState>()(
             seen.add(source.url);
             merged.push(source);
           }
-          const added = DEFAULT_SOURCES.filter((d) => !existingUrls.has(d.url));
+          // 用户删掉过的内置源不要再塞回来：升级补源不能把「我不想要这个站」
+          // 变成「每次升级都复活一次」。
+          const removed = new Set(s.removedDefaultUrls);
+          const added = DEFAULT_SOURCES.filter((d) => !existingUrls.has(d.url) && !removed.has(d.url));
           const sources = [...merged, ...added];
+          const liveRemoved = removed;
+          const addedLive = DEFAULT_LIVE_SOURCES.filter(
+            (d) => !s.liveSources.some((x) => x.url === d.url) && !liveRemoved.has(d.url)
+          );
+          const liveSources = [...s.liveSources, ...addedLive];
           return {
             sources,
-            selectedKeys: [...new Set([...s.selectedKeys, ...DEFAULT_SOURCES.map((x) => x.key)])].filter(
-              (key) => sources.some((x) => x.key === key)
+            selectedKeys: [...new Set([...s.selectedKeys, ...added.map((x) => x.key)])].filter((key) =>
+              sources.some((x) => x.key === key)
             ),
-            liveSources: [...s.liveSources, ...DEFAULT_LIVE_SOURCES.filter((d) => !s.liveSources.some((x) => x.url === d.url))],
-            liveSelectedKeys: [...new Set([...s.liveSelectedKeys, ...DEFAULT_LIVE_SOURCES.map((x) => x.key)])],
+            liveSources,
+            liveSelectedKeys: [...new Set([...s.liveSelectedKeys, ...addedLive.map((x) => x.key)])].filter((key) =>
+              liveSources.some((x) => x.key === key)
+            ),
             defaultsSeeded: true,
+            defaultsVersion: version,
           };
         }),
 
@@ -189,12 +217,17 @@ export const useAppStore = create<AppState>()(
         set((s) => {
           const vod = DEFAULT_SOURCES.filter((d) => !s.sources.some((x) => x.url === d.url));
           const live = DEFAULT_LIVE_SOURCES.filter((d) => !s.liveSources.some((x) => x.url === d.url));
+          // 用户明确点了「恢复」：把「不再自动补回」的名单一并清掉，
+          // 否则下次内置源清单升级时这些刚恢复的地址又会被当成「用户删掉的」。
+          const restored = new Set([...vod.map((x) => x.url), ...live.map((x) => x.url)]);
           return {
             sources: [...s.sources, ...vod],
             selectedKeys: [...new Set([...s.selectedKeys, ...vod.map((x) => x.key)])],
             liveSources: [...s.liveSources, ...live],
             liveSelectedKeys: [...new Set([...s.liveSelectedKeys, ...live.map((x) => x.key)])],
+            removedDefaultUrls: s.removedDefaultUrls.filter((url) => !restored.has(url)),
             defaultsSeeded: true,
+            defaultsVersion: DEFAULTS_VERSION,
           };
         }),
 
@@ -215,12 +248,19 @@ export const useAppStore = create<AppState>()(
         })),
 
       removeSource: (key) =>
-        set((s) => ({
-          sources: s.sources.filter((x) => x.key !== key),
-          selectedKeys: s.selectedKeys.filter((k) => k !== key),
-          history: s.history.filter((h) => h.sourceKey !== key),
-          favorites: s.favorites.filter((f) => f.sourceKey !== key),
-        })),
+        set((s) => {
+          const target = s.sources.find((x) => x.key === key);
+          // 记下被删掉的内置源地址：内置源清单升级时不能再把它塞回来
+          const isBuiltin = Boolean(target && DEFAULT_SOURCES.some((d) => d.url === target.url));
+          return {
+            sources: s.sources.filter((x) => x.key !== key),
+            selectedKeys: s.selectedKeys.filter((k) => k !== key),
+            history: s.history.filter((h) => h.sourceKey !== key),
+            favorites: s.favorites.filter((f) => f.sourceKey !== key),
+            removedDefaultUrls:
+              isBuiltin && target ? [...new Set([...s.removedDefaultUrls, target.url])] : s.removedDefaultUrls,
+          };
+        }),
 
       toggleSource: (key) =>
         set((s) => ({
@@ -239,10 +279,16 @@ export const useAppStore = create<AppState>()(
         }),
 
       removeLiveSource: (key) =>
-        set((s) => ({
-          liveSources: s.liveSources.filter((x) => x.key !== key),
-          liveSelectedKeys: s.liveSelectedKeys.filter((k) => k !== key),
-        })),
+        set((s) => {
+          const target = s.liveSources.find((x) => x.key === key);
+          const isBuiltin = Boolean(target && DEFAULT_LIVE_SOURCES.some((d) => d.url === target.url));
+          return {
+            liveSources: s.liveSources.filter((x) => x.key !== key),
+            liveSelectedKeys: s.liveSelectedKeys.filter((k) => k !== key),
+            removedDefaultUrls:
+              isBuiltin && target ? [...new Set([...s.removedDefaultUrls, target.url])] : s.removedDefaultUrls,
+          };
+        }),
 
       toggleLiveSource: (key) =>
         set((s) => ({
@@ -321,6 +367,10 @@ export const useAppStore = create<AppState>()(
         liveFavorites: s.liveFavorites,
         recentSearches: s.recentSearches,
         defaultsSeeded: s.defaultsSeeded,
+        // 这两个字段决定「内置源清单升级时补哪些源」，必须持久化：
+        // 只存 defaultsSeeded 的话，老用户永远停在旧的内置源列表上。
+        defaultsVersion: s.defaultsVersion,
+        removedDefaultUrls: s.removedDefaultUrls,
       }),
     }
   )

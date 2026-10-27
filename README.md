@@ -46,7 +46,8 @@
 | 观看进度续播 / 历史 / 收藏 | ✅ 同一片子跨源只留一条记录（同名不同年份不合并）| ✅ 同左 |
 | 数据源管理、订阅导入（LibreTV / TVBOX）、导入导出 | ✅ | ✅ |
 | **投屏** | ✅ DLNA **发送端**（把影片推到电视/盒子） | ✅ DLNA **接收端**（手机投到电视） |
-| 内置默认源（点播 + iptv-org 直播） | ✅ 首次启动导入，可删除/恢复 | ✅ 同左（同一份 `defaults/sources.json`） |
+| 内置默认源（点播 8 个 + 直播 3 个） | ✅ 首次启动导入，可删除/恢复 | ✅ 同左（同一份 `defaults/sources.json`） |
+| **内置源清单可升级**（`version` 递增时自动补齐缺的源，删过的不复活） | ✅ | ✅ |
 
 ### 桌面端
 
@@ -83,7 +84,7 @@
 
 ```
 defaults/sources.json        内置默认源（两端共用同一份）
-packages/core/               共享 TS 核心：解析 / 聚合 / 订阅 / 存储模型 / 增量解析 / 分类与检索缓存（231 项单测）
+packages/core/               共享 TS 核心：解析 / 聚合 / 订阅 / 存储模型 / 增量解析 / 分类与检索缓存（244 项单测）
 apps/desktop/                Electron 桌面端（main / preload / renderer）
 apps/androidtv/              Android TV（Kotlin + Compose + Media3 + 自研 DLNA DMR）
 tools/mock-cms/              本地假采集站（端到端联调 + 截图）
@@ -105,6 +106,7 @@ npm run dist:desktop     # 打包安装包（NSIS / portable / dmg / AppImage）
 
 > Linux/macOS 上打包目标会自动切换；Windows 上默认产出 `release/LibreTV-*.exe`。
 > 首次启动会自动导入 `defaults/sources.json` 里的默认源，可在「设置 → 点播源 / 直播源」里停用或删除，也可随时「恢复默认源」。
+> 内置源清单带版本号：升级到带新内置源的版本时，会自动补齐**你本地没有的**那些源；你删掉过的内置源不会被偷偷加回来。
 
 ### Android TV
 
@@ -121,9 +123,9 @@ APK 位置：`apps/androidtv/app/build/outputs/apk/debug/app-debug.apk`（debug 
 ### 测试
 
 ```bash
-npm test                     # 核心解析/聚合/换源/增量解析 \+ 桌面代理 231 项单测
+npm test                     # 核心解析/聚合/换源/增量解析 \+ 桌面代理 244 项单测
 npm run test:dlna            # DLNA 发送端链路（SSDP → 设备描述 → SOAP）
-cd apps/androidtv && gradle testDebugUnitTest   # Kotlin 解析层/换源/缩放/换台/播放器参数/观看记录去重/拼音/广告过滤/缓存 111 项单测
+cd apps/androidtv && gradle testDebugUnitTest   # Kotlin 解析层/换源/缩放/换台/播放器参数/观看记录去重/拼音/广告过滤/缓存 116 项单测
 ```
 
 端到端联调（本地假采集站 + 真实 HLS 视频）：见 [docs/build.md](docs/build.md#端到端联调)。
@@ -139,7 +141,8 @@ TV 端没有真机也能验：普通 `system-images;android-35;default;x86_64` �
 
 ## 关于内置源与内容
 
-- 内置的点播源是**第三方公开 Apple CMS 接口**，直播源是 [iptv-org](https://github.com/iptv-org/iptv) 的公开 M3U 列表；它们与本项目**无隶属关系**，仅作为开箱即用的示例。
+- 内置的点播源是**第三方公开 Apple CMS 接口**（非凡 / 量子 / 魔都 / 360 / 电影天堂 / 极速 / 红牛 / 如意），直播源包括 [iptv-org](https://github.com/iptv-org/iptv) 的公开 M3U 列表与 [Collect-IPTV](https://github.com/zilong7728/Collect-IPTV) 的精选列表；它们与本项目**无隶属关系**，仅作为开箱即用的示例。
+- 直播列表里的死链很常见（返回 HTML 错误页、被地区限制）。播放页会等 20 秒，仍无画面就明确提示「可能已下线或被地区限制」，直接 `↑`/`↓` 换台即可，不会一直卡在「正在连接…」。
 - 本项目**不存储、不制作、不分发**任何视频内容，只提供第三方公开接口的解析与播放能力；内容的合法性由对应数据源负责。
 - 所有源都可以在设置里停用/删除，也可以完全手动添加自己的源或订阅。
 

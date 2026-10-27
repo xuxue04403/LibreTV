@@ -1,15 +1,23 @@
 {
   "name": "LibreTV 内置默认源",
-  "version": 1,
+  "version": 2,
   "notice": "以下地址均为第三方公开接口，与本项目无隶属关系；仅作为开箱即用的示例，可在设置中随时删除。内容合法性由对应数据源负责。",
   "sources": [
     { "name": "非凡资源", "url": "https://api.ffzyapi.com/api.php/provide/vod" },
     { "name": "量子资源", "url": "https://cj.lziapi.com/api.php/provide/vod" },
     { "name": "魔都资源", "url": "https://caiji.moduapi.cc/api.php/provide/vod" },
-    { "name": "360 资源", "url": "https://www.360zy.com/api.php/provide/vod" }
+    { "name": "360 资源", "url": "https://www.360zy.com/api.php/provide/vod" },
+    { "name": "电影天堂", "url": "http://caiji.dyttzyapi.com/api.php/provide/vod" },
+    { "name": "极速资源", "url": "https://jszyapi.com/api.php/provide/vod" },
+    { "name": "红牛资源", "url": "https://www.hongniuzy2.com/api.php/provide/vod" },
+    { "name": "如意资源", "url": "https://cj.rycjapi.com/api.php/provide/vod" }
   ],
   "liveSources": [
     { "name": "iptv-org 全球频道", "url": "https://iptv-org.github.io/iptv/index.m3u" },
-    { "name": "iptv-org 中国频道", "url": "https://iptv-org.github.io/iptv/countries/cn.m3u" }
+    { "name": "iptv-org 中国频道", "url": "https://iptv-org.github.io/iptv/countries/cn.m3u" },
+    {
+      "name": "Collect-IPTV 精选",
+      "url": "https://ghfast.top/https://raw.githubusercontent.com/zilong7728/Collect-IPTV/main/best_sorted.m3u"
+    }
   ]
 }

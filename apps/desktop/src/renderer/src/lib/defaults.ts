@@ -3,6 +3,7 @@ import type { LiveSourceConfig, SourceConfig } from '@libretv/core';
 
 interface DefaultsFile {
   name: string;
+  version?: number;
   sources: { name: string; url: string; detail?: string; isAdult?: boolean }[];
   liveSources: { name: string; url: string; epg?: string }[];
 }
@@ -10,8 +11,19 @@ interface DefaultsFile {
 const data = defaultsRaw as unknown as DefaultsFile;
 
 /**
+ * 内置源清单的版本号（`defaults/sources.json` 的 `version`）。
+ *
+ * 加新内置源时必须同时把这个数字加一，否则老用户的存储里已经
+ * `defaultsSeeded: true`，新源永远补不进来。
+ */
+export const DEFAULTS_VERSION = Number(data.version ?? 0);
+
+/**
  * 内置默认源：与 Android TV 端 assets 里的 default-sources.json 是同一份文件
  * （仓库 defaults/sources.json），避免两端各维护一份。
+ *
+ * `key` 由下标生成，所以**只能在末尾追加**新源：插在中间会让老用户已保存的
+ * `builtin_N` 指向另一个站，历史记录与收藏会串台。
  */
 export const DEFAULT_SOURCES: SourceConfig[] = (data.sources ?? []).map((source, index) => ({
   key: `builtin_${index}`,

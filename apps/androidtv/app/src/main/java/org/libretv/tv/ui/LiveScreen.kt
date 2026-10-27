@@ -69,6 +69,15 @@ import org.libretv.tv.ui.theme.Panel
 import org.libretv.tv.ui.theme.TextMuted
 import org.libretv.tv.ui.theme.TextPrimary
 
+/**
+ * 换台后多久没出画面就判定「这个台不通」。
+ *
+ * iptv 列表里死链很常见（返回 HTML 错误页、被地区限制），ExoPlayer 遇到这类
+ * 情况既不报错也不进 READY，界面会永远停在「正在连接直播流…」，用户只能靠
+ * 盲按换台。设个死线，到点就给结论。
+ */
+private const val LIVE_START_TIMEOUT_MS = 20_000L
+
 @Composable
 fun LiveScreen(vm: AppViewModel, data: AppData) {
     val live = vm.live
@@ -305,7 +314,12 @@ fun LivePlayerScreen(
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 buffering = playbackState == Player.STATE_BUFFERING || playbackState == Player.STATE_IDLE
-                if (playbackState == Player.STATE_READY) switching = false
+                if (playbackState == Player.STATE_READY) {
+                    switching = false
+                    // 已经在放了，之前那条错误就是过期信息（直播流常见「某个分片
+                    // 404 报错后自己恢复」），不清掉会让错误面板一直盖着正常画面。
+                    error = null
+                }
             }
 
             override fun onPlayerError(playerError: PlaybackException) {
@@ -318,6 +332,17 @@ fun LivePlayerScreen(
         onDispose {
             exo.removeListener(listener)
             exo.release()
+        }
+    }
+
+    // 看门狗：有的台返回的是 HTML 错误页，ExoPlayer 既不报错也不出画面，
+    // 界面会永远停在「正在连接直播流…」。超时就直接给结论并允许换台。
+    LaunchedEffect(current.url) {
+        kotlinx.coroutines.delay(LIVE_START_TIMEOUT_MS)
+        if (exo.playbackState != Player.STATE_READY && error == null) {
+            buffering = false
+            switching = false
+            error = "这个频道 ${LIVE_START_TIMEOUT_MS / 1000} 秒内没有出画面，可能已下线或被地区限制"
         }
     }
 

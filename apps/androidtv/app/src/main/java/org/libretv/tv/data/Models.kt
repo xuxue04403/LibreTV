@@ -190,6 +190,15 @@ data class AppData(
     val settings: AppSettings = AppSettings(),
     /** 是否已完成首次启动的默认源导入 */
     val seeded: Boolean = false,
+    /**
+     * 已经同步过的内置源清单版本（对应 assets/default-sources.json 的 version）。
+     *
+     * 只有 [seeded] 一个布尔量不够：老用户早就 seeded 过，后续新增的内置源
+     * 永远补不进来。这个数字让「内置源升级」只在版本前进时补一次。
+     */
+    val defaultsVersion: Int = 0,
+    /** 用户主动删掉的内置源地址：升级补源时不要又把它们塞回来 */
+    val removedDefaultUrls: List<String> = emptyList(),
 ) {
     fun activeSources(): List<VodSource> = sources.filter { it.key in selected }
     fun activeLiveSources(): List<LiveSource> = liveSources.filter { it.key in liveSelected }

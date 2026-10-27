@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   browseCategory,
+  bucketOf,
   CATEGORY_BUCKETS,
   categoryLabel,
   classifyCategoryName,
@@ -42,7 +43,6 @@ describe('classifyCategoryName', () => {
     expect(classifyCategoryName('纪录电影')).toBe('doc');
     expect(classifyCategoryName('动画电影')).toBe('anime');
   });
-
   it('无法识别的归入其他', () => {
     expect(classifyCategoryName('福利')).toBe('other');
     expect(classifyCategoryName('')).toBe('other');
@@ -131,6 +131,128 @@ describe('parseSourceCategories / matchTypeId', () => {
   it('支持不同的字段命名', () => {
     const categories = parseSourceCategories({ classes: [{ typeId: '11', typeName: '纪录片', typePid: 0 }] });
     expect(categories).toEqual([{ id: '11', name: '纪录片', parentId: undefined }]);
+  });
+});
+
+/**
+ * 父级继承：真实采集站普遍把题材当子分类挂在「短剧」「体育」「连续剧」下，
+ * 名字里完全不含父级关键词。只按名字判桶会让这些分类全部落到 other 而不被展示。
+ * 以下 payload 全部取自 2026-10 的真实 `?ac=list` 返回（极速/红牛/电影天堂）。
+ */
+describe('bucketOf：名字判不出时继承父分类', () => {
+  it('「古装仙侠」等题材挂短剧下 -> 短剧桶', () => {
+    const categories = parseSourceCategories({
+      class: [
+        { type_id: 38, type_name: '短剧' },
+        { type_id: 45, type_name: '古装仙侠', type_pid: 38 },
+        { type_id: 46, type_name: '现代都市', type_pid: 38 },
+        { type_id: 49, type_name: '重生民国', type_pid: 38 },
+        { type_id: 54, type_name: 'AI漫剧', type_pid: 38 },
+      ],
+    });
+    const byId = new Map(categories.map((c) => [c.id, c]));
+    for (const id of ['45', '46', '49', '54']) {
+      const category = byId.get(id);
+      expect(category).toBeDefined();
+      expect(bucketOf(category!, byId), id).toBe('short');
+    }
+  });
+
+  it('「台球」挂体育赛事下 -> 体育桶', () => {
+    const categories = parseSourceCategories({
+      class: [
+        { type_id: 29, type_name: '体育赛事' },
+        { type_id: 42, type_name: '台球', type_pid: 29 },
+      ],
+    });
+    const byId = new Map(categories.map((c) => [c.id, c]));
+    expect(bucketOf(byId.get('42')!, byId)).toBe('sports');
+  });
+
+  it('「香港剧」挂连续剧下 -> 电视剧桶', () => {
+    const categories = parseSourceCategories({
+      class: [
+        { type_id: 2, type_name: '连续剧' },
+        { type_id: 14, type_name: '香港剧', type_pid: 2 },
+      ],
+    });
+    const byId = new Map(categories.map((c) => [c.id, c]));
+    expect(bucketOf(byId.get('14')!, byId)).toBe('tv');
+  });
+
+  it('名字本身判得出桶时以名字为准，不被父分类覆盖', () => {
+    const categories = parseSourceCategories({
+      class: [
+        { type_id: 1, type_name: '电影片' },
+        { type_id: 20, type_name: '记录片', type_pid: 1 },
+      ],
+    });
+    const byId = new Map(categories.map((c) => [c.id, c]));
+    // 「记录片」挂在电影下，但它是纪录片，不该跟着变电影
+    expect(bucketOf(byId.get('20')!, byId)).toBe('doc');
+  });
+
+  it('「未分类」这类兜底分类不跟着父分类混进正经桶', () => {
+    const categories = parseSourceCategories({
+      class: [
+        { type_id: 1, type_name: '电影' },
+        { type_id: 43, type_name: '未分类', type_pid: 1 },
+      ],
+    });
+    const byId = new Map(categories.map((c) => [c.id, c]));
+    expect(bucketOf(byId.get('43')!, byId)).toBe('other');
+  });
+
+  it('父级不存在或形成环时安全返回 other', () => {
+    const orphan = parseSourceCategories({ class: [{ type_id: 9, type_name: '神秘分类', type_pid: 999 }] });
+    expect(bucketOf(orphan[0], new Map(orphan.map((c) => [c.id, c])))).toBe('other');
+
+    const a = { id: 'a', name: '环甲', parentId: 'b' };
+    const b = { id: 'b', name: '环乙', parentId: 'a' };
+    const byId = new Map([
+      [a.id, a],
+      [b.id, b],
+    ]);
+    expect(bucketOf(a, byId)).toBe('other');
+  });
+
+  it('继承后 matchTypeIds 能把题材子分类拉进对应桶', () => {
+    const categories = parseSourceCategories({
+      class: [
+        { type_id: 1, type_name: '电影' },
+        { type_id: 38, type_name: '短剧' },
+        { type_id: 45, type_name: '古装仙侠', type_pid: 38 },
+        { type_id: 46, type_name: '现代都市', type_pid: 38 },
+      ],
+    });
+    const ids = matchTypeIds(categories, 'short');
+    // 45/46 是叶子，38 有子分类所以不参与（避免重复抓同一批内容）
+    expect(ids).toEqual(['45', '46']);
+  });
+});
+
+describe('collect 类题材名：独立顶级分类也能归桶', () => {
+  it('红牛/百度把短剧题材摆成顶级分类时按名字归桶', () => {
+    // 红牛资源实测：43=古装仙侠 … 51=AI漫剧 全是顶级（没有父分类可继承）
+    for (const name of ['古装仙侠', '现代都市', '穿越年代', '言情总裁', '重生民国', '反转爽剧', '脑洞悬疑', 'AI漫剧']) {
+      expect(classifyCategoryName(name), name).toBe('short');
+    }
+  });
+
+  it('按地区拆的剧集分类归电视剧', () => {
+    for (const name of ['香港剧', '台湾剧', '韩国剧', '日本剧', '泰国剧', '港澳剧', '大陆剧', '内地剧', '其他剧']) {
+      expect(classifyCategoryName(name), name).toBe('tv');
+    }
+  });
+
+  it('赛事类分类归体育', () => {
+    for (const name of ['台球', '网球', '斯诺克', 'NBA']) {
+      expect(classifyCategoryName(name), name).toBe('sports');
+    }
+  });
+
+  it('「爽文短剧」归短剧而不是被「剧」拿到电视剧', () => {
+    expect(classifyCategoryName('爽文短剧')).toBe('short');
   });
 });
 

@@ -88,4 +88,72 @@ class CategoriesTest {
         assertEquals(CategoryKey.KIDS, Categories.classify("少儿动画"))
         assertEquals(CategoryKey.DOC, Categories.classify("纪录电影"))
     }
+
+    @Test
+    fun `名字判不出时继承父分类`() {
+        // 真实采集站（极速/红牛）把短剧题材当子分类挂在「短剧」下
+        val shortTree = listOf(
+            SourceCategory("38", "短剧", null),
+            SourceCategory("45", "古装仙侠", "38"),
+            SourceCategory("46", "现代都市", "38"),
+            SourceCategory("54", "AI漫剧", "38"),
+        )
+        val byId = shortTree.associateBy { it.id }
+        for (id in listOf("45", "46", "54")) {
+            assertEquals(id, CategoryKey.SHORT, Categories.bucketOf(byId.getValue(id), byId))
+        }
+        assertEquals(listOf("45", "46", "54"), Categories.typeIds(shortTree, CategoryKey.SHORT))
+
+        val sportsTree = listOf(
+            SourceCategory("29", "体育赛事", null),
+            SourceCategory("42", "台球", "29"),
+        )
+        val sportsById = sportsTree.associateBy { it.id }
+        assertEquals(CategoryKey.SPORTS, Categories.bucketOf(sportsById.getValue("42"), sportsById))
+    }
+
+    @Test
+    fun `名字判得出时不被父分类覆盖`() {
+        val tree = listOf(
+            SourceCategory("1", "电影片", null),
+            SourceCategory("20", "记录片", "1"),
+        )
+        val byId = tree.associateBy { it.id }
+        // 「记录片」挂在电影下，但它是纪录片
+        assertEquals(CategoryKey.DOC, Categories.bucketOf(byId.getValue("20"), byId))
+    }
+
+    @Test
+    fun `兜底分类不跟着父分类混进正经桶`() {
+        val tree = listOf(
+            SourceCategory("1", "电影", null),
+            SourceCategory("43", "未分类", "1"),
+        )
+        val byId = tree.associateBy { it.id }
+        assertEquals(CategoryKey.OTHER, Categories.bucketOf(byId.getValue("43"), byId))
+    }
+
+    @Test
+    fun `父级缺失或成环时安全返回其他`() {
+        val orphan = SourceCategory("9", "神秘分类", "999")
+        assertEquals(CategoryKey.OTHER, Categories.bucketOf(orphan, mapOf("9" to orphan)))
+
+        val a = SourceCategory("a", "环甲", "b")
+        val b = SourceCategory("b", "环乙", "a")
+        assertEquals(CategoryKey.OTHER, Categories.bucketOf(a, mapOf("a" to a, "b" to b)))
+    }
+
+    @Test
+    fun `按地区拆的剧集与赛事题材直接归桶`() {
+        for (name in listOf("香港剧", "台湾剧", "韩国剧", "日本剧", "泰国剧", "港澳剧", "大陆剧")) {
+            assertEquals(name, CategoryKey.TV, Categories.classify(name))
+        }
+        for (name in listOf("台球", "网球", "斯诺克", "NBA")) {
+            assertEquals(name, CategoryKey.SPORTS, Categories.classify(name))
+        }
+        for (name in listOf("古装仙侠", "现代都市", "反转爽剧", "AI漫剧", "女频恋爱")) {
+            assertEquals(name, CategoryKey.SHORT, Categories.classify(name))
+        }
+        assertEquals(CategoryKey.SHORT, Categories.classify("爽文短剧"))
+    }
 }

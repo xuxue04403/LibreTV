@@ -27,9 +27,39 @@ export const CATEGORY_BUCKETS: CategoryBucket[] = [
   { key: 'doc', label: '纪录片', keywords: ['纪录片', '记录片', '纪实', '纪录'] },
   { key: 'anime', label: '动漫', keywords: ['动漫', '动画', '番剧', '国漫', '日漫'] },
   { key: 'variety', label: '综艺', keywords: ['综艺', '真人秀', '脱口秀', '选秀', '晚会'] },
-  { key: 'short', label: '短剧', keywords: ['短剧', '微短剧', '竖屏剧'] },
-  { key: 'tv', label: '电视剧', keywords: ['电视剧', '连续剧', '剧集', '国产剧', '港台剧', '日韩剧', '欧美剧', '海外剧', '泰剧', '美剧', '韩剧', '日剧'] },
-  { key: 'sports', label: '体育', keywords: ['体育', '赛事', '足球', '篮球'] },
+  {
+    key: 'short',
+    label: '短剧',
+    // 后半段是采集站给短剧起的**题材名**。红牛/百度把它们摆成独立顶级分类，
+    // 没有父分类可继承，只能正面列出来（实测红牛「古装仙侠」等 6 个各有 20 条，
+    // 分集中位数都是 1，确认是单集短剧）。
+    keywords: [
+      '短剧', '微短剧', '竖屏剧', '爽文短剧',
+      '古装仙侠', '现代都市', '穿越年代', '年代穿越', '言情总裁', '重生民国',
+      '反转爽剧', '脑洞悬疑', 'AI漫剧', '女频恋爱', '成长逆袭',
+    ],
+  },
+  {
+    key: 'tv',
+    label: '电视剧',
+    // 「香港剧」「台湾剧」这类按地区拆的子分类是真实采集站的标准做法
+    // （电影天堂/百度/红牛 都把它们作为**独立分类**给出来）。
+    // 原词表只有「港台剧」「日韩剧」这种聚合名，于是这些分类既进不了电视剧桶、
+    // 也不会被展示 —— 电视剧分类页会少掉一大块内容。
+    // 同一批名字若挂在「连续剧」父分类下，也会被【父级继承】兜住，见 bucketOf()。
+    keywords: [
+      '电视剧', '连续剧', '剧集', '国产剧', '港台剧', '日韩剧', '欧美剧', '海外剧',
+      '泰剧', '美剧', '韩剧', '日剧',
+      '香港剧', '台湾剧', '韩国剧', '日本剧', '泰国剧', '港澳剧', '大陆剧', '内地剧', '其他剧',
+    ],
+  },
+  {
+    key: 'sports',
+    label: '体育',
+    // 「台球」「斯诺克」「NBA」在采集站里是独立的赛事分类，
+    // 名字里没有「体育/赛事」，不加就只能归入 other 而不被展示。
+    keywords: ['体育', '赛事', '足球', '篮球', '台球', '网球', '斯诺克', 'NBA'],
+  },
   { key: 'movie', label: '电影', keywords: ['电影', '片'] },
   { key: 'other', label: '其他', keywords: [] },
 ];
@@ -80,6 +110,46 @@ export function categoryLabel(key: CategoryKey): string {
   return CATEGORY_BUCKETS.find((bucket) => bucket.key === key)?.label ?? '其他';
 }
 
+/**
+ * 名字本身判不出桶时，**不允许**靠父分类继承的垃圾分类。
+ *
+ * 「未分类」「其他」这类桶装的是采集站自己也没归好类的东西，
+ * 跟着父分类混进「电影」只会让分类页混进杂项。
+ */
+const BUCKET_INHERIT_BLOCKLIST = /^(未分类|其他|其它|预告片|花絮|待定)$/;
+
+/**
+ * 判定一个分类属于哪个桶，必要时**继承父分类**。
+ *
+ * 实测依据（2026-10，6 个采集源）：采集站普遍把题材当子分类挂在「短剧」「体育」下面，
+ * 名字里完全不含父级关键词——
+ *   极速/红牛：「古装仙侠 / 现代都市 / 穿越年代 / 言情总裁 / 重生民国 / 反转爽剧 /
+ *              脑洞悬疑 / AI漫剧」挂在「短剧」下，「台球」挂在「体育赛事」下；
+ *   电影天堂/如意：「香港剧 / 台湾剧 / 日本剧 / 泰国剧」挂在「连续剧」下。
+ * 只按名字判桶，这些分类会全部落到 other 而不被展示，「电视剧」「短剧」桶里
+ * 也就只剩父分类自己那一条（而父分类不聚合子分类，等于空）。
+ */
+export function bucketOf(
+  category: SourceCategory,
+  byId: ReadonlyMap<string, SourceCategory>
+): CategoryKey {
+  const own = classifyCategoryName(category.name);
+  if (own !== 'other') return own;
+  if (BUCKET_INHERIT_BLOCKLIST.test(category.name.trim())) return 'other';
+  // 逐级往上找，避免采集站给了三层分类；seen 防环
+  const seen = new Set<string>();
+  let parentId = category.parentId;
+  while (parentId && !seen.has(parentId)) {
+    seen.add(parentId);
+    const parent = byId.get(parentId);
+    if (!parent) break;
+    const key = classifyCategoryName(parent.name);
+    if (key !== 'other') return key;
+    parentId = parent.parentId;
+  }
+  return 'other';
+}
+
 /** 解析 `?ac=list` 响应里的分类表（字段名在各类采集站间有差异，做宽容处理） */
 export function parseSourceCategories(data: unknown): SourceCategory[] {
   if (!data || typeof data !== 'object') return [];
@@ -115,7 +185,8 @@ export function matchTypeId(categories: SourceCategory[], key: CategoryKey): str
  * 只有没有子分类时才回退到父分类本身，否则分类页会几乎空白。
  */
 export function matchTypeIds(categories: SourceCategory[], key: CategoryKey, limit = 6): string[] {
-  const matched = categories.filter((category) => classifyCategoryName(category.name) === key);
+  const byId = new Map(categories.map((category) => [category.id, category]));
+  const matched = categories.filter((category) => bucketOf(category, byId) === key);
   if (matched.length === 0) return [];
 
   const childCount = new Map<string, number>();
