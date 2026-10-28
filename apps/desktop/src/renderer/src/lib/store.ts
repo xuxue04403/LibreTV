@@ -1,6 +1,13 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import { DEFAULTS_VERSION, DEFAULT_LIVE_SELECTED_KEYS, DEFAULT_LIVE_SOURCES, DEFAULT_SOURCES } from './defaults';
+import {
+  DEFAULTS_VERSION,
+  DEFAULT_LIVE_DISABLED_KEYS,
+  DEFAULT_LIVE_SELECTED_KEYS,
+  DEFAULT_LIVE_SOURCES,
+  DEFAULT_SOURCES,
+  LIVE_SELECTION_VERSION,
+} from './defaults';
 import {
   DEFAULT_SETTINGS,
   dedupeHistory as dedupeHistoryList,
@@ -162,17 +169,24 @@ export const useAppStore = create<AppState>()(
           );
           const liveSources = [...s.liveSources, ...addedLive];
           const defaultLiveSelected = new Set(DEFAULT_LIVE_SELECTED_KEYS);
+          // v4 之前老用户是三个直播源全开的。清单把两个 iptv-org 源改成默认关闭后，
+          // 光改 `selected` 对他们没用（勾选状态早就存下来了），所以升级到
+          // LIVE_SELECTION_VERSION 时取消一次；之后用户自己再打开就不会被关掉。
+          const liveBase =
+            s.defaultsVersion < LIVE_SELECTION_VERSION
+              ? s.liveSelectedKeys.filter((key) => !DEFAULT_LIVE_DISABLED_KEYS.includes(key))
+              : s.liveSelectedKeys;
           return {
             sources,
             selectedKeys: [...new Set([...s.selectedKeys, ...added.map((x) => x.key)])].filter((key) =>
               sources.some((x) => x.key === key)
             ),
             liveSources,
-            // 只勾选清单里「默认启用」的内置源：iptv-org 全球频道这类默认关掉的
+            // 只勾选清单里「默认启用」的内置源：两个 iptv-org 源这类默认关掉的
             // 源虽然进列表，但不参与加载，否则新用户开箱就是一屏死台。
             liveSelectedKeys: [
               ...new Set([
-                ...s.liveSelectedKeys,
+                ...liveBase,
                 ...addedLive.filter((x) => defaultLiveSelected.has(x.key)).map((x) => x.key),
               ]),
             ].filter((key) => liveSources.some((x) => x.key === key)),

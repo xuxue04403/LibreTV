@@ -57,12 +57,26 @@ class DefaultsSelectionTest {
     }
 
     @Test
-    fun `仓库里的真实清单默认只启用慢速源之外的两个`() {
-        // 与 defaults/sources.json 保持同步：第 0 个是 iptv-org 全球频道（selected:false）
+    fun `清单里被关掉的源要能列出来，供升级时一次性取消勾选`() {
+        val json = """
+            {"liveSources":[
+              {"name":"全球","url":"http://a/x.m3u","selected":false},
+              {"name":"中国","url":"http://b/x.m3u","selected":"false"},
+              {"name":"精选","url":"http://c/x.m3u"}
+            ]}
+        """.trimIndent()
+        assertEquals(setOf("builtin_live_0", "builtin_live_1"), Defaults.defaultLiveDisabledKeysFrom(json))
+        assertEquals(setOf("builtin_live_2"), Defaults.defaultLiveSelectedKeysFrom(json))
+    }
+
+    @Test
+    fun `仓库里的真实清单默认只启用 Collect-IPTV`() {
+        // 与 defaults/sources.json 保持同步：0=iptv-org 全球频道、1=iptv-org 中国频道
+        // 都标了 selected:false，2=Collect-IPTV 精选 才是默认启用的那个。
         val file = java.io.File("src/main/assets/default-sources.json")
         if (!file.exists()) return
-        val keys = Defaults.defaultLiveSelectedKeysFrom(file.readText())
-        assertTrue("全球榜必须默认关闭", "builtin_live_0" !in keys)
-        assertTrue("至少还要启用一个直播源，否则首页直播是空的", keys.isNotEmpty())
+        val text = file.readText()
+        assertEquals(setOf("builtin_live_2"), Defaults.defaultLiveSelectedKeysFrom(text))
+        assertEquals(setOf("builtin_live_0", "builtin_live_1"), Defaults.defaultLiveDisabledKeysFrom(text))
     }
 }

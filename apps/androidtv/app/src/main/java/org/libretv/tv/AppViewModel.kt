@@ -362,16 +362,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val removed = current.removedDefaultUrls.toSet()
         val addedVod = vod.filter { s -> current.sources.none { it.url == s.url } && s.url !in removed }
         val addedLive = liveSources.filter { s -> current.liveSources.none { it.url == s.url } && s.url !in removed }
-        // 只勾选清单里「默认启用」的内置直播源：iptv-org 全球频道这类默认关掉的
+        // 只勾选清单里「默认启用」的内置直播源：两个 iptv-org 源这类默认关掉的
         // 源进列表但不参与加载，否则新用户开箱就是一屏死台。
         val defaultLiveSelected = Defaults.defaultLiveSelectedKeys(getApplication())
+        // v4 之前老用户是三个直播源全开的。清单把两个 iptv-org 源改成默认关闭后，
+        // 光改 `selected` 对老用户没用（勾选状态早就存下来了），所以升级到
+        // LIVE_SELECTION_VERSION 时取消一次；之后用户自己再打开就不会被关掉。
+        val disabled = Defaults.defaultLiveDisabledKeys(getApplication())
+        val liveBase =
+            if (current.defaultsVersion < Defaults.LIVE_SELECTION_VERSION) {
+                current.liveSelected.filterNot { it in disabled }
+            } else {
+                current.liveSelected
+            }
         store.update {
             it.copy(
                 sources = (it.sources + addedVod).distinctBy { s -> s.url },
                 selected = (it.selected + addedVod.map { s -> s.key }).distinct(),
                 liveSources = (it.liveSources + addedLive).distinctBy { s -> s.url },
                 liveSelected = (
-                    it.liveSelected + addedLive.filter { s -> s.key in defaultLiveSelected }.map { s -> s.key }
+                    liveBase + addedLive.filter { s -> s.key in defaultLiveSelected }.map { s -> s.key }
                     ).distinct(),
                 seeded = true,
                 defaultsVersion = version,

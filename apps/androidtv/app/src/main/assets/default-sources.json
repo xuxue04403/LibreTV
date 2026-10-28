@@ -1,6 +1,6 @@
 {
   "name": "LibreTV 内置默认源",
-  "version": 4,
+  "version": 5,
   "notice": "以下地址均为第三方公开接口，与本项目无隶属关系；仅作为开箱即用的示例，可在设置中随时删除。内容合法性由对应数据源负责。",
   "sources": [
     { "name": "非凡资源", "url": "https://api.ffzyapi.com/api.php/provide/vod" },
@@ -19,12 +19,18 @@
       "name": "iptv-org 全球频道",
       "url": "https://iptv-org.github.io/iptv/index.m3u",
       "selected": false,
-      "note": "一万多个频道，绝大多数在境内打不开；实测中国大陆频道可播率仅 48%。默认不启用，需要外语台时在设置里手动打开。"
+      "note": "一万多个频道，绝大多数在境内打不开。默认不启用，需要外语台时在设置里手动打开。"
     },
-    { "name": "iptv-org 中国频道", "url": "https://iptv-org.github.io/iptv/countries/cn.m3u" },
+    {
+      "name": "iptv-org 中国频道",
+      "url": "https://iptv-org.github.io/iptv/countries/cn.m3u",
+      "selected": false,
+      "note": "实测 138 个频道里只有 66 个能打开（48%），其余是 403、超时或返回网页错误页。默认不启用，需要时可在设置里手动打开。"
+    },
     {
       "name": "Collect-IPTV 精选",
-      "url": "https://ghfast.top/https://raw.githubusercontent.com/zilong7728/Collect-IPTV/main/best_sorted.m3u"
+      "url": "https://ghfast.top/https://raw.githubusercontent.com/zilong7728/Collect-IPTV/main/best_sorted.m3u",
+      "note": "实测 452 个频道里 427 个能打开（94%），首响中位数 169ms。默认启用的就是这一个。"
     }
   ]
 }

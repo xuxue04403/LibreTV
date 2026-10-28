@@ -132,7 +132,9 @@ TV 端同构：`Repository.liveChannelsStream` 按 `batchSize = 120` 回调，`A
 
 也就是说「加载不出来」约有一半来自**源数据本身**：iptv-org 中国榜里近一半是 403、超时或返回 HTML 错误页。默认把三个直播源全勾上、又按「全球频道（一万多个、绝大多数境内打不开）」排在最前，用户随手点一个就是死台。
 
-**改动 1：默认只开健康源。**`defaults/sources.json` 给全球榜加 `"selected": false`（外加 `note` 字段在设置页解释一句），`defaultsVersion` 3→4。源照样进列表，只是新装用户默认不勾；老用户的 `liveSelected` 不动（升级不该替用户改主意）。桌面与 TV 的 `seedDefaults` / `restoreBuiltinSources` 都改成只勾「默认启用」的那批 —— 否则点一次「恢复默认源」又顺手把一万多个境外台打开。
+**改动 1：默认只开健康源。**`defaults/sources.json` 给两个 iptv-org 源加 `"selected": false`（外加 `note` 字段在设置页解释一句），`defaultsVersion` 4→5。默认启用的只有 Collect-IPTV 精选。源照样进列表，只是新装用户默认不勾。
+
+但**光改 `selected` 对老用户是无效的**：他们的勾选状态早在 `liveSelectedKeys` / `liveSelected` 里存着了。所以 `defaultsVersion` 跨过 `LIVE_SELECTION_VERSION = 5` 时**取消勾选一次**（`s.liveSelectedKeys.filter(key => !DEFAULT_LIVE_DISABLED_KEYS.includes(key))`，TV 同构）。只做这一次——用户之后手动打开的，不会在下一次升级时又被关掉。这也是为什么这个迁移要绑版本号而不是每次 `seedDefaults` 都跑。桌面与 TV 的 `restoreBuiltinSources` / `restoreDefaults` 也改成只勾「默认启用」的那批，否则点一次「恢复默认源」又顺手把一万多个境外台打开。
 
 **改动 2：代理层三处会卡住的地方。**
 

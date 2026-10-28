@@ -43,17 +43,28 @@ export const DEFAULT_LIVE_SOURCES: LiveSourceConfig[] = (data.liveSources ?? [])
 /**
  * 新装用户默认启用的内置直播源。
  *
- * 「iptv-org 全球频道」有一万多个频道，且绝大多数在境内根本连不上（实测中国大陆
- * 频道可播率 48%，全球榜更低）；开着它只会让用户随便点一个台就是死台。清单里
- * 用 `selected: false` 标出来：源照样加进列表，只是默认不勾选，需要外语台时
- * 在设置里手动打开。
- *
- * 注意只影响**新装**用户：老用户的选择存在 `liveSelectedKeys` 里，升级时
- * 我们不能替他改主意。
+ * 「iptv-org 全球频道」有一万多个频道、「iptv-org 中国频道」实测 138 个里只有 66
+ * 个能打开，开着它们只会让用户随便点一个台就是死台。清单里用 `selected: false`
+ * 标出来：源照样加进列表，只是默认不勾选，需要时在设置里手动打开。默认启用的
+ * 只有 Collect-IPTV 精选（实测 94% 可播、首响中位数 169ms）。
  */
 export const DEFAULT_LIVE_SELECTED_KEYS: string[] = (data.liveSources ?? [])
   .map((source, index) => (source.selected === false ? null : `builtin_live_${index}`))
   .filter((key): key is string => key !== null);
+
+/** 清单里明确标了 `selected: false` 的内置直播源 key */
+export const DEFAULT_LIVE_DISABLED_KEYS: string[] = (data.liveSources ?? [])
+  .map((source, index) => (source.selected === false ? `builtin_live_${index}` : null))
+  .filter((key): key is string => key !== null);
+
+/**
+ * 从哪个清单版本开始「只默认启用健康源」。
+ *
+ * 到 v4 为止老用户是三个直播源全开的，只改 `selected` 对他们没有任何效果（他们的
+ * 勾选状态早就存进 `liveSelectedKeys` 了），所以升级到该版本时**取消勾选一次**。
+ * 只做这一次：用户之后手动打开的，不会在下次升级时又被关掉。
+ */
+export const LIVE_SELECTION_VERSION = 5;
 
 /** 默认不启用的内置源在设置页需要解释一句，否则用户以为它坏了 */
 export const DEFAULT_LIVE_NOTES: Record<string, string> = Object.fromEntries(

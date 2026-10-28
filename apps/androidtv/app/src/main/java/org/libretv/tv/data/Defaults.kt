@@ -62,18 +62,13 @@ object Defaults {
     /**
      * 新装用户默认启用的内置直播源 key。
      *
-     * 「iptv-org 全球频道」有一万多个频道，绝大多数在境内根本连不上（实测中国大陆
-     * 频道可播率只有 48%，全球榜更低）；开着它只会让用户随手点一个台就是死台。
-     * 清单里用 `"selected": false` 标出来：源照样进列表，只是默认不勾选。
-     *
-     * 只影响新装用户：老用户的选择存在 `liveSelected` 里，升级不能替他改主意。
+     * 两个 iptv-org 源实测可播率太低（全球榜一万多个频道绝大多数境内打不开，中国榜
+     * 138 个里只有 66 个能开），默认启用它们只会让用户随手点一个台就是死台。清单里
+     * 用 `"selected": false` 标出来：源照样进列表，只是默认不勾选。默认启用的只有
+     * Collect-IPTV 精选（实测 94% 可播）。
      */
-    fun defaultLiveSelectedKeys(context: Context): Set<String> {
-        val text = runCatching {
-            context.assets.open("default-sources.json").bufferedReader().use { it.readText() }
-        }.getOrNull() ?: return emptySet()
-        return defaultLiveSelectedKeysFrom(text)
-    }
+    fun defaultLiveSelectedKeys(context: Context): Set<String> =
+        defaultLiveSelectedKeysFrom(assetText(context))
 
     /** [defaultLiveSelectedKeys] 的纯函数版本，方便单测（不依赖 Android Context） */
     fun defaultLiveSelectedKeysFrom(text: String): Set<String> {
@@ -86,4 +81,32 @@ object Defaults {
             "builtin_live_$index"
         }.toSet()
     }
+
+    /** 清单里明确标了 `selected: false` 的内置直播源 key */
+    fun defaultLiveDisabledKeys(context: Context): Set<String> =
+        defaultLiveDisabledKeysFrom(assetText(context))
+
+    /** [defaultLiveDisabledKeys] 的纯函数版本 */
+    fun defaultLiveDisabledKeysFrom(text: String): Set<String> {
+        val root = runCatching { LooseJson.parseToJsonElement(text).jsonObject }.getOrNull() ?: return emptySet()
+        val array = root["liveSources"] as? JsonArray ?: return emptySet()
+        return array.mapIndexedNotNull { index, element ->
+            val obj = element as? JsonObject ?: return@mapIndexedNotNull null
+            if (obj["selected"]?.toString()?.trim()?.trim('"') != "false") return@mapIndexedNotNull null
+            "builtin_live_$index"
+        }.toSet()
+    }
+
+    private fun assetText(context: Context): String = runCatching {
+        context.assets.open("default-sources.json").bufferedReader().use { it.readText() }
+    }.getOrNull() ?: ""
+
+    /**
+     * 从哪个清单版本开始「只默认启用健康源」。
+     *
+     * 到 v4 为止老用户是三个直播源全开的，只改 `selected` 对他们没效果（勾选状态
+     * 早就存进 `liveSelected` 了），所以升级到该版本时取消勾选一次。只做这一次：
+     * 用户之后手动打开的，不会在下次升级时又被关掉。
+     */
+    const val LIVE_SELECTION_VERSION = 5
 }
