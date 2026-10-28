@@ -22,6 +22,8 @@ data class LiveSource(
     val url: String,
     val epg: String? = null,
     val builtin: Boolean = false,
+    /** 内置源的补充说明（例如「默认不启用」的原因），设置页显示给用户看 */
+    val note: String? = null,
 )
 
 data class SearchItem(

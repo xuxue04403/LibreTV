@@ -152,7 +152,9 @@ fun SettingsScreen(vm: AppViewModel, data: AppData) {
         data.liveSources.forEach { source ->
             SourceRow(
                 name = source.name,
-                subtitle = source.url + if (source.builtin) "  ·  内置" else "",
+                // 默认关闭的内置源要把原因写出来，否则用户以为它坏了
+                subtitle = source.url + (if (source.builtin) "  ·  内置" else "") +
+                    (source.note?.let { "\n$it" } ?: ""),
                 enabled = source.key in data.liveSelected,
                 onToggle = { vm.toggleLiveSource(source.key) },
                 onDelete = { vm.removeLiveSource(source.key) },

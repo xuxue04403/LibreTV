@@ -80,6 +80,21 @@ describe('rewritePlaylist：m3u8 改写', () => {
     const out = rewritePlaylistForTest('#EXTM3U\n#EXT-X-VERSION:3\n', base, proxy, false);
     expect(out).toContain('#EXT-X-VERSION:3');
   });
+
+  /**
+   * 直播分片一路带 live=1：URL 里是滚动序号，缓存与预取永远不可能命中，
+   * 代理必须靠这个标志跳过「复制一份进内存」。
+   */
+  it('直播列表改写出的子地址带 live=1', () => {
+    const out = rewritePlaylistForTest('#EXTM3U\n#EXTINF:6,\nseg1.ts\n', base, proxy, false, true);
+    expect(out).toContain(`${proxy}/p?ad=0&live=1&url=${encodeURIComponent('https://cdn.example.com/hls/seg1.ts')}`);
+  });
+
+  it('点播列表改写出的子地址不带 live=1', () => {
+    const out = rewritePlaylistForTest('#EXTM3U\n#EXTINF:6,\nseg1.ts\n#EXT-X-ENDLIST\n', base, proxy, false, false);
+    expect(out).toContain(`${proxy}/p?ad=0&url=`);
+    expect(out).not.toContain('live=1');
+  });
 });
 
 describe('isPlaylist：识别播放列表', () => {
@@ -175,6 +190,63 @@ describe('媒体代理：重定向不得绕过 SSRF 校验', () => {
   });
 });
 
+/**
+ * 「一直转圈」回归：上游接了 TCP 连接却永不回响应头时，代理必须自己放弃。
+ * 修复前这一跳没有任何超时，播放器既拿不到数据也收不到错误，界面只能靠
+ * 20 秒看门狗兜底 —— 用户看到的就是「点了个台，一直在加载」。
+ */
+describe('fetchChecked：上游不响应要有死线', () => {
+  it('迟迟不回响应头会按超时报错，而不是永久挂起', async () => {
+    const silent = createServer(() => {
+      /* 故意什么都不回：保持连接但不发响应头 */
+    });
+    await new Promise<void>((r) => silent.listen(0, '127.0.0.1', () => r()));
+    const port = (silent.address() as { port: number }).port;
+    const started = Date.now();
+    try {
+      await expect(
+        fetchChecked(
+          new URL(`http://127.0.0.1:${port}/hang.ts`),
+          { method: 'GET' },
+          false,
+          async (raw) => new URL(raw),
+          250
+        )
+      ).rejects.toThrow(/没有响应/);
+      expect(Date.now() - started).toBeLessThan(2000);
+    } finally {
+      silent.closeAllConnections?.();
+      await new Promise<void>((r) => silent.close(() => r()));
+    }
+  });
+
+  it('已经收到响应头之后不再受死线约束（大分片照常慢慢流）', async () => {
+    // 先回头，再拖 600ms 才结束 body：死线若覆盖到 body 就会把这片砍断
+    const slowBody = createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'video/mp2t' });
+      res.write(Buffer.alloc(1024, 1));
+      setTimeout(() => res.end(Buffer.alloc(1024, 2)), 600);
+    });
+    await new Promise<void>((r) => slowBody.listen(0, '127.0.0.1', () => r()));
+    const port = (slowBody.address() as { port: number }).port;
+    try {
+      const res = await fetchChecked(
+        new URL(`http://127.0.0.1:${port}/seg.ts`),
+        { method: 'GET' },
+        false,
+        async (raw) => new URL(raw),
+        200
+      );
+      expect(res.status).toBe(200);
+      const bytes = await res.arrayBuffer();
+      expect(bytes.byteLength).toBe(2048);
+    } finally {
+      slowBody.closeAllConnections?.();
+      await new Promise<void>((r) => slowBody.close(() => r()));
+    }
+  });
+});
+
 describe('媒体代理 HTTP 行为', () => {
   let upstream: Server;
   let upstreamUrl = '';
@@ -187,7 +259,14 @@ describe('媒体代理 HTTP 行为', () => {
     upstream = createServer((req, res) => {
       if (req.url === '/playlist.m3u8') {
         res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' });
-        res.end('#EXTM3U\r\n#EXTINF:6,\r\nseg1.ts\r\n');
+        // 带 ENDLIST 才是点播：代理据此判定「不是直播」，子地址不带 live=1
+        res.end('#EXTM3U\r\n#EXTINF:6,\r\nseg1.ts\r\n#EXT-X-ENDLIST\r\n');
+        return;
+      }
+      if (req.url === '/live.m3u8') {
+        // 直播列表：没有 ENDLIST，改写出来的子地址必须带 live=1
+        res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' });
+        res.end('#EXTM3U\r\n#EXT-X-TARGETDURATION:6\r\n#EXTINF:6,\r\nlive1.ts\r\n');
         return;
       }
       if (req.url === '/gzip.ts') {
@@ -224,7 +303,7 @@ describe('媒体代理 HTTP 行为', () => {
       if (req.url === '/playlist-no-type.m3u8') {
         // 不给 mpegurl content-type，靠 body 前缀识别
         res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
-        res.end('#EXTM3U\n#EXTINF:6,\nseg1.ts\n');
+        res.end('#EXTM3U\n#EXTINF:6,\nseg1.ts\n#EXT-X-ENDLIST\n');
         return;
       }
       if (req.url === '/notfound') {
@@ -387,6 +466,28 @@ describe('媒体代理 HTTP 行为', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('application/vnd.apple.mpegurl');
     expect(await res.text()).toContain('/p?ad=0&url=');
+  });
+
+  /**
+   * 直播分片必须只透传：既不进内存缓存（永远命中不了，白复制一遍），
+   * 也不能带一小时的浏览器缓存头（否则重连时可能拿到过期分片）。
+   */
+  it('直播分片（live=1）不写缓存：同一个分片两次都要回源', async () => {
+    const target = encodeURIComponent(`${upstreamUrl}/pf9.ts`);
+    const first = await fetch(`${proxyBase}/p?live=1&url=${target}`);
+    expect(first.headers.get('cache-control')).toBe('no-store');
+    await first.arrayBuffer();
+    const second = await fetch(`${proxyBase}/p?live=1&url=${target}`);
+    expect(second.headers.get('cache-control')).toBe('no-store');
+    await second.arrayBuffer();
+    expect(segmentHits.get('/pf9.ts')).toBe(2);
+  });
+
+  it('直播列表改写出的分片地址带 live=1', async () => {
+    const res = await proxyGet('/live.m3u8');
+    const body = await res.text();
+    expect(body).toContain('live=1');
+    expect(body).toContain(encodeURIComponent(`${upstreamUrl}/live1.ts`));
   });
 
   /**

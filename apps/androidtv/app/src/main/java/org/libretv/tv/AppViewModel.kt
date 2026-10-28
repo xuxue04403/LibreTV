@@ -362,12 +362,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val removed = current.removedDefaultUrls.toSet()
         val addedVod = vod.filter { s -> current.sources.none { it.url == s.url } && s.url !in removed }
         val addedLive = liveSources.filter { s -> current.liveSources.none { it.url == s.url } && s.url !in removed }
+        // 只勾选清单里「默认启用」的内置直播源：iptv-org 全球频道这类默认关掉的
+        // 源进列表但不参与加载，否则新用户开箱就是一屏死台。
+        val defaultLiveSelected = Defaults.defaultLiveSelectedKeys(getApplication())
         store.update {
             it.copy(
                 sources = (it.sources + addedVod).distinctBy { s -> s.url },
                 selected = (it.selected + addedVod.map { s -> s.key }).distinct(),
                 liveSources = (it.liveSources + addedLive).distinctBy { s -> s.url },
-                liveSelected = (it.liveSelected + addedLive.map { s -> s.key }).distinct(),
+                liveSelected = (
+                    it.liveSelected + addedLive.filter { s -> s.key in defaultLiveSelected }.map { s -> s.key }
+                    ).distinct(),
                 seeded = true,
                 defaultsVersion = version,
             )
@@ -1451,6 +1456,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun restoreBuiltinSources() {
         viewModelScope.launch {
             val (vod, lives) = Defaults.load(getApplication())
+            // 恢复默认同样只勾选「默认启用」的那几个：恢复默认源不该顺手把
+            // 一万多个境外台打开（打开后立刻就是卡死）
+            val defaultLiveSelected = Defaults.defaultLiveSelectedKeys(getApplication())
             store.update { data ->
                 val newVod = vod.filter { s -> data.sources.none { it.url == s.url } }
                 val newLive = lives.filter { s -> data.liveSources.none { it.url == s.url } }
@@ -1461,7 +1469,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     sources = data.sources + newVod,
                     selected = (data.selected + newVod.map { it.key }).distinct(),
                     liveSources = data.liveSources + newLive,
-                    liveSelected = (data.liveSelected + newLive.map { it.key }).distinct(),
+                    liveSelected = (
+                        data.liveSelected + newLive.filter { it.key in defaultLiveSelected }.map { it.key }
+                        ).distinct(),
                     removedDefaultUrls = data.removedDefaultUrls.filter { it !in restored },
                 )
             }

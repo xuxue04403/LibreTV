@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import { DEFAULTS_VERSION, DEFAULT_LIVE_SOURCES, DEFAULT_SOURCES } from './defaults';
+import { DEFAULTS_VERSION, DEFAULT_LIVE_SELECTED_KEYS, DEFAULT_LIVE_SOURCES, DEFAULT_SOURCES } from './defaults';
 import {
   DEFAULT_SETTINGS,
   dedupeHistory as dedupeHistoryList,
@@ -161,15 +161,21 @@ export const useAppStore = create<AppState>()(
             (d) => !s.liveSources.some((x) => x.url === d.url) && !liveRemoved.has(d.url)
           );
           const liveSources = [...s.liveSources, ...addedLive];
+          const defaultLiveSelected = new Set(DEFAULT_LIVE_SELECTED_KEYS);
           return {
             sources,
             selectedKeys: [...new Set([...s.selectedKeys, ...added.map((x) => x.key)])].filter((key) =>
               sources.some((x) => x.key === key)
             ),
             liveSources,
-            liveSelectedKeys: [...new Set([...s.liveSelectedKeys, ...addedLive.map((x) => x.key)])].filter((key) =>
-              liveSources.some((x) => x.key === key)
-            ),
+            // 只勾选清单里「默认启用」的内置源：iptv-org 全球频道这类默认关掉的
+            // 源虽然进列表，但不参与加载，否则新用户开箱就是一屏死台。
+            liveSelectedKeys: [
+              ...new Set([
+                ...s.liveSelectedKeys,
+                ...addedLive.filter((x) => defaultLiveSelected.has(x.key)).map((x) => x.key),
+              ]),
+            ].filter((key) => liveSources.some((x) => x.key === key)),
             defaultsSeeded: true,
             defaultsVersion: version,
           };
@@ -220,11 +226,19 @@ export const useAppStore = create<AppState>()(
           // 用户明确点了「恢复」：把「不再自动补回」的名单一并清掉，
           // 否则下次内置源清单升级时这些刚恢复的地址又会被当成「用户删掉的」。
           const restored = new Set([...vod.map((x) => x.url), ...live.map((x) => x.url)]);
+          // 恢复默认同样只勾选「默认启用」的那几个，「恢复默认源」不该顺手把
+          // 一万多个境外台打开（那是打开后立刻卡死）
+          const defaultLiveSelected = new Set(DEFAULT_LIVE_SELECTED_KEYS);
           return {
             sources: [...s.sources, ...vod],
             selectedKeys: [...new Set([...s.selectedKeys, ...vod.map((x) => x.key)])],
             liveSources: [...s.liveSources, ...live],
-            liveSelectedKeys: [...new Set([...s.liveSelectedKeys, ...live.map((x) => x.key)])],
+            liveSelectedKeys: [
+              ...new Set([
+                ...s.liveSelectedKeys,
+                ...live.filter((x) => defaultLiveSelected.has(x.key)).map((x) => x.key),
+              ]),
+            ],
             removedDefaultUrls: s.removedDefaultUrls.filter((url) => !restored.has(url)),
             defaultsSeeded: true,
             defaultsVersion: DEFAULTS_VERSION,

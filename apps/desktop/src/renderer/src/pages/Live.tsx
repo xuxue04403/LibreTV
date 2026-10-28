@@ -37,9 +37,15 @@ interface PlaylistState {
 const PAGE_SIZE = 240;
 // 直播流的 fatal 错误先自救这么多次，超过才把错误显示给用户。
 const MAX_RECOVERY = 2;
-// 换台后多久没出画面就判定「这个台不通」。iptv 列表里死链很常见，
-// 不设死线的话界面会永远停在「正在连接直播流…」。
-const LIVE_START_TIMEOUT_MS = 20_000;
+/**
+ * 起播死线。
+ *
+ * 直播里「点了个台一直转圈」是最高频的抱怨。代理层已经给每一跳加了「等响应头
+ * 12 秒」的死线，这里再补一条兜底：15 秒还没出画面就直接给结论，让用户换台，
+ * 而不是盯着转圈等下去。这个值要略大于 manifest 死线（8s + 1 次重试 ≈ 16s）
+ * 与首片死线（14s），否则会在正常但偏慢的台上误报。
+ */
+const LIVE_START_TIMEOUT_MS = 15_000;
 
 export function LivePage({ onOpenSettings }: { onOpenSettings: () => void }) {
   const allLiveSources = useAppStore((s) => s.liveSources);
@@ -558,6 +564,8 @@ function LivePlayer({
     let flv: mpegts.Player | null = null;
     // 直播流出现 fatal 错误时先自救若干次，超过才真的报错。
     let recovery = 0;
+    // 这一次换台有没有成功出过画面：没出过画面的 fatal 不该自救（见下面的注释）
+    let hasPlayed = false;
     // 换台时要立刻断开上一个流：否则旧流会在后台继续占用带宽/解码器
     const startedAt = Date.now();
 
@@ -580,18 +588,37 @@ function LivePlayer({
       if (Hls.isSupported()) {
         hls = new Hls({
           enableWorker: true,
-          // 直播低延迟：不追求 30 秒大缓冲，先出画面。maxBufferLength 太大反而
-          // 让「刚换台」等更久，这里取 12 秒，够吸收抖动又不会把起播拖长。
-          lowLatencyMode: true,
-          maxBufferLength: 12,
-          maxMaxBufferLength: 24,
-          backBufferLength: 8,
-          // 直播流偶发 404/502 很常见，重试 2 次比立刻报错体验好得多
-          manifestLoadingMaxRetry: 2,
-          levelLoadingMaxRetry: 2,
+          // 直播不追低延迟：LL-HLS 的那套「贴着直播边缘播」在普通 IPTV 流上只会
+          // 把缓冲压到最小，网络一抖就卡。这里按常规直播走「落后 3 个切片」，
+          // 换来的是换台后不容易反复重新缓冲。
+          lowLatencyMode: false,
+          maxBufferLength: 20,
+          maxMaxBufferLength: 40,
+          backBufferLength: 10,
+          // 起播位置是这次「换台慢」的主因，不是网络：hls.js 默认从直播边缘
+          // 往回 liveSyncDurationCount=3 个切片开始播，而 IPTV 的切片普遍
+          // 5~10 秒（实测 Anhui TV target=5s、CCTV+ 1 avg=9.77s），也就是
+          // 要先攒 15~30 秒的内容才肯出声。改成落后 1 个切片（最多 4 个），
+          // 起播只要 1 个切片；落后太多则靠 maxLiveSyncPlaybackRate 追帧。
+          liveSyncDurationCount: 1,
+          liveMaxLatencyDurationCount: 4,
+          maxLiveSyncPlaybackRate: 1.5,
+          // 首片就算回放缓冲，别死等 minBufferLength 级的数据量
+          maxStarvationDelay: 4,
+          // 加载死线必须显式设：默认 manifest 10s / frag 20s，再叠加 2 次重试，
+          // 一个死台要转半分钟才出结论。直播是「换台」场景，快点失败比多试有用。
+          manifestLoadingTimeOut: 8_000,
+          levelLoadingTimeOut: 8_000,
+          fragLoadingTimeOut: 14_000,
+          // 索引只重试 1 次：重试也救不回来的台（403/地区限制/HTML 错误页）早点报
+          manifestLoadingMaxRetry: 1,
+          levelLoadingMaxRetry: 1,
+          // 分片保留 2 次重试：播放中偶发 404/502 靠它能自愈，不必整路重连
           fragLoadingMaxRetry: 2,
-          manifestLoadingRetryDelay: 300,
-          fragLoadingRetryDelay: 300,
+          manifestLoadingRetryDelay: 500,
+          fragLoadingRetryDelay: 500,
+          // 窗口只有 1080p 时不必去下 4K 码率：省带宽也省起播时间
+          capLevelToPlayerSize: true,
         });
         hls.loadSource(src);
         hls.attachMedia(video);
@@ -600,7 +627,11 @@ function LivePlayer({
           // 直播流的「致命」错误大多是临时性抖动：单个分片 404、切片 CDN 换节点、
           // 索引重新签名。hls.js 自己重试 2 次仍失败就判 fatal，但接着 startLoad()
           // 往往立刻恢复。先自救，别急着把错误糊到用户脸上。
-          if (recovery < MAX_RECOVERY) {
+          //
+          // 但**还没出过画面时不要自救**：这是换台场景，用户就等着结论。死台的
+          // 每次自救都是又一轮 8~12 秒的等待，用户只能干看着转圈；宁可立刻报错
+          // 让他按 ↓ 换下一个（实测死台给结论从 15 秒降到 1~2 秒）。
+          if (hasPlayed && recovery < MAX_RECOVERY) {
             recovery += 1;
             if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls?.recoverMediaError();
             else hls?.startLoad();
@@ -618,6 +649,7 @@ function LivePlayer({
     }
 
     const onPlaying = (): void => {
+      hasPlayed = true;
       setLoading(false);
       setSwitching(false);
       // 已经在放了，之前报的错就是过期信息：hls.js 对直播流会把「某一分片
@@ -630,12 +662,12 @@ function LivePlayer({
       if (Date.now() - startedAt > 300) setLoading(true);
     };
     // 看门狗：有些台返回的是 HTML 错误页（不是 404），hls.js 解析失败后既不
-    // 触发播放也不一定报 fatal，界面会永远停在「正在连接直播流…」。超过 20 秒
+    // 触发播放也不一定报 fatal，界面会永远停在「正在连接直播流…」。超过死线
     // 还没画面就直接给结论，让用户按 ↓ 换台，别让人干等。
     const watchdog = window.setTimeout(() => {
       if (video.readyState >= 2 || Date.now() - startedAt < LIVE_START_TIMEOUT_MS) return;
       setLoading(false);
-      setError('这个频道 20 秒内没有出画面，可能已下线或被地区限制');
+      setError(`这个频道 ${LIVE_START_TIMEOUT_MS / 1000} 秒内没有出画面，可能已下线或被地区限制`);
     }, LIVE_START_TIMEOUT_MS);
     video.addEventListener('playing', onPlaying);
     video.addEventListener('waiting', onWaiting);

@@ -10,6 +10,7 @@ import {
   type SourceConfig,
 } from '@libretv/core';
 import { appInfo, http } from '../lib/bridge';
+import { DEFAULT_LIVE_NOTES } from '../lib/defaults';
 import { useAppStore } from '../lib/store';
 import { Icon } from '../components/Icons';
 import { useToast } from '../components/Toast';
@@ -247,6 +248,12 @@ function LiveSources() {
                 <div className="name">{s.name}</div>
                 <div className="url">{s.url}</div>
                 {s.epg ? <div className="url">EPG：{s.epg}</div> : null}
+                {/* 默认关闭的内置源要解释一句，否则用户以为它坏了 */}
+                {DEFAULT_LIVE_NOTES[s.key] ? (
+                  <div className="url" style={{ color: '#b0892f' }}>
+                    {DEFAULT_LIVE_NOTES[s.key]}
+                  </div>
+                ) : null}
               </div>
               <button
                 className="btn ghost danger"

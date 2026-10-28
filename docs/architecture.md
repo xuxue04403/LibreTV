@@ -120,6 +120,30 @@ TV 端不经过这个代理（ExoPlayer 直连），OkHttp 自己解压并会重
 
 TV 端同构：`Repository.liveChannelsStream` 按 `batchSize = 120` 回调，`AppViewModel.refreshLive` 用 `Mutex` 累加并**节流 400ms** 才推一次 UI（一万多个频道不节流就是近百次「重算 groups + 整体替换列表」，Compose 重组会明显卡顿）；`AppStore` 用精简字段（`n/u/l/g/t/sk/sn`）而非直接序列化 `LiveChannel` 落盘，省空间也隔离模型演进。
 
+### 直播起播慢：一半是死台，一半是我们自己在等
+
+用户反馈「看直播时频道加载缓慢，且经常加载不出来」。先量清楚再改：
+
+| 指标 | iptv-org 中国频道 | Collect-IPTV 精选 |
+| --- | --- | --- |
+| m3u8 频道数 | 138 | 452 |
+| 实际可打开 | 66（**48%**） | 427（**94%**） |
+| 首响 p50 / p90 | 508ms / 994ms | **169ms** / 655ms |
+
+也就是说「加载不出来」约有一半来自**源数据本身**：iptv-org 中国榜里近一半是 403、超时或返回 HTML 错误页。默认把三个直播源全勾上、又按「全球频道（一万多个、绝大多数境内打不开）」排在最前，用户随手点一个就是死台。
+
+**改动 1：默认只开健康源。**`defaults/sources.json` 给全球榜加 `"selected": false`（外加 `note` 字段在设置页解释一句），`defaultsVersion` 3→4。源照样进列表，只是新装用户默认不勾；老用户的 `liveSelected` 不动（升级不该替用户改主意）。桌面与 TV 的 `seedDefaults` / `restoreBuiltinSources` 都改成只勾「默认启用」的那批 —— 否则点一次「恢复默认源」又顺手把一万多个境外台打开。
+
+**改动 2：代理层三处会卡住的地方。**
+
+- `fetchChecked` 原来 `await fetch(...)` **没有任何超时**，上游挂住这一跳就永久挂着，界面只能靠 15 秒看门狗兜底。现在每跳带 `HEADER_TIMEOUT_MS = 12_000` 的 `AbortController`，**只盖「等响应头」不盖 body** —— 大分片本来要下几秒，给总时长设死线会砍成半截，那是花屏不是省时间。
+- `assertAllowedTarget` 原来**每个分片都做一次 `dns.lookup`**。加 `lookupCached(host)`（60 秒 TTL、512 条上限、in-flight 合并，否则「N 次串行解析」只是变成「N 次并发解析」）。实测单次解析 0–26ms，不算瓶颈，但每片一次纯属白给。
+- 直播分片原来也会被攒进内存镜像缓存并自动预热。直播分片地址每次都变，缓存命中率约等于 0，白白占内存和带宽。现在直播走 `live=1` 标记：列表改写出的子地址带 `live=1`，`/p` 据此走 `no-store`、跳过预热、跳过 mirror。实测改写 149/149 子地址都带 `live=1`，列表与分片响应头都是 `no-store`。
+
+**改动 3：起播位置才是「换台慢」的主因。**hls.js 默认从直播边缘往回 `liveSyncDurationCount = 3` 个切片开始播，而 IPTV 的切片普遍很长（实测 Anhui TV `target=5s`、CCTV+ 1 平均 9.77s、Baicheng 平均 6.52s），**要先攒 15–30 秒内容才肯出声**。改成落后 1 个切片（上限 4 个）+ `maxLiveSyncPlaybackRate: 1.5` 追帧后，同一批频道实测：Anhui TV 5.5s→1.7s、CCTV+ 1 1.9s→0.88s、Baicheng 1.0s→0.75s。
+
+**改动 4：死台要快速给结论。**还没出过画面时的 fatal 错误**不再自救**：换台场景下用户就等着结论，每次 `startLoad()` 都是又一轮 8–12 秒的转圈。实测死台给结论的时间从「一律 15 秒（靠看门狗）」变成 10.6–15 秒（hls.js 先失败的直接 1–2 秒），出过画面之后再炸仍然保留 2 次自救。
+
 ### 直播换台
 
 桌面与 TV 共用同一套语义（`packages/core/src/live-switch.ts` / `data/LiveSwitch.kt`）：在**当前过滤后的可见列表**里循环，而不是全量频道 —— 用户已选分组或搜过关键词，换到列表外的台会莫名其妙。

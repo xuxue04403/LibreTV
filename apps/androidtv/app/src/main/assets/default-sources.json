@@ -1,6 +1,6 @@
 {
   "name": "LibreTV 内置默认源",
-  "version": 3,
+  "version": 4,
   "notice": "以下地址均为第三方公开接口，与本项目无隶属关系；仅作为开箱即用的示例，可在设置中随时删除。内容合法性由对应数据源负责。",
   "sources": [
     { "name": "非凡资源", "url": "https://api.ffzyapi.com/api.php/provide/vod" },
@@ -15,7 +15,12 @@
     { "name": "百度资源", "url": "https://api.apibdzy.com/api.php/provide/vod" }
   ],
   "liveSources": [
-    { "name": "iptv-org 全球频道", "url": "https://iptv-org.github.io/iptv/index.m3u" },
+    {
+      "name": "iptv-org 全球频道",
+      "url": "https://iptv-org.github.io/iptv/index.m3u",
+      "selected": false,
+      "note": "一万多个频道，绝大多数在境内打不开；实测中国大陆频道可播率仅 48%。默认不启用，需要外语台时在设置里手动打开。"
+    },
     { "name": "iptv-org 中国频道", "url": "https://iptv-org.github.io/iptv/countries/cn.m3u" },
     {
       "name": "Collect-IPTV 精选",

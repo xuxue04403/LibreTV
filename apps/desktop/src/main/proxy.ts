@@ -55,6 +55,25 @@ const PREFETCH_CONCURRENCY = 3;
 const PREFETCH_TIMEOUT_MS = 8_000;
 /** 预取时最多往下钻几层播放列表（master → 变体 → 分片） */
 const PREFETCH_MAX_DEPTH = 2;
+/**
+ * 「等到响应头」的死线。
+ *
+ * 直播最常见的一种「加载不出来」是上游接了连接却永不回响应：没有超时的话这一跳
+ * 会一直挂着，播放器既拿不到数据也不报错，界面只能靠 20 秒看门狗兜底 —— 观感就是
+ * 「一直转圈」。这里只管**响应头**，body 该怎么慢就怎么慢：分片的传输时长取决于
+ * 体积和网速，套一个总时长超时会把正常的大分片砍成半截（半截分片 = 花屏）。
+ */
+const HEADER_TIMEOUT_MS = 12_000;
+/**
+ * DNS 结果缓存。
+ *
+ * 实测单次 `dns.lookup` 只要 0~26ms，本身不是瓶颈；但直播每一路分片、每一次换台
+ * 都要重新解析一遍，万级频道列表下毫无意义地累加延迟。这里按 host 缓存一分钟，
+ * 并在校验内网地址**之后**才写入 —— 缓存的是已确认安全的解析结果。
+ */
+const DNS_TTL_MS = 60_000;
+/** 缓存条目上限：直播源动辄几百个域名，无上限就是内存泄漏 */
+const DNS_CACHE_MAX = 512;
 
 /**
  * 抓上游媒体用的请求头。
@@ -96,6 +115,39 @@ function isPrivateAddress(ip: string): boolean {
   return false;
 }
 
+interface DnsEntry {
+  expires: number;
+  records: { address: string; family: number }[];
+}
+
+const dnsCache = new Map<string, DnsEntry>();
+const dnsInflight = new Map<string, Promise<{ address: string; family: number }[]>>();
+
+/**
+ * 带缓存的域名解析（供内网地址校验使用）。
+ *
+ * 并发去重很关键：一个播放列表里常有十几个同域分片同时被请求，
+ * 没有 in-flight 合并的话缓存只会把「N 次串行解析」变成「N 次并发解析」。
+ */
+async function lookupCached(host: string): Promise<{ address: string; family: number }[]> {
+  const hit = dnsCache.get(host);
+  if (hit && hit.expires > Date.now()) return hit.records;
+
+  const pending = dnsInflight.get(host);
+  if (pending) return pending;
+
+  const task = dns
+    .lookup(host, { all: true })
+    .then((records) => {
+      if (dnsCache.size >= DNS_CACHE_MAX) dnsCache.clear();
+      dnsCache.set(host, { expires: Date.now() + DNS_TTL_MS, records });
+      return records;
+    })
+    .finally(() => dnsInflight.delete(host));
+  dnsInflight.set(host, task);
+  return task;
+}
+
 /** 目标地址校验：协议白名单 + 内网地址拒绝（DNS 解析后校验，防域名绕过） */
 export async function assertAllowedTarget(raw: string, allowPrivate = false): Promise<URL> {
   let url: URL;
@@ -112,7 +164,7 @@ export async function assertAllowedTarget(raw: string, allowPrivate = false): Pr
     if (isPrivateAddress(host)) throw new Error('拒绝访问内网地址');
     return url;
   }
-  const records = await dns.lookup(host, { all: true }).catch(() => []);
+  const records = await lookupCached(host).catch(() => []);
   if (records.length === 0) throw new Error('域名解析失败');
   if (records.some((r) => isPrivateAddress(r.address))) throw new Error('拒绝访问内网地址');
   return url;
@@ -131,11 +183,24 @@ export async function fetchChecked(
   target: URL,
   init: RequestInit & { duplex?: string },
   allowPrivate: boolean,
-  validate: (raw: string, allowPrivate: boolean) => Promise<URL> = assertAllowedTarget
+  validate: (raw: string, allowPrivate: boolean) => Promise<URL> = assertAllowedTarget,
+  headerTimeoutMs = HEADER_TIMEOUT_MS
 ): Promise<Response> {
   let current = target;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    const res = await fetch(current.href, { ...init, redirect: 'manual', method: init.method });
+    // 超时只覆盖「等响应头」这一段：拿到头之后立刻清掉定时器，
+    // body 继续按网络速度流式读取（大分片本来就要下好几秒）。
+    const gate = new AbortController();
+    const timer = setTimeout(() => {
+      gate.abort(new Error(`上游 ${headerTimeoutMs / 1000}s 内没有响应`));
+    }, headerTimeoutMs);
+    const signal = init.signal ? AbortSignal.any([init.signal as AbortSignal, gate.signal]) : gate.signal;
+    let res: Response;
+    try {
+      res = await fetch(current.href, { ...init, redirect: 'manual', method: init.method, signal });
+    } finally {
+      clearTimeout(timer);
+    }
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get('location');
       if (!location) return res;
@@ -155,12 +220,25 @@ export async function fetchChecked(
   throw new Error('重定向次数过多');
 }
 
-/** 把远端播放列表里的相对/绝对地址全部改写成经过本代理的地址 */
-function rewritePlaylist(body: string, baseUrl: string, proxyBase: string, adFilter: boolean): string {
+/**
+ * 把远端播放列表里的相对/绝对地址全部改写成经过本代理的地址。
+ *
+ * `live` 会作为参数一路传给子请求：直播分片 URL 每次都带新的序号，缓存与预取
+ * 对它毫无价值（永远不可能命中），却要为此在内存里复制一遍整片 —— 直播走
+ * `live=1` 之后代理只做透传，省掉这层无谓开销。
+ */
+function rewritePlaylist(
+  body: string,
+  baseUrl: string,
+  proxyBase: string,
+  adFilter: boolean,
+  live = false
+): string {
   const proxify = (target: string): string => {
     try {
       const abs = new URL(target, baseUrl).href;
-      return `${proxyBase}/p?ad=${adFilter ? 1 : 0}&url=${encodeURIComponent(abs)}`;
+      const flag = live ? '&live=1' : '';
+      return `${proxyBase}/p?ad=${adFilter ? 1 : 0}${flag}&url=${encodeURIComponent(abs)}`;
     } catch {
       return target;
     }
@@ -434,6 +512,8 @@ export async function startMediaProxy(): Promise<MediaProxy> {
 
     const target = url.searchParams.get('url') || '';
     const adFilter = url.searchParams.get('ad') === '1';
+    /** 直播分片（播放列表里标了 live=1）：跳过缓存与预热，只做透传 */
+    const isLive = url.searchParams.get('live') === '1';
     // 自建/联调场景：允许访问内网媒体源（默认关闭，保持 SSRF 边界）
     const allowPrivate = process.env.LTV_ALLOW_PRIVATE_MEDIA === '1';
 
@@ -484,7 +564,7 @@ export async function startMediaProxy(): Promise<MediaProxy> {
     // `Range: bytes=X-Y`）拿到整段却按自己的范围去切片，解出来是错位的字节 —— 花屏，
     // 比慢一点糟糕得多。这类请求一律回源，让上游自己回 206。
     const rangeHeader = req.headers.range;
-    const cacheEligible = route === '/p' && !rangeHeader;
+    const cacheEligible = route === '/p' && !rangeHeader && !isLive;
     if (cacheEligible) {
       const cached = cache.get(targetUrl.href);
       if (cached) {
@@ -565,7 +645,12 @@ export async function startMediaProxy(): Promise<MediaProxy> {
       const buf = await readRest(reader, first);
       const text = buf.toString('utf8');
       const playlistBase = upstream.url || targetUrl.href;
-      const rewritten = upstream.ok ? rewritePlaylist(text, playlistBase, `${base}${prefix}`, adFilter) : text;
+      // 没有 `#EXT-X-ENDLIST` 就是还在滚动的直播列表（master 列表同理）：
+      // 它的子地址一律带上 live=1，让下游分片请求跳过缓存与预取。
+      const liveMode = isLive || !text.includes('#EXT-X-ENDLIST');
+      const rewritten = upstream.ok
+        ? rewritePlaylist(text, playlistBase, `${base}${prefix}`, adFilter, liveMode)
+        : text;
       const out = Buffer.from(rewritten, 'utf8');
       res.writeHead(upstream.ok ? 200 : upstream.status, {
         'Content-Type': 'application/vnd.apple.mpegurl',
@@ -583,7 +668,9 @@ export async function startMediaProxy(): Promise<MediaProxy> {
       // 2) 必须用**已切广告**的文本：开了广告过滤时播放器根本不会去要那几段广告，
       //    照原样预热等于白下几 MB，还挤占真正要看的分片的带宽。
       // 故意不 await：响应已经发出去了，预热是纯后台动作，失败也不影响播放。
-      if (upstream.ok) {
+      // 直播列表不预热：分片序号一直在滚动，等播放器真要时这些分片早过期了，
+      // 白下几 MB 还会和真正的起播抢带宽。
+      if (upstream.ok && !liveMode) {
         const warmBody = adFilter ? stripAdGroups(text) : text;
         // master 列表里列的是子播放列表，按「分片」去抓只会白下一个 m3u8，
         // 真正的分片要等播放器挑了码率才知道。这种情况交给客户端后的 /prefetch
@@ -599,6 +686,7 @@ export async function startMediaProxy(): Promise<MediaProxy> {
 
     // 真正的媒体分片：流式直通，边下边发，不在内存里攒完整块
     // 顺带把副本写进预取缓存（`cacheable`）：播放器重播/回看同一分片时不必回源
+    // 直播分片不缓存：URL 带滚动序号，缓存永远不命中，复制一遍纯属浪费
     await pipeStream(
       upstream,
       reader,
@@ -606,8 +694,9 @@ export async function startMediaProxy(): Promise<MediaProxy> {
       res,
       contentType,
       req,
-      req.method !== 'HEAD' && upstream.status === 200 && !rangeHeader,
-      targetUrl.href
+      req.method !== 'HEAD' && upstream.status === 200 && !rangeHeader && !isLive,
+      targetUrl.href,
+      isLive
     );
   }
 
@@ -778,14 +867,16 @@ export async function startMediaProxy(): Promise<MediaProxy> {
     contentType: string,
     req: IncomingMessage,
     cacheable = false,
-    cacheKey = ''
+    cacheKey = '',
+    live = false
   ): Promise<void> {
     const headers: Record<string, string | number> = {
       'Content-Type': contentType,
       'X-Content-Type-Options': 'nosniff',
       'Access-Control-Allow-Origin': '*',
-      // 分片内容按 URL 恒定：允许缓存，seek/重播不用回源
-      'Cache-Control': CACHE_SEGMENT,
+      // 分片内容按 URL 恒定：允许缓存，seek/重播不用回源；
+      // 直播分片只此一次，缓存一小时后半段早已过期，反而会让人看到旧画面
+      'Cache-Control': live ? 'no-store' : CACHE_SEGMENT,
     };
     // 上游带了 content-encoding 时，undici 已经把响应体解压好了，但**响应头原样保留**
     // （实测 gzip：头里仍是压缩后的 content-length=52，body 却是 540 字节明文）。

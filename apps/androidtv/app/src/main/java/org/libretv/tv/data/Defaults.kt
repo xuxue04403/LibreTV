@@ -52,9 +52,38 @@ object Defaults {
                 url = url,
                 epg = obj.str("epg"),
                 builtin = true,
+                note = obj.str("note"),
             )
         }.orEmpty()
 
         return vod to live
+    }
+
+    /**
+     * 新装用户默认启用的内置直播源 key。
+     *
+     * 「iptv-org 全球频道」有一万多个频道，绝大多数在境内根本连不上（实测中国大陆
+     * 频道可播率只有 48%，全球榜更低）；开着它只会让用户随手点一个台就是死台。
+     * 清单里用 `"selected": false` 标出来：源照样进列表，只是默认不勾选。
+     *
+     * 只影响新装用户：老用户的选择存在 `liveSelected` 里，升级不能替他改主意。
+     */
+    fun defaultLiveSelectedKeys(context: Context): Set<String> {
+        val text = runCatching {
+            context.assets.open("default-sources.json").bufferedReader().use { it.readText() }
+        }.getOrNull() ?: return emptySet()
+        return defaultLiveSelectedKeysFrom(text)
+    }
+
+    /** [defaultLiveSelectedKeys] 的纯函数版本，方便单测（不依赖 Android Context） */
+    fun defaultLiveSelectedKeysFrom(text: String): Set<String> {
+        val root = runCatching { LooseJson.parseToJsonElement(text).jsonObject }.getOrNull() ?: return emptySet()
+        val array = root["liveSources"] as? JsonArray ?: return emptySet()
+        return array.mapIndexedNotNull { index, element ->
+            val obj = element as? JsonObject ?: return@mapIndexedNotNull null
+            // 只有明确写了 selected:false 的才关掉，缺省仍然是启用
+            if (obj["selected"]?.toString()?.trim()?.trim('"') == "false") return@mapIndexedNotNull null
+            "builtin_live_$index"
+        }.toSet()
     }
 }

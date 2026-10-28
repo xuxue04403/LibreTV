@@ -76,7 +76,7 @@ import org.libretv.tv.ui.theme.TextPrimary
  * 情况既不报错也不进 READY，界面会永远停在「正在连接直播流…」，用户只能靠
  * 盲按换台。设个死线，到点就给结论。
  */
-private const val LIVE_START_TIMEOUT_MS = 20_000L
+private const val LIVE_START_TIMEOUT_MS = 15_000L
 
 @Composable
 fun LiveScreen(vm: AppViewModel, data: AppData) {
