@@ -151,4 +151,51 @@ class ParsersTest {
         assertEquals(1, parsedTvbox.sources.size)
         assertEquals(1, parsedTvbox.skipped)
     }
+    // —— 跨源合并去重（与 core 的 dedupeChannels 语义一致）——
+
+    private fun ch(name: String, url: String, sourceKey: String = "a") =
+        LiveChannel(id = url, name = name, url = url, sourceKey = sourceKey)
+
+    @Test
+    fun `多个源都提供同一个台时只留最靠前的那条`() {
+        val merged = listOf(
+            ch("CCTV5", "http://a/5.m3u8", "vbsky"),
+            ch("CCTV5", "http://b/5.m3u8", "collect"),
+            ch("CCTV1", "http://b/1.m3u8", "collect"),
+        )
+        val out = Parsers.dedupeChannels(merged)
+        assertEquals(listOf("http://a/5.m3u8", "http://b/1.m3u8"), out.map { it.url })
+        // 保留的是排在前面的源，调用方靠这个决定画质/可播率优先级
+        assertEquals("vbsky", out[0].sourceKey)
+    }
+
+    @Test
+    fun `忽略空格与连字符的差异，但不把 CCTV5+ 当成 CCTV5`() {
+        val out = Parsers.dedupeChannels(
+            listOf(
+                ch("CCTV5", "http://a/5.m3u8"),
+                ch("CCTV-5", "http://b/5.m3u8"),
+                ch("CCTV5+", "http://c/5p.m3u8"),
+                ch("CCTV5 体育", "http://d/5s.m3u8"),
+            )
+        )
+        // CCTV-5 与 CCTV5 是同一个台（只差分隔符）；CCTV5+ 与 CCTV5 体育 各是独立的台，
+        // 不能被「去掉全部标点」的归一化并掉——那正是拿 normalizeTitle 当去重键会犯的错。
+        assertEquals(
+            listOf("http://a/5.m3u8", "http://c/5p.m3u8", "http://d/5s.m3u8"),
+            out.map { it.url }
+        )
+    }
+
+    @Test
+    fun `没有名字的频道退回按 URL 去重`() {
+        val out = Parsers.dedupeChannels(
+            listOf(
+                ch("", "http://a/x.m3u8"),
+                ch("", "http://a/x.m3u8"),
+                ch("", "http://a/y.m3u8"),
+            )
+        )
+        assertEquals(listOf("http://a/x.m3u8", "http://a/y.m3u8"), out.map { it.url })
+    }
 }

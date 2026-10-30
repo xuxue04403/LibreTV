@@ -4,6 +4,7 @@ import mpegts from 'mpegts.js';
 import {
   channelAt,
   collectGroups,
+  dedupeChannels,
   filterAdultChannels,
   filterChannels,
   fetchLivePlaylist,
@@ -255,14 +256,18 @@ export function LivePage({ onOpenSettings }: { onOpenSettings: () => void }) {
 
       const all: ChannelItem[] = [];
       for (const list of buffers.values()) all.push(...list);
-      // 最终结果统一去重（同 URL 只留一个），保证刷新后列表与缓存一致
-      const seen = new Set<string>();
-      const deduped = all.filter((c) => {
-        const k = `${c.sourceKey}:${c.url}`;
-        if (seen.has(k)) return false;
-        seen.add(k);
-        return true;
-      });
+      // 先按「源 + 地址」去掉同一源内部的重复，再跨源按台名去重：
+      // 两个源都提供 CCTV5 时只留排在前面的那条（源顺序即优先级），
+      // 否则列表里会出现几张一模一样的卡片，点哪张都各有一半概率是死台。
+      const seenUrl = new Set<string>();
+      const deduped = dedupeChannels(
+        all.filter((c) => {
+          const k = `${c.sourceKey}:${c.url}`;
+          if (seenUrl.has(k)) return false;
+          seenUrl.add(k);
+          return true;
+        })
+      );
 
       setChannels(deduped);
       setStatus(states);

@@ -147,6 +147,9 @@ private const val HOME_ROW_SIZE = 14
  */
 private const val FAVORITE_LIMIT = 500
 
+/** 拼音索引低于这个条数就认为覆盖不足，启动后补扫一批 */
+private const val WARM_INDEX_THRESHOLD = 3_000
+
 /**
  * 目录落盘的合并窗口。
  *
@@ -251,6 +254,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // 拼音索引：上次落盘的片名先装进内存，这样一开机 qmmk 就能命中之前浏览过的片子
         viewModelScope.launch {
             runCatching { repo.rememberItems(store.pinyinIndex()) }
+        }
+        // 索引太薄时补扫一批：拼音检索只能命中「见过的片名」，
+        // 光靠首页分类刷新（每分类一页）根本不够，用户按首字母搜什么都搜不到。
+        // 补完就落盘，之后启动不再重复打这批请求。
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(8_000) // 让首页与目录刷新先跑，别抢带宽
+            if (repo.seenSnapshot().size >= WARM_INDEX_THRESHOLD) return@launch
+            val sources = _data.value.activeSources()
+            if (sources.isEmpty()) return@launch
+            val added = runCatching { repo.warmPinyinIndex(sources) }.getOrDefault(0)
+            if (added > 0) runCatching { persistPinyinIndex() }
         }
         // 目录缓存：先把上次落盘的内容装进 repo，界面一开机就有内容可读
         viewModelScope.launch {
@@ -384,10 +398,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 current.liveSelected
             }
         store.update {
+            // 内置源**换了地址**（同 key、不同 url）时用新地址替换旧条目：
+            // key 是按下标生成的，光按 url 判重会让列表里出现两条同 key 的同名源
+            // （一条旧镜像、一条新镜像），勾选状态也会打架。
+            val freshByKey = addedLive.associateBy { s -> s.key }
+            val mergedLive = it.liveSources.map { s -> freshByKey[s.key] ?: s } +
+                addedLive.filter { s -> it.liveSources.none { old -> old.key == s.key } }
             it.copy(
                 sources = (it.sources + addedVod).distinctBy { s -> s.url },
                 selected = (it.selected + addedVod.map { s -> s.key }).distinct(),
-                liveSources = (it.liveSources + addedLive).distinctBy { s -> s.url },
+                liveSources = mergedLive.distinctBy { s -> s.url },
                 liveSelected = (
                     liveBase + addedLive.filter { s -> s.key in defaultLiveSelected }.map { s -> s.key }
                     ).distinct(),
@@ -807,6 +827,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val hits = runCatching {
                     repo.pinyinSearch(sources, word, _data.value.settings.adultFilter)
                 }.getOrDefault(emptyList())
+                // 深扫出来的片名要落盘，否则每次冷启动都从零开始、
+                // 拼音检索永远只有「最新几页」覆盖的那点片名。
+                persistPinyinIndex()
+                if (mySeq != searchSeq) return@launch
                 val outcome = SourceOutcome(
                     sourceKey = PINYIN_SOURCE_KEY,
                     sourceName = "拼音「${word.lowercase()}」",
@@ -818,7 +842,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     groups = Parsers.group(hits),
                     loading = false,
                 )
-                if (hits.isEmpty()) showToast("没有匹配「${word.lowercase()}」的影片：拼音只查已见过的片名，先用中文搜一次即可")
+                if (hits.isEmpty()) {
+                    showToast("没有匹配「${word.lowercase()}」的影片：拼音检索靠本地片名索引，可先用中文搜一次或换个首字母")
+                }
                 return@launch
             }
             // 检索结果缓存：同一个片名一天里会被搜好几次（没找到、隔天再搜、家里人再搜），
@@ -1278,7 +1304,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                                 val now = System.currentTimeMillis()
                                 if (progressive && (lastPush == 0L || now - lastPush >= pushIntervalMs)) {
                                     lastPush = now
-                                    val merged = sources.mapNotNull { buffers[it.key] }.flatten()
+                                    val merged = Parsers.dedupeChannels(
+                                        sources.mapNotNull { buffers[it.key] }.flatten()
+                                    )
                                     // loading 保持 true：列表已经在长，但仍需显示"仍在读取"，
                                     // 也让 loadLive 的并发保护继续生效
                                     live = live.copy(
@@ -1301,7 +1329,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
 
-        val merged = sources.mapNotNull { buffers[it.key] }.flatten()
+        val merged = Parsers.dedupeChannels(sources.mapNotNull { buffers[it.key] }.flatten())
         if (merged.isEmpty()) {
             // 一个频道都没拿到：缓存还在就别清空，只把 loading 摘掉
             live = live.copy(

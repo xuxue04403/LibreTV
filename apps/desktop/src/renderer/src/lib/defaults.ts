@@ -46,7 +46,8 @@ export const DEFAULT_LIVE_SOURCES: LiveSourceConfig[] = (data.liveSources ?? [])
  * 「iptv-org 全球频道」有一万多个频道、「iptv-org 中国频道」实测 138 个里只有 66
  * 个能打开，开着它们只会让用户随便点一个台就是死台。清单里用 `selected: false`
  * 标出来：源照样加进列表，只是默认不勾选，需要时在设置里手动打开。默认启用的
- * 只有 Collect-IPTV 精选（实测 94% 可播、首响中位数 169ms）。
+ * 是 Collect-IPTV 精选（等距抽测 65% 可播、13/23 为 1080p）与 vbskycn 国内 IPv4
+ * （抽测 79% 可播、含 3840×2160 的湖南卫视），两者同名的台在合并时自动去重。
  */
 export const DEFAULT_LIVE_SELECTED_KEYS: string[] = (data.liveSources ?? [])
   .map((source, index) => (source.selected === false ? null : `builtin_live_${index}`))

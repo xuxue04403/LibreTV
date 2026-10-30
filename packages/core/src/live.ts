@@ -207,6 +207,30 @@ export function filterChannels<T extends LiveChannel>(
   });
 }
 
+/**
+ * 跨源合并后的频道去重：同名的台只保留最靠前的一条。
+ *
+ * 单份 m3u 内部的重复地址由解析器负责；这里解决的是「多个直播源都提供 CCTV5」
+ * 的场景——不去重的话列表里会出现几张一模一样的台标卡片，用户点哪张都各有一半
+ * 概率是死台。传入顺序即优先级（默认源清单的顺序），所以调用方应当把可播率更高、
+ * 画质更好的源排在前面。
+ *
+ * 名字为空时退回按 URL 去重；名字只做「去空白与分隔符 + 小写」，不做模糊匹配，
+ * 因为 `CCTV5` 与 `CCTV5+` 是两个不同的台。
+ */
+export function dedupeChannels<T extends { name?: string; url: string }>(channels: T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const channel of channels) {
+    const name = (channel.name || '').replace(/[\s\-_·]+/g, '').toLowerCase();
+    const key = name || channel.url;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(channel);
+  }
+  return out;
+}
+
 // —— XMLTV ——
 
 const PROGRAMME_RE = /<programme\s+([^>]*?)\/>|<programme\s+([^>]*?)>([\s\S]*?)<\/programme>/g;

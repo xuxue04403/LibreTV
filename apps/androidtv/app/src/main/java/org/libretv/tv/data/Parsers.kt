@@ -100,6 +100,9 @@ object Parsers {
 
     private val PUNCT = Regex("""[\s\p{P}\p{S}]+""")
 
+    /** 台名归一化只抹空白与常见分隔符，保留 `+` 号（CCTV5+ 是独立的台） */
+    private val NAME_SEP = Regex("""[\s\-_·]+""")
+
     fun normalizeTitle(s: String): String = s.lowercase().replace(PUNCT, "")
 
     /**
@@ -192,6 +195,26 @@ object Parsers {
     fun filterAdultChannels(channels: List<LiveChannel>, enabled: Boolean): List<LiveChannel> =
         if (!enabled) channels
         else channels.filter { !isAdultChannel(it.name, it.group, it.tvgId) }
+
+    /**
+     * 跨源合并后的频道去重：同名的台只保留最靠前的一条（与桌面端 dedupeChannels 一致）。
+     *
+     * 单份 m3u 内部的重复地址由解析器负责，这里解决的是「多个直播源都提供 CCTV5」
+     * 的场景——不去重时列表里会出现几张一模一样的卡片，点哪张都各有一半概率是死台。
+     * 传入顺序即优先级，调用方应把可播率更高、画质更好的源排在前面。
+     */
+    fun dedupeChannels(channels: List<LiveChannel>): List<LiveChannel> {
+        val seen = HashSet<String>(channels.size)
+        val out = ArrayList<LiveChannel>(channels.size)
+        for (c in channels) {
+            // 只抹空白与常见分隔符：`CCTV5` 和 `CCTV5+` 是两个台，
+            // 用 normalizeTitle 那种「去掉所有标点」会把它们并成一个。
+            val name = NAME_SEP.replace(c.name, "").lowercase()
+            val key = name.ifEmpty { c.url }
+            if (seen.add(key)) out.add(c)
+        }
+        return out
+    }
 
     /** 同名同年的聚合键（与桌面端 groupSearchResults 一致） */
     fun groupKey(item: SearchItem): String {

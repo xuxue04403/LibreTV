@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -44,20 +46,24 @@ import org.libretv.tv.ui.theme.Panel
 import org.libretv.tv.ui.theme.TextMuted
 import org.libretv.tv.ui.theme.TextPrimary
 
+/** 首页「继续观看 / 收藏」卡宽：比内容页海报略小，一屏能多看几张。 */
+private val HOME_CARD_WIDTH = 116.dp
+
 @Composable
 fun HomeScreen(vm: AppViewModel, data: AppData) {
     val firstFocus = remember { FocusRequester() }
-    // 首屏焦点落在「开始搜索」上。必须重试：组合第一次跑时目标节点还没挂载，
-    // requestFocus() 会抛「FocusRequester is not initialized」，被 runCatching 吞掉之后
-    // 焦点就默认落到第一个可聚焦项（左侧导航栏的「首页」），看起来像没有选中项。
+    // 首屏焦点落在第一个分类入口上（banner 去掉之后这里就是最上一层可操作项）。
+    // 必须重试：组合第一次跑时目标节点还没挂载，requestFocus() 会抛
+    // 「FocusRequester is not initialized」，被 runCatching 吞掉之后焦点就默认落到
+    // 第一个可聚焦项（导航栏的「首页」），看起来像没有选中项。
     // 进入本页时的确认序号：只有「进入之后」用户在导航项上按了 OK，
     // 才说明是明确要进这一页，这时才抢焦点（见 FocusPolicy）。
     // 注意必须用页面自持的可变状态记录「已响应过的序号」，
     // 写成 `remember(tick) { tick }` 会让两边一起变、判定恒假。
     val autoFocus = rememberAutoFocusState(vm.contentFocusTick)
     LaunchedEffect(vm.contentFocusTick) {
-        // 焦点还在左侧导航里移动（导航支持「移上去就切页」）时不抢，
-        // 否则焦点一进导航就被首页拽到「开始搜索」，↓ 走不到「搜索」。
+        // 焦点还在导航栏里移动（导航支持「移上去就切页」）时不抢，
+        // 否则焦点一进导航就被首页拽到内容区，← → 走不到下一个导航项。
         if (!autoFocus.consume(vm.navFocusHold, vm.contentFocusTick)) {
             return@LaunchedEffect
         }
@@ -78,20 +84,10 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
             .padding(ScreenPadding),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        item {
-            HomeHero(
-                data,
-                onSearch = { vm.go(Screen.Search) },
-                onSettings = { vm.go(Screen.Settings) },
-                onCast = { vm.go(Screen.Cast) },
-                firstFocus,
-            )
-        }
-
         // 分类入口：一排胶囊，进屋就能选「电影 / 电视剧 / 少儿 / 综艺 …」
         // 只显示真的有内容的分类：点了进空页面比看不到入口更糟
         item { SectionHeader("分类浏览", "按源站分类直接打开") }
-        item { CategoryRow(vm, data) }
+        item { CategoryRow(vm, data, firstFocus) }
 
         // 继续观看：有记录才出现，放在内容流最上面（用户回来大概率是为了接着看）
         if (data.history.isNotEmpty()) {
@@ -171,30 +167,44 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
             }
         }
 
-        // 数据源入口挪到最后：它是「设置」，不是内容。
-        // 原来四张统计卡摆在首屏主视觉上，新装用户 0 记录 0 收藏时整屏都是数字。
-        item { SectionHeader("数据源") }
+        // 数据源信息压成一行文字放在最后：它属于「设置」而不是内容，
+        // 又不该整屏占一块视觉重心（新装用户 0 记录 0 收藏时整屏都是数字）。
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                StatCard(
-                    "点播源",
-                    "${data.activeSources().size}/${data.sources.size}",
-                    Modifier.width(190.dp),
-                ) { vm.go(Screen.Settings) }
-                StatCard(
-                    "直播源",
-                    "${data.activeLiveSources().size}/${data.liveSources.size}",
-                    Modifier.width(190.dp),
-                ) { vm.go(Screen.Settings) }
-                StatCard("观看记录", "${data.history.size}", Modifier.width(190.dp)) { vm.go(Screen.Search) }
-                StatCard("收藏", "${data.favorites.size + data.liveFavorites.size}", Modifier.width(190.dp))
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 20.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "点播源 ${data.activeSources().size}/${data.sources.size} · " +
+                        "直播源 ${data.activeLiveSources().size}/${data.liveSources.size} · " +
+                        "记录 ${data.history.size} · 收藏 ${data.favorites.size + data.liveFavorites.size}",
+                    color = TextMuted,
+                    fontSize = MaterialTheme.typography.bodySmall.fontSize,
+                )
+                Spacer(Modifier.weight(1f))
+                TvCard(
+                    onClick = { vm.go(Screen.Settings) },
+                    shape = RoundedCornerShape(999.dp),
+                    containerColor = Color.Transparent,
+                    focusedScale = 1.04f,
+                ) { focused ->
+                    Text(
+                        "数据源设置 ›",
+                        color = if (focused) Accent else TextMuted,
+                        fontSize = MaterialTheme.typography.bodySmall.fontSize,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    )
+                }
             }
         }
     }
 }
 
+@kotlin.OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun CategoryRow(vm: AppViewModel, data: AppData) {
+private fun CategoryRow(vm: AppViewModel, data: AppData, firstFocus: FocusRequester? = null) {
     // 进首页即探测各分类是否有内容；看到的是「已过滤后的入口」而不是全量。
     //
     // 关键：这里必须按「当前启用的源」重新触发，不能用 LaunchedEffect(Unit)。
@@ -220,17 +230,26 @@ private fun CategoryRow(vm: AppViewModel, data: AppData) {
         return
     }
 
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        items(keys) { key ->
+    // 用 FlowRow 而不是 LazyRow：分类数量随源变化（常见 6~10 个），
+    // 单排 128dp 的胶囊在 960dp 设计宽下会溢出到屏幕外、右侧几个分类
+    // 只能靠横向滚动才看得到。换行后一屏内全部可见，宽度也随分辨率自适应。
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        keys.forEachIndexed { index, key ->
             TvCard(
                 onClick = { vm.selectCategory(key) },
                 modifier = Modifier.width(128.dp),
                 containerColor = Panel,
                 shape = RoundedCornerShape(12.dp),
                 focusedScale = 1.06f,
+                focusRequester = if (index == 0) firstFocus else null,
             ) { focused ->
                 Row(
-                    Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(
@@ -255,116 +274,13 @@ private fun CategoryRow(vm: AppViewModel, data: AppData) {
 }
 
 @Composable
-private fun HomeHero(
-    data: AppData,
-    onSearch: () -> Unit,
-    onSettings: () -> Unit,
-    onCast: () -> Unit,
-    firstFocus: FocusRequester,
-) {
-    // 横幅高度从 232dp 收到 152dp：原来是标题 / 说明 / 按钮 / 统计四行竖排，
-    // 在 540dp 的设计高度里吃掉 43%，下面「分类浏览」要滚一屏才看得到。
-    // 改成左右两栏——左边只说清这是什么，右边全是可操作项，一行就够。
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(152.dp)
-            .clip(RoundedCornerShape(18.dp))
-            .background(
-                Brush.horizontalGradient(
-                    0f to Color(0xFF171C26),
-                    1f to Color(0xFF0E1218),
-                )
-            )
-            .padding(horizontal = 28.dp),
-    ) {
-        Box(
-            Modifier
-                .size(280.dp)
-                .align(Alignment.CenterEnd)
-                .background(
-                    Brush.radialGradient(
-                        listOf(Color(0x55FF6B3D), Color.Transparent)
-                    )
-                )
-        )
-        Row(
-            Modifier.fillMaxSize(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(24.dp),
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    "LibreTV · 电视版",
-                    color = TextPrimary,
-                    fontSize = MaterialTheme.typography.headlineMedium.fontSize,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "搜索聚合、解析与播放全部在本机完成",
-                    color = TextMuted,
-                    fontSize = MaterialTheme.typography.bodyMedium.fontSize,
-                    maxLines = 2,
-                )
-            }
-            Column(horizontalAlignment = Alignment.End) {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    TvButton("开始搜索", onSearch, primary = true, focusRequester = firstFocus)
-                    TvButton("数据源设置", onSettings)
-                    TvButton("投屏接收", onCast)
-                }
-                Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                    HeroStat("${data.activeSources().size}", "点播源")
-                    HeroStat("${data.activeLiveSources().size}", "直播源")
-                    HeroStat("${data.history.size}", "记录")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun HeroStat(value: String, label: String) {
-    Row(verticalAlignment = Alignment.Bottom) {
-        Text(value, color = Color(0xFFFFB59C), fontSize = MaterialTheme.typography.headlineMedium.fontSize, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.width(6.dp))
-        Text(label, color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize, modifier = Modifier.padding(bottom = 4.dp))
-    }
-}
-
-@Composable
-private fun StatCard(label: String, value: String, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
-    if (onClick == null) {
-        Column(
-            modifier
-                .clip(RoundedCornerShape(14.dp))
-                .background(Panel)
-                .padding(18.dp)
-        ) {
-            Text(value, color = Color(0xFFFFB59C), fontSize = MaterialTheme.typography.headlineMedium.fontSize, fontWeight = FontWeight.Bold)
-            Text(label, color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
-        }
-    } else {
-        TvCard(onClick = onClick, modifier = modifier, containerColor = Panel) {
-            Column(Modifier.padding(18.dp)) {
-                Text(value, color = Color(0xFFFFB59C), fontSize = MaterialTheme.typography.headlineMedium.fontSize, fontWeight = FontWeight.Bold)
-                Text(label, color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
-            }
-        }
-    }
-}
-
-@Composable
 private fun HistoryCard(entry: HistoryEntry, onClick: () -> Unit) {
     // 记录里的下标可能越界（老版本「看完一集」会把下标推到列表长度），
     // 卡片是用户判断「从哪一集续播」的唯一依据，必须先夹紧再显示
     val shown = HistoryDedupe.clampEntry(entry)
-    TvCard(onClick = onClick, modifier = Modifier.width(158.dp)) {
+    TvCard(onClick = onClick, modifier = Modifier.width(HOME_CARD_WIDTH)) {
         Column {
-            Poster(shown.cover, shown.title, Modifier.fillMaxWidth().height(228.dp))
+            Poster(shown.cover, shown.title, Modifier.fillMaxWidth().height(HOME_CARD_WIDTH * 1.45f))
             Column(Modifier.padding(10.dp)) {
                 EllipsizedText(shown.title, fontSize = MaterialTheme.typography.titleMedium.fontSize)
                 Spacer(Modifier.height(4.dp))
@@ -388,9 +304,9 @@ private fun HistoryCard(entry: HistoryEntry, onClick: () -> Unit) {
 
 @Composable
 private fun FavoriteCard(fav: FavoriteEntry, onClick: () -> Unit) {
-    TvCard(onClick = onClick, modifier = Modifier.width(158.dp)) {
+    TvCard(onClick = onClick, modifier = Modifier.width(HOME_CARD_WIDTH)) {
         Column {
-            Poster(fav.cover, fav.title, Modifier.fillMaxWidth().height(228.dp))
+            Poster(fav.cover, fav.title, Modifier.fillMaxWidth().height(HOME_CARD_WIDTH * 1.45f))
             Column(Modifier.padding(10.dp)) {
                 EllipsizedText(fav.title, fontSize = MaterialTheme.typography.titleMedium.fontSize)
                 Text("收藏", color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
@@ -401,7 +317,7 @@ private fun FavoriteCard(fav: FavoriteEntry, onClick: () -> Unit) {
 
 @Composable
 private fun LiveFavoriteCard(fav: LiveFavoriteEntry, onClick: () -> Unit) {
-    TvCard(onClick = onClick, modifier = Modifier.width(200.dp), focusedScale = 1.04f) { focused ->
+    TvCard(onClick = onClick, modifier = Modifier.width(176.dp), focusedScale = 1.04f) { focused ->
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier

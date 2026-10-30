@@ -1,6 +1,6 @@
 {
   "name": "LibreTV 内置默认源",
-  "version": 5,
+  "version": 6,
   "notice": "以下地址均为第三方公开接口，与本项目无隶属关系；仅作为开箱即用的示例，可在设置中随时删除。内容合法性由对应数据源负责。",
   "sources": [
     { "name": "非凡资源", "url": "https://api.ffzyapi.com/api.php/provide/vod" },
@@ -29,8 +29,18 @@
     },
     {
       "name": "Collect-IPTV 精选",
-      "url": "https://ghfast.top/https://raw.githubusercontent.com/zilong7728/Collect-IPTV/main/best_sorted.m3u",
-      "note": "实测 452 个频道里 427 个能打开（94%），首响中位数 169ms。默认启用的就是这一个。"
+      "url": "https://cdn.jsdelivr.net/gh/zilong7728/Collect-IPTV@main/best_sorted.m3u",
+      "note": "上游定期重建，频道数在 500~630 之间浮动。抽测 40 个：26 个可播（65%），能测到分辨率的 23 个里 13 个 1920×1080、6 个 1280×720、4 个更低；首响中位数 0.17s。走 jsDelivr 镜像，实测比 ghfast.top 那种 GitHub 反代快，也不容易断。"
+    },
+    {
+      "name": "vbskycn 国内 IPv4",
+      "url": "https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv4.m3u",
+      "note": "308 个频道，与上面那源同名台会自动去重（排序靠后的源只补缺）。等距抽测 39 个：31 个可播（79%），27 个测到分辨率里 11 个 1920×1080、8 个 1280×720；首响中位数 0.14s。含贵州/黑龙江等卫视。"
+    },
+    {
+      "name": "Guovin 央视卫视",
+      "url": "https://cdn.jsdelivr.net/gh/Guovin/iptv-api@gd/output/ipv4/result.m3u",
+      "note": "473 个频道，主要用来补前两个源缺的台（CCTV-1、CCTV-6、北京卫视等）。等距抽测 40 个：30 个可播（75%），25 个测到分辨率里 17 个 1920×1080、8 个 1280×720；首响中位数 0.93s。走 jsDelivr，直接连 raw.githubusercontent 时好时坏。"
     }
   ]
 }

@@ -242,16 +242,17 @@ fun PosterCard(
     title: String,
     poster: String?,
     subtitle: String? = null,
-    width: androidx.compose.ui.unit.Dp = 158.dp,
+    width: androidx.compose.ui.unit.Dp = 124.dp,
     onClick: () -> Unit,
 ) {
+    // 海报高度由宽度推出来（约 1.45 倍），这样改卡宽不用各处同步改高度。
     TvCard(onClick = onClick, modifier = Modifier.width(width), focusedScale = 1.06f) { focused ->
         Column {
-            Poster(poster, title, Modifier.fillMaxWidth().height(228.dp))
-            Column(Modifier.padding(horizontal = 10.dp, vertical = 9.dp)) {
+            Poster(poster, title, Modifier.fillMaxWidth().height(width * 1.45f))
+            Column(Modifier.padding(horizontal = 9.dp, vertical = 8.dp)) {
                 EllipsizedText(
                     title,
-                    fontSize = MaterialTheme.typography.titleMedium.fontSize,
+                    fontSize = MaterialTheme.typography.titleSmall.fontSize,
                     color = if (focused) Accent else TextPrimary,
                 )
                 if (!subtitle.isNullOrBlank()) {

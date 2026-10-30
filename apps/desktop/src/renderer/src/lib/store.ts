@@ -223,7 +223,14 @@ export const useAppStore = create<AppState>()(
           const addedLive = DEFAULT_LIVE_SOURCES.filter(
             (d) => !s.liveSources.some((x) => x.url === d.url) && !liveRemoved.has(d.url)
           );
-          const liveSources = [...s.liveSources, ...addedLive];
+          // 内置源**换了地址**（同 key、不同 url）时要用新地址替换旧条目：
+          // key 是按下标生成的，光按 url 判重会让列表里出现两条同 key 的同名源
+          // （一条旧镜像、一条新镜像），勾选状态和 React key 都会打架。
+          const freshByKey = new Map(addedLive.map((d) => [d.key, d] as const));
+          const liveSources = [
+            ...s.liveSources.map((x) => freshByKey.get(x.key) ?? x),
+            ...addedLive.filter((d) => !s.liveSources.some((x) => x.key === d.key)),
+          ];
           const defaultLiveSelected = new Set(DEFAULT_LIVE_SELECTED_KEYS);
           // v4 之前老用户是三个直播源全开的。清单把两个 iptv-org 源改成默认关闭后，
           // 光改 `selected` 对他们没用（勾选状态早就存下来了），所以升级到

@@ -5,9 +5,11 @@ import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -62,11 +64,8 @@ fun LibretvApp(vm: AppViewModel) {
                 onExit = { vm.back() },
             )
             is Screen.CastPlayer -> CastPlayerScreen(screen, onExit = { vm.back() })
-            else -> Row(Modifier.fillMaxSize()) {
-                // 焦点进入导航栏后要「保持焦点」在这里：目标页各有抢焦点的
-                // LaunchedEffect，不挡住的话焦点刚进导航就被拽走，↓ 走不到第二项。
-                // 释放时机是「焦点落到内容区」，交给各页面自己的焦点重置即可——
-                // 这里只在用户按下 OK（onClick）时收尾。
+            else -> Column(Modifier.fillMaxSize()) {
+                // 顶栏导航：横向铺满，内容区占满剩余高度
                 NavRail(
                     screen,
                     onSelect = { vm.go(it) },
@@ -76,7 +75,7 @@ fun LibretvApp(vm: AppViewModel) {
                     // 此时解除焦点保持并让目标页把焦点抓到第一个可操作元素
                     onConfirm = { vm.requestContentFocus() },
                 )
-                Box(Modifier.weight(1f).fillMaxSize()) {
+                Box(Modifier.weight(1f).fillMaxWidth()) {
                     when (screen) {
                         Screen.Home -> HomeScreen(vm, data)
                         Screen.Search -> SearchScreen(vm, data)

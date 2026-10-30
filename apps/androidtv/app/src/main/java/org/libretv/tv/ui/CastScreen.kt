@@ -64,25 +64,25 @@ fun NavRail(
     onFocusLeave: () -> Unit = {},
     onConfirm: () -> Unit = {},
 ) {
-    // 导航收窄到 84dp：104dp 常显时占掉 960dp 设计宽的 11%，
-    // 而电视上没人需要一直看到文字标签——聚焦时再显示就够了。
-    Column(
+    // 顶部横向导航：原来靠左的一列 84dp 竖排，在 16:9 的电视上白占掉 9% 宽度，
+    // 而横向空间本来是该留给海报的。改成顶栏后同一屏能多摆两列海报，
+    // 也给「去掉首页大 banner」腾出了垂直空间。
+    Row(
         Modifier
-            .width(84.dp)
-            .fillMaxHeight()
-            .background(Brush.verticalGradient(listOf(Color(0xFF10141C), Bg)))
-            .padding(vertical = 18.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+            .fillMaxWidth()
+            .height(76.dp)
+            .background(Brush.horizontalGradient(listOf(Color(0xFF11161F), Bg)))
+            .padding(horizontal = 22.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Image(
             painter = painterResource(id = org.libretv.tv.R.drawable.logo),
             contentDescription = "LibreTV",
             modifier = Modifier
-                .size(42.dp)
-                .clip(RoundedCornerShape(12.dp)),
+                .size(38.dp)
+                .clip(RoundedCornerShape(10.dp)),
         )
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.width(22.dp))
 
         items.forEach { item ->
             val active = current::class == item.screen::class
@@ -96,7 +96,6 @@ fun NavRail(
                 },
                 // 焦点移到导航项就切过去，不用再按 OK：电视上「先选中再确认」
                 // 是鼠标时代遗留的操作方式，遥控器连着按过去才是自然的手感。
-                // 只对「按页切换」的项生效；Home 之外的状态（播放页等）不会出现在导航里。
                 onFocusChange = { focused ->
                     if (focused) {
                         onFocusEnter()
@@ -105,52 +104,72 @@ fun NavRail(
                         onFocusLeave()
                     }
                 },
-                modifier = Modifier.size(64.dp),
+                // 宽度固定：聚焦放大时不会把右边的项挤走，遥控器连着按不会「跳字」
+                modifier = Modifier
+                    .width(116.dp)
+                    .height(48.dp),
                 containerColor = if (active) Color(0xFF22140F) else Color(0x00000000),
-                shape = RoundedCornerShape(14.dp),
-                focusedScale = 1.07f,
+                shape = RoundedCornerShape(12.dp),
+                focusedScale = 1.05f,
             ) { focused ->
-                Column(
+                Row(
                     Modifier.fillMaxSize(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(
                         imageVector = item.icon,
                         contentDescription = item.label,
                         tint = if (active || focused) Accent else TextMuted,
-                        modifier = Modifier.size(24.dp),
+                        modifier = Modifier.size(20.dp),
                     )
-                    // 标签只在「当前页」和「聚焦中」出现，其余时候纯图标
-                    if (active || focused) {
-                        Spacer(Modifier.height(3.dp))
-                        Text(
-                            item.label,
-                            color = if (active || focused) Accent else TextMuted,
-                            fontSize = MaterialTheme.typography.bodySmall.fontSize,
-                        )
-                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        item.label,
+                        color = if (active || focused) Accent else TextPrimary,
+                        fontSize = MaterialTheme.typography.bodyMedium.fontSize,
+                    )
                 }
             }
+            Spacer(Modifier.width(8.dp))
         }
 
         Spacer(Modifier.weight(1f))
 
-        if (CastRuntime.running) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(6.dp).clip(CircleShape).background(Color(0xFF4ECB8F)))
-                Spacer(Modifier.width(6.dp))
-                Text("投屏就绪", color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
+        // 投屏入口与状态合成一个按钮：原来「投屏接收」只在首页 banner 里，
+        // 去掉 banner 之后必须给一个固定位置，否则手机投屏都不知道去哪开。
+        TvCard(
+            onClick = { onSelect(Screen.Cast) },
+            onFocusChange = { focused -> if (focused) onFocusEnter() else onFocusLeave() },
+            // 宽度必须固定：TvCard 内部是 fillMaxSize，不约束就会把
+            // Spacer(weight) 抢完，顶栏右侧出现一条横贯半屏的空胶囊。
+            modifier = Modifier
+                .width(150.dp)
+                .height(44.dp),
+            containerColor = Color(0x00000000),
+            shape = RoundedCornerShape(12.dp),
+            focusedScale = 1.04f,
+        ) { focused ->
+            Row(
+                Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(if (CastRuntime.running) Color(0xFF4ECB8F) else Color(0xFF4A5464))
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (CastRuntime.running) "投屏就绪" else "投屏接收",
+                    color = if (focused) Accent else TextMuted,
+                    fontSize = MaterialTheme.typography.bodySmall.fontSize,
+                )
             }
-            Spacer(Modifier.height(8.dp))
         }
-        Text(
-            "LIBRETV\nTV",
-            color = Color(0xFF3A4352),
-            fontSize = MaterialTheme.typography.bodySmall.fontSize,
-            fontWeight = FontWeight.Bold,
-            lineHeight = MaterialTheme.typography.bodySmall.fontSize * 1.2f,
-        )
     }
 }
 

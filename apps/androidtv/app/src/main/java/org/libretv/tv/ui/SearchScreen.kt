@@ -143,7 +143,7 @@ fun SearchScreen(vm: AppViewModel, data: AppData) {
             )
 
             else -> LazyVerticalGrid(
-                columns = GridCells.Adaptive(164.dp),
+                columns = GridCells.Adaptive(132.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp),
                 modifier = Modifier.fillMaxSize(),

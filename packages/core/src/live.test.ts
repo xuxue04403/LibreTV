@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { HttpClient, HttpResponse, HttpStreamOptions } from './http';
-import { fetchLivePlaylist } from './live';
+import { fetchLivePlaylist, dedupeChannels } from './live';
 import type { LiveChannel } from './types';
 
 const PLAYLIST = [
@@ -167,5 +167,39 @@ describe('fetchLivePlaylist', () => {
     await expect(
       fetchLivePlaylist('https://example.com/list.m3u', failing, { onChannels: () => undefined })
     ).rejects.toThrow(/HTTP 404/);
+  });
+});
+
+describe('dedupeChannels', () => {
+  const ch = (name: string, url: string, sourceKey = 'a') => ({ name, url, sourceKey });
+
+  it('多个源都提供同一个台时只留最靠前的那条', () => {
+    const merged = [
+      ch('CCTV5', 'http://a/5.m3u8', 'vbsky'),
+      ch('CCTV5', 'http://b/5.m3u8', 'collect'),
+      ch('CCTV1', 'http://b/1.m3u8', 'collect'),
+    ];
+    const out = dedupeChannels(merged);
+    expect(out.map((c) => c.url)).toEqual(['http://a/5.m3u8', 'http://b/1.m3u8']);
+    // 保留的是排在前面的源，调用方靠这个决定画质/可播率优先级
+    expect(out[0].sourceKey).toBe('vbsky');
+  });
+
+  it('忽略空格与连字符的差异，但不把 CCTV5+ 当成 CCTV5', () => {
+    const out = dedupeChannels([
+      ch('CCTV-5 体育', 'http://a/5.m3u8'),
+      ch('cctv5体育', 'http://b/5.m3u8'),
+      ch('CCTV5+', 'http://c/5p.m3u8'),
+    ]);
+    expect(out.map((c) => c.url)).toEqual(['http://a/5.m3u8', 'http://c/5p.m3u8']);
+  });
+
+  it('没有名字的频道退回按 URL 去重', () => {
+    const out = dedupeChannels([
+      ch('', 'http://a/x.m3u8'),
+      ch('', 'http://a/x.m3u8'),
+      ch('', 'http://a/y.m3u8'),
+    ]);
+    expect(out.map((c) => c.url)).toEqual(['http://a/x.m3u8', 'http://a/y.m3u8']);
   });
 });

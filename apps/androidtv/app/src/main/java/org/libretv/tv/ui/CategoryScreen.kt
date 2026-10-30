@@ -181,7 +181,7 @@ fun CategoryScreen(vm: AppViewModel, data: AppData) {
 
             else -> LazyVerticalGrid(
                 // 内容区拿回了竖栏占掉的那 196dp，列数可以从 4 列涨到 5 列
-                columns = GridCells.Adaptive(176.dp),
+                columns = GridCells.Adaptive(132.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp),
                 modifier = Modifier.fillMaxSize(),
@@ -205,7 +205,7 @@ private fun PosterGridSkeleton() {
         label = "skeletonAlpha",
     )
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(176.dp),
+        columns = GridCells.Adaptive(132.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
         modifier = Modifier.fillMaxSize(),

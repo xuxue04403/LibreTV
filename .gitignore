@@ -15,3 +15,7 @@ apps/androidtv/.kotlin/
 apps/androidtv/keystore.properties
 apps/androidtv/*.jks
 apps/androidtv/*.keystore
+
+# 本地临时目录（截图、测量脚本、抓下来的清单）
+.tmp-*/
+.tmp-*
