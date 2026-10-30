@@ -3,6 +3,7 @@ import {
   catalogSignature,
   dedupeItems,
   emptyCatalog,
+  markCatalogChecked,
   searchCacheItems,
   staleCategories,
   withCatalogEntry,
@@ -87,17 +88,70 @@ export function missingCategories(
   return staleCategories(readCatalog(signatureOf(sources, adultFilter)), keys);
 }
 
-export function readSearchCache(): SearchCacheSnapshot | undefined {
-  return readJson<SearchCacheSnapshot>(SEARCH_KEY);
+/**
+ * 只记「刚查过」，不动已有内容。
+ *
+ * 一趟刷新拿回空结果有两种可能：分类本来就空，或这次网络抽风。两种都不该清内容，
+ * 但都必须记下时间——否则「空分类」永远不算新鲜，后台每小时都为它重打一轮
+ * （4 源 × 8 分类 = 32 个请求），用户看到的还是同一片空白。
+ *
+ * 桌面端此前完全没有调用过它（只有安卓端 `AppViewModel` 在调），
+ * 于是抓不到内容的分类永远停在 `entries` 缺席状态，被每小时重复预热。
+ */
+export function markCategoryChecked(
+  sources: SourceConfig[],
+  adultFilter: boolean,
+  key: CategoryKey
+): void {
+  const signature = signatureOf(sources, adultFilter);
+  writeCatalog(markCatalogChecked(readCatalog(signature), key));
 }
 
-export function cachedSearch(word: string, adultFilter: boolean): SearchResultItem[] | undefined {
-  return searchCacheItems(readSearchCache(), word, adultFilter);
+/**
+ * 搜索缓存必须连同「当时的源集合」一起存。
+ *
+ * 旧实现的键只有「关键词 + 成人开关」：删掉一个源、或在设置里关掉成人过滤，
+ * 30 分钟内搜同一个词仍会命中旧结果——已经删掉的源条目照样出现在列表里，
+ * 点开还能用它记着的 `sourceUrl` 经本地代理起播。也就是说「删源」和
+ * 「成人过滤」都能被一份过期缓存绕过去。
+ *
+ * 这里在快照上记一个签名（源 url 集合 + 成人开关，与分类缓存同一份实现），
+ * 签名不符就整份作废。
+ */
+interface SignedSearchCache extends SearchCacheSnapshot {
+  signature?: string;
 }
 
-export function rememberSearch(word: string, adultFilter: boolean, items: SearchResultItem[]): void {
-  const base = readSearchCache() ?? { entries: {} };
-  writeJson(SEARCH_KEY, withSearchEntry(base, word, adultFilter, items));
+export function readSearchCache(): SignedSearchCache | undefined {
+  return readJson<SignedSearchCache>(SEARCH_KEY);
+}
+
+export function cachedSearch(
+  sources: SourceConfig[],
+  adultFilter: boolean,
+  word: string
+): SearchResultItem[] | undefined {
+  const snapshot = readSearchCache();
+  if (!snapshot) return undefined;
+  if (snapshot.signature !== signatureOf(sources, adultFilter)) return undefined;
+  return searchCacheItems(snapshot, word, adultFilter);
+}
+
+export function rememberSearch(
+  sources: SourceConfig[],
+  adultFilter: boolean,
+  word: string,
+  items: SearchResultItem[]
+): void {
+  const signature = signatureOf(sources, adultFilter);
+  const raw = readSearchCache();
+  // 源集合变了就从空快照重来，别把旧签名下的条目一起带过去
+  const base: SearchCacheSnapshot =
+    raw && raw.signature === signature && raw.entries ? { entries: raw.entries } : { entries: {} };
+  writeJson(SEARCH_KEY, {
+    ...withSearchEntry(base, word, adultFilter, items),
+    signature,
+  } satisfies SignedSearchCache);
 }
 
 export function clearCatalogCache(): void {

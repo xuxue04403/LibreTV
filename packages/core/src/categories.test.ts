@@ -353,6 +353,24 @@ describe('browseCategory', () => {
     expect(calls.length).toBeGreaterThan(afterMovie);
   });
 
+  // 回归护栏：duplicated 的 outcome.ok 恒为 true（「本地跳过」不是失败），
+  // 一旦把它算进 answered，只要配了重复地址，「全源失败不缓存」就永远失效。
+  it('配了重复地址时，全源失败仍然不写缓存', async () => {
+    clearCategoryCache();
+    const dup = { ...source, key: 'dup', name: '重复源' };
+    let attempts = 0;
+    const http: HttpClient = {
+      async request() {
+        attempts += 1;
+        throw new Error('采集站挂了');
+      },
+    };
+    await browseCategory({ sources: [source, dup], key: 'movie', http, pages: 1 });
+    const afterFirst = attempts;
+    await browseCategory({ sources: [source, dup], key: 'movie', http, pages: 1 });
+    expect(attempts).toBeGreaterThan(afterFirst);
+  });
+
   it('分页：按 pages 拉取并遵守 pagecount', async () => {
     clearCategoryCache();
     setCachedCategories(source.url, [{ id: '1', name: '电影' }]);
@@ -577,5 +595,45 @@ describe('probeCategories（首页隐藏空分类）', () => {
     const after = calls;
     await probeCategories({ sources: [source], http: empty, keys: ['movie'] });
     expect(calls).toBe(after);
+  });
+
+  it('源顺序不同但集合相同，仍然命中同一份探测缓存', async () => {
+    clearCategoryCache();
+    clearProbeCache();
+    const second: SourceConfig = { key: 'k2', name: '乙源', url: 'https://b.example.com/api.php/provide/vod' };
+    const counting: HttpClient = {
+      async request(url) {
+        if (url.includes('ac=list')) return res({ class: [{ type_id: 1, type_name: '电影片' }] });
+        return res({ pagecount: 0, list: [] });
+      },
+    };
+    const probes: string[] = [];
+    const onProbe = (r: { key: string }) => probes.push(r.key);
+    // 顺序 A,B
+    await probeCategories({ sources: [source, second], http: counting, keys: ['movie'], onProbe });
+    const after = probes.length;
+    // 顺序 B,A：源集合没变。注意 browseCategory 自带的 browse 缓存也会吸收网络请求，
+    // 所以这里必须看「有没有再走一遍探测流程」而不是看请求数。
+    await probeCategories({ sources: [second, source], http: counting, keys: ['movie'], onProbe });
+    expect(probes.length).toBe(after);
+  });
+
+  it('探测结果是只读副本，调用方改动不会污染缓存', async () => {
+    clearCategoryCache();
+    clearProbeCache();
+    const http = makeHttp({ '1': ['一部电影'] });
+    const first = await probeCategories({ sources: [source], http, keys: ['movie'] });
+    // 首次返回值被改：不能影响缓存里那份
+    first[0].available = false;
+    first[0].hits = 999;
+    const second = await probeCategories({ sources: [source], http, keys: ['movie'] });
+    expect(second[0].available).toBe(true);
+    expect(second[0].hits).not.toBe(999);
+    // 缓存命中返回的那份被改：也不能影响下一次命中的那份
+    second[0].available = false;
+    second[0].hits = 777;
+    const third = await probeCategories({ sources: [source], http, keys: ['movie'] });
+    expect(third[0].available).toBe(true);
+    expect(third[0].hits).not.toBe(777);
   });
 });

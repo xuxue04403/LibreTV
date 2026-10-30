@@ -244,8 +244,12 @@ export async function discoverCandidates(
   });
 
   // 同一部片子在不同采集站的命名常带「国语」「高清」等前缀后缀，
-  // 用归一化标题做包含判断比完全相等更实用
-  const wanted = keyword.toLowerCase();
+  // 用归一化标题做包含判断比完全相等更实用。
+  // 注意关键字本身也必须归一化：下面比对的是 normalizeTitle(item.name)，
+  // 若 wanted 还带着空格与标点（「The Matrix」「流浪地球 2」），
+  // name === wanted / includes / 反向 includes 三条会全部落空，
+  // 跨源补源就等于关掉了——只对中文无空格标题看起来正常。
+  const wanted = normalizeTitle(keyword).toLowerCase();
   const exclude = opts.exclude ?? new Set<string>();
   const items = result.outcomes
     .flatMap((outcome) => outcome.list)

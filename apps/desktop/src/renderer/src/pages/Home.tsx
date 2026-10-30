@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   buildPlaybackCandidates,
   clampEpisodeIndex,
@@ -10,7 +10,7 @@ import {
 import { http } from '../lib/bridge';
 import { useAppStore } from '../lib/store';
 import { Poster } from '../components/Poster';
-import { useToast } from '../components/Toast';
+import { useToast } from '../components/toast-context';
 import { CategoryButtons, type CategoryKey } from './Category';
 import type { WatchTarget } from './Watch';
 
@@ -44,6 +44,26 @@ export function HomePage({
   const [opening, setOpening] = useState<ReadonlySet<string>>(() => new Set());
   /** 正在取详情的卡片 id：同一张不重复发请求，不同卡片互不影响 */
   const openingRef = useRef<Set<string>>(new Set());
+  /**
+   * 页面级取消信号：离开首页就 abort。
+   *
+   * 点历史卡/收藏卡要先取详情，最长 12 秒。这期间用户完全可以按返回、
+   * 去搜索或者改设置；旧实现不管这些，详情一回来就无条件调 onPlay，
+   * 把界面硬切进播放页——用户正在输入的搜索词、刚翻到的分类全被冲掉。
+   * 传 signal 进去，卸载即取消；再补一道 mounted 判断兜住「取消前已返回」的竞态。
+   */
+  const abortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    const controller = new AbortController();
+    abortRef.current = controller;
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      controller.abort();
+      if (abortRef.current === controller) abortRef.current = null;
+    };
+  }, []);
 
   const openHistory = useCallback(
     async (entry: HistoryEntry) => {
@@ -60,7 +80,12 @@ export function HomePage({
       openingRef.current.add(record.id);
       setOpening((set) => new Set(set).add(record.id));
       try {
-        const detail = await fetchDetail(source, record.vodId, http, { timeoutMs: 12_000 });
+        const detail = await fetchDetail(source, record.vodId, http, {
+          timeoutMs: 12_000,
+          signal: abortRef.current?.signal,
+        });
+        // 详情回来时用户可能已经离开首页了：此时不该再把界面切进播放页
+        if (!mountedRef.current) return;
         if (detail.episodes.length === 0) {
           toast.err('该片源暂无可用播放地址');
           return;
@@ -103,7 +128,11 @@ export function HomePage({
       openingRef.current.add(fav.id);
       setOpening((set) => new Set(set).add(fav.id));
       try {
-        const detail = await fetchDetail(source, fav.vodId, http, { timeoutMs: 12_000 });
+        const detail = await fetchDetail(source, fav.vodId, http, {
+          timeoutMs: 12_000,
+          signal: abortRef.current?.signal,
+        });
+        if (!mountedRef.current) return;
         if (detail.episodes.length === 0) {
           toast.err('该片源暂无可用播放地址');
           return;

@@ -13,7 +13,10 @@ import { appInfo, http } from '../lib/bridge';
 import { DEFAULT_LIVE_NOTES } from '../lib/defaults';
 import { useAppStore } from '../lib/store';
 import { Icon } from '../components/Icons';
-import { useToast } from '../components/Toast';
+import { useToast } from '../components/toast-context';
+
+/** 导入前的自动备份键：整份替换是不可逆操作，留一条撤销的路 */
+const IMPORT_BACKUP_KEY = 'libretv-import-backup-v1';
 
 type Tab = 'vod' | 'live' | 'sub' | 'play' | 'data';
 
@@ -65,12 +68,26 @@ function VodSources() {
 
   const submit = () => {
     const api = url.trim();
+    // 正则只保证「以 http(s):// 开头」，`https://` 或 `https://?a` 都能过；
+    // 后面 `new URL(api).hostname` 会直接抛 TypeError。异常发生在 onClick 的
+    // 同步栈里，React 的 ErrorBoundary 接不住，表现就是「点添加毫无反应、也没提示」。
     if (!/^https?:\/\//i.test(api)) {
       toast.err('请填写 http(s) 开头的采集接口地址');
       return;
     }
+    let host: string;
+    try {
+      host = new URL(api).hostname;
+    } catch {
+      toast.err('地址不完整，请填写完整的采集接口地址');
+      return;
+    }
+    if (!host) {
+      toast.err('地址不完整，请填写完整的采集接口地址');
+      return;
+    }
     addSource({
-      name: name.trim() || new URL(api).hostname,
+      name: name.trim() || host,
       url: api.replace(/\/+$/, ''),
       detail: detail.trim() || undefined,
     });
@@ -258,6 +275,11 @@ function LiveSources() {
               <button
                 className="btn ghost danger"
                 onClick={() => {
+                  // 直播源删掉后连「收藏的频道」也一起清（见 store.removeLiveSource），
+                  // 且这个源会被记进 removedDefaultUrls，恢复默认也不会回来。
+                  // 点播源那边一直有确认框，这边什么都不问、又是一个小图标，
+                  // 误点一次就再也找不回原来的列表。
+                  if (!window.confirm(`删除直播源「${s.name}」？关联的频道收藏也会一起清除。`)) return;
                   removeLiveSource(s.key);
                   toast.push('已删除直播源');
                 }}
@@ -287,6 +309,12 @@ function SubscriptionPanel() {
     const parsed = parseSubscription(text, from);
     const { addedVod, addedLive } = importSources(parsed.sources, parsed.liveSources);
     const skipped = parsed.stats.skipped ? `，跳过 ${parsed.stats.skipped} 条` : '';
+    // 0 条新增时不能弹绿色的「已导入 0 个」：那和「确实导入成功」长得一样，
+    // 用户没法判断是「全都重复了」还是「真的加进来了东西」。
+    if (addedVod === 0 && addedLive === 0) {
+      toast.push(`没有新增源${skipped}：内容与现有列表一致`);
+      return;
+    }
     toast.ok(`已导入 ${addedVod} 个点播源、${addedLive} 个直播源${skipped}`);
   };
 
@@ -311,11 +339,24 @@ function SubscriptionPanel() {
   const exportAll = async () => {
     const content = exportSourceList(sources, liveSources, 'LibreTV 桌面端源列表');
     if (window.libretv) {
-      const result = await window.libretv.saveText('libretv-sources.json', content);
-      if (result.ok) toast.ok(`已导出到 ${result.path}`);
+      // 旧写法只在 result.ok 分支给反馈：用户取消、或主进程写盘失败时
+      // 界面毫无动静，用户会以为备份已经生成（下次重装才发现没有）。
+      // 而且 saveText 被 reject 时是 unhandledrejection，连控制台都不一定看得见。
+      try {
+        const result = await window.libretv.saveText('libretv-sources.json', content);
+        if (result.ok) toast.ok(`已导出到 ${result.path}`);
+        else if (result.canceled) toast.push('已取消导出');
+        else toast.err('导出失败：无法写入所选位置');
+      } catch (err) {
+        toast.err(err instanceof Error ? `导出失败：${err.message}` : '导出失败');
+      }
     } else {
-      await navigator.clipboard.writeText(content);
-      toast.ok('已复制到剪贴板');
+      try {
+        await navigator.clipboard.writeText(content);
+        toast.ok('已复制到剪贴板');
+      } catch {
+        toast.err('复制失败：浏览器拒绝了剪贴板访问');
+      }
     }
   };
 
@@ -439,6 +480,7 @@ function DataPanel() {
   const replaceAll = useAppStore((s) => s.replaceAll);
   const clearHistory = useAppStore((s) => s.clearHistory);
   const toast = useToast();
+  const [hasBackup, setHasBackup] = useState(() => Boolean(localStorage.getItem(IMPORT_BACKUP_KEY)));
 
   const exportAll = async () => {
     const snapshot = buildSnapshot({
@@ -470,12 +512,55 @@ function DataPanel() {
     if (!file.ok || !file.content) return;
     const snapshot = parseSnapshot(file.content);
     if (!snapshot) {
-      toast.err('不是可识别的 LibreTV 配置');
+      toast.err('不是可识别的 LibreTV 配置（文件里没有任何可导入的源或历史）');
       return;
     }
+    // 导入是整份替换且不可逆，必须先让用户看到覆盖面再确认
+    const current = `当前 ${state.sources.length} 个点播源 / ${state.liveSources.length} 个直播源 / ${state.history.length} 条历史`;
+    const incoming = `${snapshot.sources.length} 个点播源 / ${snapshot.liveSources.length} 个直播源 / ${snapshot.history.length} 条历史`;
+    if (!window.confirm(`导入将覆盖本地数据：\n\n当前：${current}\n导入后：${incoming}\n\n覆盖前会自动备份当前配置，可随时撤销。继续？`)) {
+      return;
+    }
+    backupBeforeImport();
     replaceAll(snapshot);
     toast.ok(`已导入 ${snapshot.sources.length} 个源、${snapshot.history.length} 条历史`);
   };
+
+  /** 覆盖前把当前状态整份存进备份键；失败不阻塞导入 */
+  const backupBeforeImport = () => {
+    try {
+      localStorage.setItem(
+        IMPORT_BACKUP_KEY,
+        serializeSnapshot(
+          buildSnapshot({
+            settings: state.settings,
+            sources: state.sources,
+            selectedKeys: state.selectedKeys,
+            liveSources: state.liveSources,
+            liveSelectedKeys: state.liveSelectedKeys,
+            history: state.history,
+            favorites: state.favorites,
+            liveFavorites: state.liveFavorites,
+          })
+        )
+      );
+      setHasBackup(true);
+    } catch {
+      /* 配额满时放弃备份，导入仍可继续 */
+    }
+  };
+
+  const undoImport = () => {
+    const backup = localStorage.getItem(IMPORT_BACKUP_KEY);
+    const snapshot = backup ? parseSnapshot(backup) : null;
+    if (!snapshot) {
+      toast.err('备份已损坏，无法撤销');
+      return;
+    }
+    replaceAll(snapshot);
+    toast.ok('已撤销上次导入');
+  };
+
 
   const info = appInfo();
 
@@ -495,6 +580,12 @@ function DataPanel() {
             <Icon name="link" size={15} />
             导入配置
           </button>
+          {hasBackup && (
+            <button className="btn ghost" onClick={undoImport}>
+              <Icon name="external" size={15} />
+              撤销上次导入
+            </button>
+          )}
           <button
             className="btn ghost danger"
             onClick={() => {

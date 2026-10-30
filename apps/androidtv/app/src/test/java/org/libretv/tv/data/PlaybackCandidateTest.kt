@@ -124,11 +124,14 @@ class PlaybackCandidateTest {
  *
  * 同样的片子在两个采集站的线路数往往不同（一个 40 集、一个 24 集），
  * 直接沿用下标会越界或跳集。
+ *
+ * 这里必须调用**生产代码**（[HistoryDedupe.clampEpisodeIndex]）而不是在测试里
+ * 抄一份 `coerceIn` 再自测：抄一份等于断言恒真，换源时的集数对齐从来没人验过。
  */
 class EpisodeAlignTest {
 
     private fun align(preferred: Int, length: Int): Int =
-        preferred.coerceIn(0, (length - 1).coerceAtLeast(0))
+        HistoryDedupe.clampEpisodeIndex(preferred, length)
 
     @Test
     fun `keeps index when in range`() {
@@ -148,5 +151,10 @@ class EpisodeAlignTest {
     @Test
     fun `handles empty episode list`() {
         assertEquals(0, align(3, 0))
+    }
+
+    @Test
+    fun `clamps negative index from stale history`() {
+        assertEquals(0, align(-4, 24))
     }
 }

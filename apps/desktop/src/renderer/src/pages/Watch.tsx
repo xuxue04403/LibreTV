@@ -14,7 +14,7 @@ import {
 } from '@libretv/core';
 import { http, prefetchSegments, proxify } from '../lib/bridge';
 import { useAppStore } from '../lib/store';
-import { useToast } from '../components/Toast';
+import { useToast } from '../components/toast-context';
 import { CastDialog } from '../components/CastDialog';
 import { Icon } from '../components/Icons';
 
@@ -35,6 +35,8 @@ export interface WatchTarget {
 const SKIP_SECONDS = 10;
 /** 同一集内允许的自动重试次数（分片抖动通常一次就好，再失败就换源） */
 const MAX_RECOVERIES = 2;
+/** 同一集内允许的 hls.js 就地媒体恢复次数（recoverMediaError 有内部状态，次数要单独记） */
+const MAX_MEDIA_RECOVERIES = 2;
 /** 连续缓冲多久判定为「卡死」，触发换源（毫秒） */
 const STALL_MS = 12_000;
 
@@ -51,12 +53,27 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
   const triedRef = useRef<Set<string>>(new Set());
   /** 本集已尝试恢复的次数（不进 state，避免每次报错都触发重渲染） */
   const recoverRef = useRef(0);
+  /** 本集已用掉的 hls.js 就地媒体恢复次数（与整集重载配额分开记） */
+  const mediaRecoverRef = useRef(0);
   /** 已经发过预取的地址：effect 会因错误恢复重跑，同一条不必再抢一次带宽 */
   const prefetchedRef = useRef<string | null>(null);
   /** 是否已经按片名反查过补充候选（只查一次） */
   const discoveredRef = useRef(false);
   /** 进行中的换源任务：同一时刻只跑一轮，避免并发换源互相覆盖状态 */
   const failoverRef = useRef<Promise<boolean> | null>(null);
+  /**
+   * 组件级取消信号：卸载时 abort。
+   *
+   * 换源里的 discoverCandidates(≤8s) 与 fetchDetail(≤8s) 是串行两跳，
+   * 用户按 Esc 退出后它们还会跑完，然后对着已卸载的组件 setActive/setEpisodes。
+   * React 18 不再警告，但请求、解析、内存都白烧；用户马上重进同一部片时
+   * 还会多一次重复的上游请求。传同一个 signal 进去，退出即取消。
+   *
+   * 控制器在 effect 里建：开发期 StrictMode 会「挂载→卸载→再挂载」，
+   * 挂在渲染期创建的话第一次卸载就把它 abort 了，重挂载后拿到的仍是已取消的
+   * signal，请求会立刻全部失败。
+   */
+  const abortRef = useRef<AbortController | null>(null);
   const sources = useAppStore((s) => s.sources);
 
   /** 当前播放的候选（换源后指向新源） */
@@ -146,15 +163,25 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
       for (;;) {
         const untried = candidatesRef.current.filter((candidate) => !triedRef.current.has(candidateKey(candidate)));
         if (untried.length === 0) {
-          if (discoveredRef.current) return false;
+          // 没有候选可试：必须把错误面板放出来，否则用户只剩黑屏 + 一条
+          // 永不消失的「正在切换…」提示，连重试入口都没有（RPL-01）
+          if (discoveredRef.current) {
+            setFailoverNote(null);
+            setLoading(false);
+            setError(`${reason}，且没有其它可用片源。可以按 S 手动换源或返回重选。`);
+            return false;
+          }
           discoveredRef.current = true;
           setFailoverNote(`${reason}，正在查找其它片源…`);
           const extra = await discoverCandidates(target.title, sources, http, {
             exclude: triedRef.current,
             timeoutMs: 8_000,
+            signal: abortRef.current?.signal,
           }).catch(() => [] as PlaybackCandidate[]);
           if (extra.length === 0) {
             setFailoverNote(null);
+            setLoading(false);
+            setError(`${reason}，且没有找到其它片源。可以按 S 手动换源或返回重选。`);
             return false;
           }
           candidatesRef.current = [...candidatesRef.current, ...extra];
@@ -168,11 +195,16 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
         setError(null);
         setLoading(true);
         try {
-          const parsed = await fetchDetail(next.source, next.vodId, http, { timeoutMs: 8_000 });
+          const parsed = await fetchDetail(next.source, next.vodId, http, {
+            timeoutMs: 8_000,
+            signal: abortRef.current?.signal,
+          });
           if (parsed.episodes.length === 0) throw new Error('该源无可用地址');
           setActive(next);
           setEpisodes(parsed.episodes);
-          setIndex(pickEpisodeIndex(index, parsed.episodes.length));
+          // 用函数式更新读最新集数：await 期间用户可能已切集，
+          // 闭包里的 index 是换源开始那一刻的旧值（RPL-02）
+          setIndex((cur) => pickEpisodeIndex(cur, parsed.episodes.length));
           setFailoverNote(`已切换到「${candidateLabel(next)}」`);
           setTimeout(() => setFailoverNote(null), 2600);
           return true;
@@ -187,13 +219,23 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
       });
       return failoverRef.current;
     },
-    [index, sources, target.title]
+    [sources, target.title]
   );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    abortRef.current = controller;
+    return () => {
+      controller.abort();
+      if (abortRef.current === controller) abortRef.current = null;
+    };
+  }, []);
 
   // —— 初始化/切换集数 ——
   // 换集或换源时重置恢复计数；reloadToken 触发的重载不算新尝试
   useEffect(() => {
     recoverRef.current = 0;
+    mediaRecoverRef.current = 0;
   }, [episodeUrl, active]);
 
   useEffect(() => {
@@ -260,7 +302,22 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
         hls.on(Hls.Events.ERROR, (_evt, data) => {
           if (!data.fatal) return;
           if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-            hls?.recoverMediaError();
+            // 解码类致命错误有官方就地恢复手段 recoverMediaError()：它会在
+            // 同一个 Hls 实例上重建 MediaSource 并保留已缓冲的清单与分片。
+            // 旧实现调完 recoverMediaError() 又走 handleFatal()，后者会 setReloadToken
+            // 重建整个 Hls 实例 —— 刚做的就地恢复立刻被丢掉，还白白消耗了一次
+            // 「本集可恢复次数」的配额，多码率源反而更容易被判定为整源失效。
+            if (hls && mediaRecoverRef.current < MAX_MEDIA_RECOVERIES) {
+              mediaRecoverRef.current += 1;
+              try {
+                hls.recoverMediaError();
+                setError(null);
+                setLoading(true);
+                return;
+              } catch {
+                /* 恢复调用本身抛错就走下面的兜底 */
+              }
+            }
             handleFatal('解码错误');
             return;
           }
@@ -296,9 +353,17 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
       if (disposed) return;
       setLoading(false);
       setDuration(video.duration || 0);
-      if (resume && resume.episodeIndex === index && resume.position > 15 && resume.position < video.duration - 15) {
-        video.currentTime = resume.position;
-        toast.push(`已从 ${formatTime(resume.position)} 继续播放`);
+      // 续播阈值：看到 5 秒以上才续（片头几秒通常只是台标，续了反而奇怪），
+      // 离结尾不足 5 秒也不续（那基本已经看完了，再从尾巴播等于直接结束）。
+      //
+      // 旧条件是 `> 15 && < duration - 15`，两头各留 15 秒：一集 25 秒的短剧
+      // 永远落在「不许续」的区间里，把进度丢得干干净净；而片头 10 秒的剧
+      // 也永远从头开始。改成固定的 5 秒边界后，长短片都按同一语义处理。
+      const resumeFrom = resume && resume.episodeIndex === index ? resume.position : 0;
+      const nearEnd = video.duration > 0 && resumeFrom > video.duration - 5;
+      if (resumeFrom >= 5 && !nearEnd) {
+        video.currentTime = resumeFrom;
+        toast.push(`已从 ${formatTime(resumeFrom)} 继续播放`);
       }
       void video.play().catch(() => {
         /* 自动播放被拦截时保留暂停态，用户点击即可 */
@@ -310,6 +375,9 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
       disposed = true;
       video.removeEventListener('loadedmetadata', onLoaded);
       video.removeEventListener('error', onVideoError);
+      // 退出/切集前先把进度落盘：紧接着的 pause()/removeAttribute('src')/load()
+      // 会把 currentTime 归零，等到别的 cleanup 再读就永远是 0（RPL-04）
+      if (video.currentTime > 0) persistProgress(video.currentTime, index, video.duration);
       hls?.destroy();
       hlsRef.current = null;
       video.pause();
@@ -326,7 +394,9 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     const onTime = () => {
       setCurrent(video.currentTime);
       if (video.buffered.length > 0) setBuffered(video.buffered.end(video.buffered.length - 1));
-      if (Math.abs(video.currentTime - savedRef.current) >= 5) persistProgress(video.currentTime, index, video.duration);
+      // 15 秒一次：太久会丢进度，太密会让 zustand persist 反复全量序列化写盘。
+      // 暂停/切集/结束/退出都有独立落盘点，这里只是「播放中」的兜底。
+      if (Math.abs(video.currentTime - savedRef.current) >= 15) persistProgress(video.currentTime, index, video.duration);
     };
     const onPlay = () => setPlaying(true);
     const clearStall = () => {
@@ -388,11 +458,16 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     };
   }, [episodes.length, failover, index, persistProgress, settings.autoplayNext]);
 
-  // —— 退出时保存进度 ——
+  // —— 退出时兜底保存进度 ——
+  // 正常路径已在上面的播放 effect cleanup 里落盘；这里只兜「组件被卸载但播放
+  // effect 没有 cleanup」的极端情况（例如父级整树卸载顺序异常）。
+  // 注意不要依赖它读 currentTime：此时 src 可能已被清掉，读到的是 0。
   useEffect(() => {
     const video = videoRef.current;
     return () => {
-      if (video && video.currentTime > 0) persistProgress(video.currentTime, index, video.duration);
+      if (video && video.currentSrc && video.currentTime > 0) {
+        persistProgress(video.currentTime, index, video.duration);
+      }
     };
   }, [index, persistProgress]);
 
@@ -648,11 +723,17 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
                   onClick={() => {
                     setError(null);
                     setLoading(true);
-                    // 重试等于从头再来：忘了试过哪些源，可重新走一遍候选链
+                    // 重试等于从头再来：忘了试过哪些源，可重新走一遍候选链。
+                    // vodId 必须与换集/换源时的口径一致（active?.vodId ?? target.vodId）：
+                    // 换过源之后 currentSource 已是新源，用 target.vodId 记账会写进一个
+                    // 不在候选列表里的键，当前源反而仍算「未试」（RPL-12）
                     triedRef.current.clear();
-                    triedRef.current.add(candidateKey({ sourceKey: currentSource.key, vodId: target.vodId }));
+                    triedRef.current.add(
+                      candidateKey({ sourceKey: currentSource.key, vodId: active?.vodId ?? target.vodId })
+                    );
                     discoveredRef.current = false;
                     recoverRef.current = 0;
+                    mediaRecoverRef.current = 0;
                     setReloadToken((token) => token + 1);
                   }}
                 >

@@ -150,10 +150,21 @@ export function toggleFavorite(list: FavoriteEntry[], entry: Omit<FavoriteEntry,
   return [{ ...entry, createdAt: Date.now() }, ...list].slice(0, limit);
 }
 
-export function toggleLiveFavorite(list: LiveFavoriteEntry[], entry: Omit<LiveFavoriteEntry, 'createdAt'>): LiveFavoriteEntry[] {
+/**
+ * 直播收藏开关。
+ *
+ * 之前没有条数上限：一个带两万频道的源，用户逐个收藏就能把整份快照撑到
+ * localStorage 配额之外，落盘失败后连观看记录一起丢。这里与点播收藏共用
+ * `FAVORITE_LIMIT`。
+ */
+export function toggleLiveFavorite(
+  list: LiveFavoriteEntry[],
+  entry: Omit<LiveFavoriteEntry, 'createdAt'>,
+  limit = FAVORITE_LIMIT
+): LiveFavoriteEntry[] {
   const exists = list.some((f) => f.url === entry.url);
   if (exists) return list.filter((f) => f.url !== entry.url);
-  return [{ ...entry, createdAt: Date.now() }, ...list];
+  return [{ ...entry, createdAt: Date.now() }, ...list].slice(0, limit);
 }
 
 export function isFavorite(list: FavoriteEntry[], id: string): boolean {
@@ -182,7 +193,125 @@ export function buildSnapshot(state: Omit<AppSnapshot, 'version'>): AppSnapshot 
   return { version: 1, ...state };
 }
 
-/** 校验并规范化导入快照；返回 null 表示不是可识别的快照 */
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isHttpUrl(value: unknown): value is string {
+  return typeof value === 'string' && /^https?:\/\/[^\s]+$/i.test(value.trim());
+}
+
+/**
+ * 把任意对象收敛成一条观看记录；不合法返回 null。
+ *
+ * 这里必须逐字段校验：旧实现直接 `as HistoryEntry[]`，于是 `{"title":null}`
+ * 这类手改/损坏的备份会在 `normalizeTitle(title)` 处抛
+ * `TypeError: s.toLowerCase is not a function`，而它发生在事件回调里，
+ * ErrorBoundary 接不住，只能白屏。
+ */
+function toHistoryEntry(raw: unknown): HistoryEntry | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  const sourceKey = isNonEmptyString(obj.sourceKey) ? obj.sourceKey : '';
+  const vodId = isNonEmptyString(obj.vodId) ? String(obj.vodId) : '';
+  const title = isNonEmptyString(obj.title) ? obj.title : '';
+  // 缺 sourceKey/vodId/title 的记录既不能续播也不能展示，直接丢弃
+  if (!sourceKey || !vodId || !title) return null;
+  const episodeIndex = Number.isFinite(Number(obj.episodeIndex)) ? Math.max(0, Math.trunc(Number(obj.episodeIndex))) : 0;
+  const episodeCount = Number.isFinite(Number(obj.episodeCount)) ? Math.max(0, Math.trunc(Number(obj.episodeCount))) : 0;
+  return normalizeHistoryEntry({
+    id: `${sourceKey}:${vodId}`,
+    sourceKey,
+    vodId,
+    title,
+    year: isNonEmptyString(obj.year) ? obj.year : undefined,
+    cover: isNonEmptyString(obj.cover) ? obj.cover : undefined,
+    sourceName: isNonEmptyString(obj.sourceName) ? obj.sourceName : sourceKey,
+    episodeIndex,
+    episodeCount,
+    episodeUrl: isNonEmptyString(obj.episodeUrl) ? obj.episodeUrl : undefined,
+    position: Number.isFinite(Number(obj.position)) ? Math.max(0, Number(obj.position)) : 0,
+    duration: Number.isFinite(Number(obj.duration)) ? Math.max(0, Number(obj.duration)) : 0,
+    updatedAt: Number.isFinite(Number(obj.updatedAt)) ? Number(obj.updatedAt) : Date.now(),
+  });
+}
+
+function toFavoriteEntry(raw: unknown): FavoriteEntry | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  const sourceKey = isNonEmptyString(obj.sourceKey) ? obj.sourceKey : '';
+  const vodId = isNonEmptyString(obj.vodId) ? String(obj.vodId) : '';
+  const title = isNonEmptyString(obj.title) ? obj.title : '';
+  if (!sourceKey || !vodId || !title) return null;
+  return {
+    id: `${sourceKey}:${vodId}`,
+    sourceKey,
+    vodId,
+    title,
+    year: isNonEmptyString(obj.year) ? obj.year : undefined,
+    cover: isNonEmptyString(obj.cover) ? obj.cover : undefined,
+    createdAt: Number.isFinite(Number(obj.createdAt)) ? Number(obj.createdAt) : Date.now(),
+  };
+}
+
+function toLiveFavoriteEntry(raw: unknown): LiveFavoriteEntry | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  if (!isNonEmptyString(obj.url) || !isNonEmptyString(obj.name)) return null;
+  return {
+    url: obj.url,
+    name: obj.name,
+    logo: isNonEmptyString(obj.logo) ? obj.logo : undefined,
+    group: isNonEmptyString(obj.group) ? obj.group : undefined,
+    createdAt: Number.isFinite(Number(obj.createdAt)) ? Number(obj.createdAt) : Date.now(),
+  };
+}
+
+/** 逐条规范化 + 去掉重复 id（保留靠前的那条）+ 套上限 */
+function normalizeList<T>(raw: unknown, convert: (item: unknown) => T | null, limit: number): T[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of raw) {
+    const entry = convert(item);
+    if (!entry) continue;
+    const key = (entry as { id?: string; url?: string }).id ?? (entry as { url?: string }).url ?? '';
+    if (key) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    out.push(entry);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/** 源列表去重（按 url）+ 只保留 http(s) 地址 */
+function normalizeSources<T extends SourceConfig | LiveSourceConfig>(raw: unknown): T[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const obj = item as Record<string, unknown>;
+    if (!isNonEmptyString(obj.key) || !isHttpUrl(obj.url)) continue;
+    const url = obj.url.trim();
+    if (seen.has(url)) continue;
+    seen.add(url);
+    out.push({ ...(obj as unknown as T), url });
+  }
+  return out;
+}
+
+/**
+ * 校验并规范化导入快照；返回 null 表示不是可识别的快照。
+ *
+ * 与旧实现的关键差别：**不能什么 JSON 都当合法快照**。
+ * 旧逻辑对 `{}`、`{"foo":1}`、被截断的备份都返回「合法但全空」的快照，
+ * 调用方随即 `replaceAll` 覆盖本地状态，且不重置 `defaultsSeeded`，
+ * 于是「导入」变成一键清空全部源/历史/收藏的唯一路径。
+ * 现在要求至少包含一项可用内容，且所有条目逐字段校验、去重、裁剪上限。
+ */
 export function parseSnapshot(text: string): AppSnapshot | null {
   let raw: unknown;
   try {
@@ -190,30 +319,34 @@ export function parseSnapshot(text: string): AppSnapshot | null {
   } catch {
     return null;
   }
-  if (!raw || typeof raw !== 'object') return null;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const obj = raw as Partial<AppSnapshot> & { customAPIs?: SourceConfig[] };
-  const sources = Array.isArray(obj.sources)
-    ? obj.sources
-    : Array.isArray(obj.customAPIs)
-      ? obj.customAPIs
-      : [];
-  const validSources = sources.filter(
-    (s): s is SourceConfig => Boolean(s && typeof s.key === 'string' && typeof s.url === 'string')
-  );
+
+  const sources = normalizeSources<SourceConfig>(Array.isArray(obj.sources) ? obj.sources : obj.customAPIs);
+  const liveSources = normalizeSources<LiveSourceConfig>(obj.liveSources);
+  const history = normalizeList(obj.history, toHistoryEntry, HISTORY_LIMIT);
+  const favorites = normalizeList(obj.favorites, toFavoriteEntry, FAVORITE_LIMIT);
+  const liveFavorites = normalizeList(obj.liveFavorites, toLiveFavoriteEntry, FAVORITE_LIMIT);
+
+  // 一项可用内容都没有：这不是 LibreTV 快照（或已被截断），调用方不能拿它覆盖本地数据
+  if (sources.length + liveSources.length + history.length + favorites.length + liveFavorites.length === 0) {
+    return null;
+  }
+
   return {
     version: 1,
     settings: normalizeSettings(obj.settings),
-    sources: validSources,
-    selectedKeys: Array.isArray(obj.selectedKeys) ? obj.selectedKeys.filter((k): k is string => typeof k === 'string') : validSources.map((s) => s.key),
-    liveSources: Array.isArray(obj.liveSources)
-      ? obj.liveSources.filter((s): s is LiveSourceConfig => Boolean(s && typeof s.key === 'string' && typeof s.url === 'string'))
-      : [],
+    sources,
+    selectedKeys: Array.isArray(obj.selectedKeys)
+      ? obj.selectedKeys.filter((k): k is string => typeof k === 'string')
+      : sources.map((s) => s.key),
+    liveSources,
     liveSelectedKeys: Array.isArray(obj.liveSelectedKeys)
       ? obj.liveSelectedKeys.filter((k): k is string => typeof k === 'string')
       : [],
-    history: Array.isArray(obj.history) ? (obj.history as HistoryEntry[]) : [],
-    favorites: Array.isArray(obj.favorites) ? (obj.favorites as FavoriteEntry[]) : [],
-    liveFavorites: Array.isArray(obj.liveFavorites) ? (obj.liveFavorites as LiveFavoriteEntry[]) : [],
+    history,
+    favorites,
+    liveFavorites,
   };
 }
 

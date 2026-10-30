@@ -393,7 +393,10 @@ export async function browseCategory(opts: CategoryBrowseOptions): Promise<Categ
       : '';
   if (cacheKey) {
     const hit = browseCache.get(cacheKey);
-    if (hit && Date.now() - hit.at < BROWSE_TTL_MS) return hit.result;
+    // 返回副本：调用方（各页面）会原地 push/sort 自己那份数组，直接给缓存引用会被改坏。
+    if (hit && Date.now() - hit.at < BROWSE_TTL_MS) {
+      return { ...hit.result, items: [...hit.result.items], outcomes: [...hit.result.outcomes] };
+    }
   }
 
   interface SourceCollected {
@@ -548,7 +551,12 @@ export async function browseCategory(opts: CategoryBrowseOptions): Promise<Categ
   // 中途被取消的结果不能写缓存，否则用户下次切回来看到的是半截列表。
   // 同样地，一条源都没成功答复时也不写：那种结果要么是网络打嗝、要么是采集站
   // 正在限流，缓存 5 分钟只会让用户反复看到同一个空页面，还找不到原因。
-  const answered = outcomes.some((outcome) => outcome.ok);
+  //
+  // 这里必须只看「真正发过请求的源」：duplicated 那些是本地判定跳过的，
+  // 它们的 outcome.ok 恒为 true（「跳过」不是失败），一旦把它们算进 answered，
+  // 只要用户配了重复地址，上面那条「一条源都没成功就不缓存」就永远失效——
+  // 全源失败的空列表照样被缓存 5 分钟。
+  const answered = uniqueCollected.some((outcome) => outcome.outcome.ok);
   if (cacheKey && answered && !opts.signal?.aborted) {
     browseCache.set(cacheKey, { at: Date.now(), result });
   }
@@ -606,9 +614,10 @@ export async function probeCategories(opts: ProbeCategoriesOptions): Promise<Cat
   // 结果缓存：首页反复挂载时不必每次重打 32 个请求。键里带上源地址、分类集合与过滤开关。
   const cacheKey = `${keys.join(',')}|${filterAdult ? 1 : 0}|${typeLimit}|${opts.sources
     .map((source) => source.url)
+    .sort()
     .join(',')}`;
   const cached = probeCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < PROBE_TTL_MS) return cached.results;
+  if (cached && Date.now() - cached.at < PROBE_TTL_MS) return cached.results.map((item) => ({ ...item }));
 
   // 只要有一个分类拿到了「源确实答复过」的结论，这次探测就是可采信的；
   // 全部源都超时/拒绝时不写缓存，否则用户等 10 分钟才有机会重试，
@@ -663,7 +672,9 @@ export async function probeCategories(opts: ProbeCategoriesOptions): Promise<Cat
   );
   // 被取消的探测不写缓存，避免把「全空」结论固化下来
   if (!opts.signal?.aborted && meaningful) {
-    probeCache.set(cacheKey, { at: Date.now(), results });
+    // 存一份快照，返回另一份副本：调用方（首页一边探测一边点亮入口）会原地改自己那份，
+    // 直接把自己手上的数组也塞进缓存，就等于把缓存交给外部随意改写。
+    probeCache.set(cacheKey, { at: Date.now(), results: results.map((item) => ({ ...item })) });
   }
   return results;
 }

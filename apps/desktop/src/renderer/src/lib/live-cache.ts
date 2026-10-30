@@ -62,14 +62,80 @@ export function liveCacheKey(urls: string[], adultFilter: boolean): string {
   return `${[...urls].sort().join('|')}#${adultFilter ? 1 : 0}`;
 }
 
+/** 逐项校验：脏缓存一律丢弃，绝不让它流进 filterChannels 把整页打白 */
+function toCachedChannel(raw: unknown): CachedChannel | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const item = raw as Partial<CachedChannel>;
+  if (typeof item.url !== 'string' || item.url === '') return undefined;
+  if (typeof item.name !== 'string') return undefined;
+  if (typeof item.id !== 'string' || item.id === '') return undefined;
+  if (typeof item.sourceKey !== 'string' || item.sourceKey === '') return undefined;
+  if (typeof item.sourceName !== 'string') return undefined;
+  const channel: CachedChannel = {
+    id: item.id,
+    url: item.url,
+    name: item.name,
+    sourceKey: item.sourceKey,
+    sourceName: item.sourceName,
+  };
+  // 可选字段只接受字符串/布尔，类型不对就当没有——保留频道的其余信息仍然有用
+  if (typeof item.logo === 'string') channel.logo = item.logo;
+  if (typeof item.group === 'string') channel.group = item.group;
+  if (typeof item.tvgId === 'string') channel.tvgId = item.tvgId;
+  if (typeof item.rawName === 'string') channel.rawName = item.rawName;
+  if (typeof item.epg === 'string') channel.epg = item.epg;
+  return channel;
+}
+
 export function readLiveCache(key: string): CachedChannel[] | undefined {
   const entry = read()[key];
   if (!entry) return undefined;
   if (Date.now() - entry.at > TTL_MS) return undefined;
-  return entry.channels;
+  if (!Array.isArray(entry.channels)) return undefined;
+  // 之前这里直接 `return entry.channels`：只要 localStorage 里那条记录被外部改过
+  // （老版本写的、手工编辑过、写一半断电截断），数组里就可能混进 null 或
+  // 缺 url 的对象，随后 filterChannels/filterAdultChannels 里 `ch.group.toLowerCase()`
+  // 抛 TypeError，被 ErrorBoundary 接住后整页白屏，而且刷新也没用——脏数据还在，
+  // 每次进直播页都必崩。这里逐项校验，坏的直接丢掉。
+  const safe: CachedChannel[] = [];
+  for (const item of entry.channels) {
+    const channel = toCachedChannel(item);
+    if (channel) safe.push(channel);
+  }
+  return safe.length > 0 ? safe : undefined;
 }
 
-export function writeLiveCache(key: string, channels: CachedChannel[], adultFilter: boolean): void {
+/**
+ * 写缓存：真正落盘推迟到浏览器空闲时。
+ *
+ * 一万多个频道的 JSON.stringify 在主线程上要几十毫秒，而这次调用正好发生在
+ * 「刚下载完、要立刻把列表铺满屏幕」的那一刻——同步写会把这一帧卡住。
+ * 合并同一轮里的多次写，只保留最后一份（本来就只存一份），
+ * 空闲时再序列化。
+ */
+let pendingWrite: { key: string; channels: CachedChannel[]; adultFilter: boolean } | null = null;
+let writeScheduled = false;
+
+function flushWrite(): void {
+  writeScheduled = false;
+  const job = pendingWrite;
+  pendingWrite = null;
+  if (!job) return;
+  doWrite(job.key, job.channels, job.adultFilter);
+}
+
+function scheduleWrite(key: string, channels: CachedChannel[], adultFilter: boolean): void {
+  pendingWrite = { key, channels, adultFilter };
+  if (writeScheduled) return;
+  writeScheduled = true;
+  // requestIdleCallback 在 Chromium 里可用；没有就退化成宏任务
+  const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => void })
+    .requestIdleCallback;
+  if (typeof ric === 'function') ric(flushWrite, { timeout: 2_000 });
+  else window.setTimeout(flushWrite, 0);
+}
+
+function doWrite(key: string, channels: CachedChannel[], adultFilter: boolean): void {
   const now = Date.now();
   const capped = channels.length > MAX_CHANNELS ? channels.slice(0, MAX_CHANNELS) : channels;
   const entry: CacheEntry = {
@@ -85,6 +151,15 @@ export function writeLiveCache(key: string, channels: CachedChannel[], adultFilt
     const fallback = { ...entry, channels: capped.slice(0, 4000), truncated: true };
     write({ [key]: fallback });
   }
+}
+
+export function writeLiveCache(key: string, channels: CachedChannel[], adultFilter: boolean): void {
+  scheduleWrite(key, channels, adultFilter);
+}
+
+/** 立刻把待写的缓存落盘（页面要关/要跳走时调用，避免丢缓存） */
+export function flushLiveCacheWrite(): void {
+  if (pendingWrite) flushWrite();
 }
 
 export function clearLiveCache(): void {

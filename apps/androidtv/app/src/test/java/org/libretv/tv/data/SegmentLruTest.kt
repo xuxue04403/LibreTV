@@ -2,8 +2,10 @@ package org.libretv.tv.data
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -73,6 +75,17 @@ class SegmentLruTest {
         assertEquals(0, lru.size)
         assertEquals(0L, lru.bytes)
         assertNull(lru.get("a"))
+    }
+
+    @Test
+    fun `识别抓回来的内容是播放列表而不是分片`() {
+        // master 里的「分片行」其实是子播放列表：预取不能把它当媒体字节塞进 LRU
+        assertTrue(SegmentPrefetch.looksLikePlaylist("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nc.m3u8".toByteArray()))
+        // 带 BOM / 前导空白也要认出来
+        assertTrue(SegmentPrefetch.looksLikePlaylist("\uFEFF  \n#EXTM3U\n".toByteArray()))
+        // 真正的 TS 分片（0x47 同步字节打头）不是播放列表
+        assertFalse(SegmentPrefetch.looksLikePlaylist(byteArrayOf(0x47, 0x40, 0x11, 0x10)))
+        assertFalse(SegmentPrefetch.looksLikePlaylist(ByteArray(0)))
     }
 
     @Test

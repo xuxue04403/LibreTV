@@ -3,7 +3,6 @@ import {
   browseCategory,
   groupSearchResults,
   HOME_CATEGORIES,
-  probeCategories,
   type AggregatedGroup,
   type CategoryKey,
   type CategorySourceOutcome,
@@ -11,13 +10,24 @@ import {
 import { http } from '../lib/bridge';
 import { cachedItems, rememberItems } from '../lib/catalog-cache';
 import { useAppStore } from '../lib/store';
+import { useAvailableCategories } from '../lib/category-availability';
 import { DetailPanel } from '../components/DetailPanel';
 import { Icon } from '../components/Icons';
 import { Poster } from '../components/Poster';
-import { useToast } from '../components/Toast';
+import { useToast } from '../components/toast-context';
 import type { WatchTarget } from './Watch';
 
 /** 分类浏览：进入时按当前分类拉取各源内容，可继续滚动加载更多页 */
+/**
+ * 网格里最多保留多少个卡片。
+ *
+ * 「加载更多」最多叠 8 页，而每页合并后的条目数没有上限：连点 7 次很容易
+ * 让一两千张卡同时挂进 DOM，每张卡都带一张经本地代理加载的海报，
+ * 滚动直接掉到个位数帧、内存一路涨。这里给一个硬上限，
+ * 到顶就停止续页并明确告诉用户（而不是默默不再加载）。
+ */
+const MAX_GRID_GROUPS = 480;
+
 export function CategoryPage({
   category,
   onCategoryChange,
@@ -136,19 +146,21 @@ export function CategoryPage({
               }
               map.set(group.key, { ...existing, items: merged });
             }
-            return [...map.values()];
+            // 有硬上限才敢无限续页：到顶就截断（新页里多出来的丢掉），
+            // 否则连点「加载更多」能把上千张卡片全塞进 DOM。
+            return [...map.values()].slice(0, MAX_GRID_GROUPS);
           }
           // 空结果不清屏：磁盘缓存里还有内容，界面上却把 240 条换成空白，
           // 用户再点一次刷新内容又回来，表现成「分类忽有忽无」。
           // 真正该保留的是「上一轮已经显示的东西」，哪怕是缓存。
-          return incoming.length === 0 ? prev : incoming;
+          return incoming.length === 0 ? prev : incoming.slice(0, MAX_GRID_GROUPS);
         });
         setOutcomes(result.outcomes);
         setPage(targetPage);
         // 内容为空时界面留住的是缓存内容，就别再说「已是最新」：
         // 标题继续标「本地缓存」，用户才知道看到的是上次抓到的结果。
         if (result.items.length > 0) setFromCache(false);
-        // 任一源还有下一页就允许继续加载
+        // 任一源还有下一页就允许继续加载（真正的停止条件在渲染处叠加网格硬上限判断）
         setHasMore(result.outcomes.some((o) => o.supported && o.count > 0) && targetPage < 8);
         // 第一页拿到就落盘：下次切回这个分类是 0 延迟
         if (targetPage === 1 && result.items.length > 0) {
@@ -164,7 +176,11 @@ export function CategoryPage({
           );
         }
       } catch (err) {
-        if (myRun === runId.current && !(err instanceof DOMException && err.name === 'AbortError')) {
+        // bridge 取消时抛的是 `new Error('请求已取消')`、core 抛 `HttpError(408)`，
+        // 都不带 AbortError 名字，所以只能用 signal 自身判断本轮是否已被取消。
+        // 旧写法判 DOMException 是死代码：离开页面后照样弹一次红色错误提示。
+        const cancelled = controller.signal.aborted;
+        if (!cancelled && myRun === runId.current) {
           toast.err(err instanceof Error ? err.message : '加载失败');
         }
       } finally {
@@ -177,7 +193,12 @@ export function CategoryPage({
   useEffect(() => {
     if (sources.length === 0) return;
     void load(1, false);
-    return () => abortRef.current?.abort();
+    return () => {
+      abortRef.current?.abort();
+      // 只 abort 不够：abort 后核心抛错，catch 里 `myRun === runId.current` 依然成立，
+      // 于是还会向已卸载的组件 setState。自增 runId 才能真正让这一轮失效。
+      runId.current += 1;
+    };
     // 成人过滤开关必须在这里：它是 load 的入参之一，改了却重载旧结果，
     // 用户会看到「关了过滤但列表里还是那些」。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -270,11 +291,16 @@ export function CategoryPage({
               );
             })}
           </div>
-          {hasMore ? (
+          {hasMore && groups.length < MAX_GRID_GROUPS ? (
             <div style={{ display: 'flex', justifyContent: 'center', marginTop: 22 }}>
               <button className="btn" onClick={() => void load(page + 1, true)} disabled={loading}>
                 {loading ? '加载中…' : '加载更多'}
               </button>
+            </div>
+          ) : hasMore ? (
+            // 到顶了就别再放个「点了也不会有新内容」的按钮
+            <div className="hint" style={{ textAlign: 'center', marginTop: 22 }}>
+              已显示 {groups.length} 部，继续浏览请换分类或用搜索
             </div>
           ) : null}
         </>
@@ -313,97 +339,7 @@ export function CategoryPage({
   );
 }
 
-export { HOME_CATEGORIES };
 export type { CategoryKey };
-export type { AggregatedGroup };
-
-/**
- * 分类可用性探测（首页与分类页共用）。
- *
- * 探测要打 8 个分类 × 每个源，首次约 8 秒。为了不让首页按钮先全显示再少一个，
- * 结果按「源签名」落到 localStorage：下次启动直接按上次结论渲染，后台再刷新。
- */
-const AVAILABILITY_KEY = 'libretv-category-availability-v1';
-
-interface CachedAvailability {
-  signature: string;
-  keys: CategoryKey[];
-  at: number;
-}
-
-function readCachedAvailability(signature: string): CategoryKey[] | undefined {
-  try {
-    const raw = localStorage.getItem(AVAILABILITY_KEY);
-    if (!raw) return undefined;
-    const parsed = JSON.parse(raw) as CachedAvailability;
-    if (parsed.signature !== signature || !Array.isArray(parsed.keys)) return undefined;
-    // 24 小时内的结论直接用；更久的只当占位，等本轮探测覆盖
-    return parsed.keys;
-  } catch {
-    return undefined;
-  }
-}
-
-function writeCachedAvailability(signature: string, keys: CategoryKey[]): void {
-  try {
-    const payload: CachedAvailability = { signature, keys, at: Date.now() };
-    localStorage.setItem(AVAILABILITY_KEY, JSON.stringify(payload));
-  } catch {
-    /* 配额满或被禁用时忽略，探测结果本身还会用 */
-  }
-}
-
-export function useAvailableCategories(): CategoryKey[] | undefined {
-  const allSources = useAppStore((s) => s.sources);
-  const selectedKeys = useAppStore((s) => s.selectedKeys);
-  const adultFilter = useAppStore((s) => s.settings.adultFilter);
-  const sources = useMemo(
-    () => allSources.filter((s) => selectedKeys.includes(s.key)),
-    [allSources, selectedKeys]
-  );
-  const sourceSignature = `${sources
-    .map((s) => s.key)
-    .sort()
-    .join(',')}|${adultFilter ? 1 : 0}`;
-
-  // 存的是「属于哪个签名」的结果：签名一变就自然失效，不用手动清空
-  const [probed, setProbed] = useState<{ signature: string; keys: CategoryKey[] } | undefined>(undefined);
-
-  useEffect(() => {
-    if (sources.length === 0) return;
-    let cancelled = false;
-    const controller = new AbortController();
-    void probeCategories({
-      sources,
-      http,
-      filterAdult: adultFilter,
-      timeoutMs: 12_000,
-      signal: controller.signal,
-    })
-      .then((results) => {
-        if (cancelled) return;
-        const keys = results.filter((r) => r.available).map((r) => r.key);
-        setProbed({ signature: sourceSignature, keys });
-        writeCachedAvailability(sourceSignature, keys);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        // 探测失败就退回显示全部，不要把入口全藏起来
-        setProbed({ signature: sourceSignature, keys: HOME_CATEGORIES.map((c) => c.key) });
-      });
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceSignature]);
-
-  if (sources.length === 0) return [];
-  // 本轮结果 > 上次落盘的结论 > undefined（探测中，UI 先按全量渲染）
-  if (probed?.signature === sourceSignature) return probed.keys;
-  return readCachedAvailability(sourceSignature);
-}
-
 /** 供首页复用的分类按钮行：只显示真的抓得到内容的分类 */
 export function CategoryButtons({ onSelect }: { onSelect: (key: CategoryKey) => void }) {
   const allSources = useAppStore((s) => s.sources);

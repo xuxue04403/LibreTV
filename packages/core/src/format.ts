@@ -21,9 +21,22 @@ export function formatRelativeTime(timestamp: number, now = Date.now()): string 
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** 地址合法性校验：仅 http(s) */
+/**
+ * 地址合法性校验：仅 http(s)，且必须是能被 URL 解析的真实地址。
+ *
+ * 原来的 `/^https?:\/\/.+/` 只数前缀，`https://exa mple.com`、`http://[` 这类
+ * 一眼假的地址照样放进订阅，等真正请求时才在 fetch 里炸成一句英文报错。
+ */
 export function isValidSourceUrl(url: string): boolean {
-  return /^https?:\/\/.+/.test(url);
+  if (typeof url !== 'string') return false;
+  const text = url.trim();
+  if (!/^https?:\/\/\S+$/i.test(text)) return false;
+  try {
+    const parsed = new URL(text);
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.hostname.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 /** 取 hostname 作为名称兜底；地址非法时原样返回 */

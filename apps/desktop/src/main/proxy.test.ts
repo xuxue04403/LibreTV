@@ -4,6 +4,7 @@ import { gzipSync } from 'node:zlib';
 import {
   assertAllowedTarget,
   fetchChecked,
+  redactUrl,
   rewritePlaylistForTest,
   isPlaylistForTest,
   startMediaProxy,
@@ -48,6 +49,31 @@ describe('assertAllowedTarget：SSRF 边界', () => {
 
   it('允许私网访问时放行（联调开关）', async () => {
     await expect(assertAllowedTarget('http://127.0.0.1:9/x', true)).resolves.toBeInstanceOf(URL);
+  });
+
+  /**
+   * IPv6 字面量必须**显式**判为内网，而不是靠 dns.lookup 解析失败碰巧拦住。
+   * 旧实现 `net.isIP(url.hostname)` 对 `[::1]` 恒为 0（WHATWG hostname 保留方括号），
+   * 于是这条防护只是副作用；一旦换成自定义 lookup 就立刻变成真 SSRF。
+   * 这里断言错误文案必须是「拒绝访问内网地址」，把机制锁住。
+   */
+  it('IPv6 字面量按地址本身判定为内网（不依赖 DNS 失败）', async () => {
+    const cases = [
+      'http://[::1]/',
+      'http://[::ffff:127.0.0.1]/',
+      'http://[::ffff:7f00:1]/', // 压缩十六进制写法，等价于 127.0.0.1
+      'http://[fe80::1]/',
+      'http://[feb0::1]/', // 属 fe80::/10，但不是字面 "fe80" 开头
+      'http://[fc00::1]/',
+      'http://[fd12:3456::1]/',
+    ];
+    for (const url of cases) {
+      await expect(assertAllowedTarget(url), url).rejects.toThrow('拒绝访问内网地址');
+    }
+  });
+
+  it('公网 IPv6 仍然放行', async () => {
+    await expect(assertAllowedTarget('http://[2001:4860:4860::8888]/')).resolves.toBeInstanceOf(URL);
   });
 });
 
@@ -288,9 +314,26 @@ describe('媒体代理 HTTP 行为', () => {
         res.end();
         return;
       }
+      if (req.url === '/big.ts') {
+        // 单体 8KB：配合很小的 LTV_MAX_STREAM_BYTES，验证超限时是「断流」而不是「正常结束」
+        res.writeHead(200, { 'Content-Type': 'video/mp2t' });
+        res.end(Buffer.alloc(8192, 6));
+        return;
+      }
       if (req.url === '/html') {
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end('<script>alert(1)</script>');
+        return;
+      }
+      if (req.url === '/auth.ts') {
+        // 需要 Basic 认证的分片：验证 URL 里的 user:pass 被转成了 Authorization 头
+        if (req.headers.authorization !== `Basic ${Buffer.from('u:p').toString('base64')}`) {
+          res.writeHead(401, { 'Content-Type': 'text/plain' });
+          res.end('no auth');
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'video/mp2t' });
+        res.end(Buffer.alloc(128, 8));
         return;
       }
       if (req.url === '/slow.ts') {
@@ -423,9 +466,43 @@ describe('媒体代理 HTTP 行为', () => {
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
   });
 
+  /**
+   * undici 对含凭据的 URL 直接抛 TypeError，这类源（部分采集站给的接口地址
+   * 就是 `http://user:pass@host/...`）会 100% 不可播。修法是把凭据转成
+   * Authorization 头，URL 本身不带 userinfo。
+   */
+  it('URL 内嵌凭据的源可用（转成 Authorization 头），且错误文案不泄露密码', async () => {
+    const withCreds = `http://u:p@${upstreamUrl.replace('http://', '')}/auth.ts`;
+    const res = await fetch(`${proxyBase}/p?url=${encodeURIComponent(withCreds)}`);
+    expect(res.status).toBe(200);
+    expect((await res.arrayBuffer()).byteLength).toBe(128);
+    // 错误路径里的地址也要抹掉凭据
+    expect(redactUrl(`上游 http://u:p@example.com/a 失败`)).toBe('上游 http://***@example.com/a 失败');
+  });
+
   it('上游 404 状态原样透传', async () => {
     const res = await proxyGet('/notfound');
     expect(res.status).toBe(404);
+  });
+
+  /**
+   * 上游 Content-Type 完全由第三方说了算。代理跑在 127.0.0.1 上，
+   * 若把 text/html 原样回给渲染层，等于给了同源 XSS 一个入口。
+   */
+  it('/p 不把上游的非媒体类型原样透传（text/html 降级为二进制）', async () => {
+    const res = await proxyGet('/html');
+    expect(res.headers.get('content-type')).toBe('application/octet-stream');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(await res.text()).toContain('<script>');
+  });
+
+  /**
+   * 一次瞬时的 403/404 不能被标成「一小时不变」：
+   * 浏览器按 immutable 缓存住之后，重试也刷不出来，只能清缓存。
+   */
+  it('上游失败的分片不给 immutable 缓存头', async () => {
+    const res = await proxyGet('/notfound');
+    expect(res.headers.get('cache-control')).toBe('no-store');
   });
 
   /**
@@ -461,6 +538,28 @@ describe('媒体代理 HTTP 行为', () => {
     expect(playlist.headers.get('cache-control')).toBe('no-store');
   });
 
+  /**
+   * 超长分片必须是「断流」，不能是「停止搬运 + 正常结束」。
+   * 后者已经按上游 Content-Length 写好了响应头，客户端会一直等到超时，
+   * 最后拿到半截数据还以为成功了。
+   */
+  it('超过流式上限时断开连接，而不是返回半截数据', async () => {
+    process.env.LTV_MAX_STREAM_BYTES = '512';
+    let settledNormally = false;
+    try {
+      // 断流可能发生在「还没拿到响应头」或「读 body 的过程中」，
+      // 两处都必须表现为错误，而不是一段看似成功的半截数据
+      const res = await proxyGet('/big.ts');
+      await res.arrayBuffer();
+      settledNormally = true;
+    } catch {
+      /* 期望走这里 */
+    } finally {
+      delete process.env.LTV_MAX_STREAM_BYTES;
+    }
+    expect(settledNormally).toBe(false);
+  });
+
   it('content-type 不是 mpegurl 时靠 body 前缀识别播放列表', async () => {
     const res = await proxyGet('/playlist-no-type.m3u8');
     expect(res.status).toBe(200);
@@ -488,6 +587,33 @@ describe('媒体代理 HTTP 行为', () => {
     const body = await res.text();
     expect(body).toContain('live=1');
     expect(body).toContain(encodeURIComponent(`${upstreamUrl}/live1.ts`));
+  });
+
+  /**
+   * master 列表按 RFC 8216 本来就不含 #EXT-X-ENDLIST，它的「分片行」是变体
+   * 播放列表地址。早先这里把 master 也当直播，`&live=1` 会经变体一路传到每个
+   * 分片地址上，于是多码率点播源的 SegmentCache 与 /prefetch 整条链路失效。
+   */
+  it('master 列表改写不传播 live=1，变体可与点播一样被缓存', async () => {
+    const res = await proxyGet('/master.m3u8');
+    const body = await res.text();
+    // 变体地址不能带 live=1，否则下游分片会全部跳过缓存
+    expect(body).not.toContain('live=1');
+    expect(body).toContain(encodeURIComponent(`${upstreamUrl}/child.m3u8`));
+
+    // 顺着改写过后的变体地址取一次，它自己带 ENDLIST → 分片也不该带 live=1
+    const childLine = body
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line !== '' && !line.startsWith('#'))
+      .find((line) => line.includes('child.m3u8'));
+    expect(childLine).toBeTruthy();
+    const childUrl = /^https?:\/\//i.test(childLine as string)
+      ? (childLine as string)
+      : `${proxyBase}${childLine}`;
+    const child = await fetch(childUrl);
+    const childBody = await child.text();
+    expect(childBody).not.toContain('live=1');
   });
 
   /**

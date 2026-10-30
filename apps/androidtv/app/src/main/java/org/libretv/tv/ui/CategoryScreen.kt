@@ -167,9 +167,11 @@ fun CategoryScreen(vm: AppViewModel, data: AppData) {
                 // 后者该重试或检查网络；用同一句话会把人引到错误的方向。
                 if (state.failedSources > 0 && state.supportedSources == 0) "所有源都没能返回内容" else "这个分类暂时没有内容",
                 if (state.failedSources > 0 && state.supportedSources == 0) {
+                    // 括号不能省：`a + if (c) b else "" + d` 里 else 分支实际是 `"" + d`，
+                    // failureReason 非空时（正是最需要引导的时候）后半句会被整段吞掉。
                     "请求全部失败" +
-                        if (state.failureReason.isNotBlank()) "（${state.failureReason}）" else "" +
-                            "，通常是网络不通或采集站限流。稍后可重新进入本页重试。"
+                        (if (state.failureReason.isNotBlank()) "（${state.failureReason}）" else "") +
+                        "，通常是网络不通或采集站限流。稍后可重新进入本页重试。"
                 } else {
                     "各源对分类的命名不同，部分源可能没有「${state.key.label}」；也可以直接搜索片名。"
                 },

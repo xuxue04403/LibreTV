@@ -102,6 +102,19 @@ object Parsers {
 
     fun normalizeTitle(s: String): String = s.lowercase().replace(PUNCT, "")
 
+    /**
+     * 归一化后按「相等 / 互相包含」判断两个片名是不是同一部。
+     *
+     * 关键点：**两侧都要归一化**。只归一化一边的话，带空格或标点的片名
+     * （The Matrix、名侦探柯南：黑铁的鱼影）三条比较全部落空，
+     * 跨源补源会静默失效。
+     */
+    fun sameTitle(name: String, keyword: String): Boolean {
+        val a = normalizeTitle(name)
+        val b = normalizeTitle(keyword)
+        return a.isNotEmpty() && b.isNotEmpty() && (a == b || a.contains(b) || b.contains(a))
+    }
+
     /** 忽略标点与大小写；多词查询要求每个词都命中 */
     fun isRelevant(name: String, keyword: String): Boolean {
         val normalizedName = normalizeTitle(name)

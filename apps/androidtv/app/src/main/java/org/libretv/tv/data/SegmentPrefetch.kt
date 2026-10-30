@@ -57,16 +57,39 @@ object SegmentPrefetch {
         scope.launch {
             // 必须拿**最终地址**当基准：m3u8 常被 302 到另一个 CDN 目录，
             // 用入口地址拼相对分片会全部拼错（404），且现象只有「预取毫无效果」。
-            val (raw, finalUrl) =
-                runCatching { Net.getTextWithUrl(playlistUrl) }
-                    .onFailure { android.util.Log.d("LibreTV", "预取播放列表失败 $playlistUrl: ${it.message}") }
-                    .getOrNull() ?: return@launch
-            // master 播放列表里列的是子播放列表，按分片去抓只会白下一个 m3u8
-            val master = raw.contains("#EXT-X-STREAM-INF", ignoreCase = true)
+            var url = playlistUrl
+            var raw: String
+            var finalUrl: String
+            var depth = 0
+            while (true) {
+                val loaded =
+                    runCatching { Net.getTextWithUrlGated(url) }
+                        .onFailure { android.util.Log.d("LibreTV", "预取播放列表失败 $url: ${it.message}") }
+                        .getOrNull() ?: return@launch
+                raw = loaded.first
+                finalUrl = loaded.second
+                // master 播放列表里列的是**子播放列表**而不是分片。
+                // 早先这里只打一行日志就照原样往下抓，于是每个「分片」其实是一个 m3u8，
+                // 被当成媒体字节塞进 LRU：既白占内存配额，又让播放器真的来取分片时全部未命中。
+                // 这里按桌面端的做法往下钻一层（取带宽居中的那档），换成真正的媒体列表。
+                if (!raw.contains("#EXT-X-STREAM-INF", ignoreCase = true)) break
+                if (depth >= MAX_MASTER_DEPTH) {
+                    android.util.Log.d("LibreTV", "预取跳过：master 嵌套过深 $playlistUrl")
+                    return@launch
+                }
+                val variants = segmentUrls(if (adFilter) AdFilter.strip(raw) else raw, finalUrl)
+                val picked = variants.getOrNull(variants.size / 2) ?: variants.firstOrNull()
+                if (picked == null) {
+                    android.util.Log.d("LibreTV", "预取跳过：master 里没有变体 $playlistUrl")
+                    return@launch
+                }
+                url = picked
+                depth += 1
+            }
             val body = if (adFilter) AdFilter.strip(raw) else raw
             val segments = segmentUrls(body, finalUrl).take(count.coerceIn(1, 32))
             if (segments.isEmpty()) {
-                android.util.Log.d("LibreTV", "预取跳过：${if (master) "master 列表" else "列表为空"} $playlistUrl")
+                android.util.Log.d("LibreTV", "预取跳过：列表为空 $playlistUrl")
                 return@launch
             }
             segments.forEach { segment ->
@@ -75,8 +98,9 @@ object SegmentPrefetch {
                     try {
                         if (take(segment) == null) {
                             permits.withPermit {
-                                val (data, type) = Net.getBytes(segment)
-                                lru.put(segment, data, type)
+                                val (data, type) = Net.getBytesGated(segment)
+                                // 拿到的仍是播放列表（多层 master / 变体返回 m3u8）：不要污染 LRU
+                                if (!looksLikePlaylist(data)) lru.put(segment, data, type)
                             }
                         }
                     } catch (e: Exception) {
@@ -97,4 +121,12 @@ object SegmentPrefetch {
             .filter { it.isNotEmpty() && !it.startsWith("#") }
             .mapNotNull { Parsers.normalizeStreamUrl(it, baseUrl) }
             .toList()
+
+    /** 抓回来的东西是不是播放列表文本（而不是媒体分片） */
+    internal fun looksLikePlaylist(data: ByteArray): Boolean {
+        val head = String(data, 0, minOf(data.size, 64), Charsets.UTF_8)
+        return head.trimStart('\uFEFF', ' ', '\r', '\n').startsWith("#EXTM3U")
+    }
+
+    private const val MAX_MASTER_DEPTH = 2
 }

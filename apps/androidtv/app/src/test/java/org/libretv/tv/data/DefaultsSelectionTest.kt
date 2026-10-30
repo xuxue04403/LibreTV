@@ -73,8 +73,19 @@ class DefaultsSelectionTest {
     fun `仓库里的真实清单默认只启用 Collect-IPTV`() {
         // 与 defaults/sources.json 保持同步：0=iptv-org 全球频道、1=iptv-org 中国频道
         // 都标了 selected:false，2=Collect-IPTV 精选 才是默认启用的那个。
-        val file = java.io.File("src/main/assets/default-sources.json")
-        if (!file.exists()) return
+        //
+        // 清单由 gradle 的 copyDefaultSources 拷进 assets（preBuild 依赖），所以这里
+        // 在几种可能的工作目录下都找一遍；找不到时必须让用例失败，不能 return 装作通过
+        // —— 那会让「默认源选择」这条最关键的产品行为长期零覆盖。
+        val candidates = listOf(
+            java.io.File("src/main/assets/default-sources.json"),
+            java.io.File("app/src/main/assets/default-sources.json"),
+            java.io.File("apps/androidtv/app/src/main/assets/default-sources.json"),
+        )
+        val file = candidates.firstOrNull { it.isFile }
+            ?: org.junit.Assert.fail(
+                "找不到 default-sources.json，已尝试：" + candidates.joinToString("、") { it.absolutePath }
+            ) as java.io.File
         val text = file.readText()
         assertEquals(setOf("builtin_live_2"), Defaults.defaultLiveSelectedKeysFrom(text))
         assertEquals(setOf("builtin_live_0", "builtin_live_1"), Defaults.defaultLiveDisabledKeysFrom(text))

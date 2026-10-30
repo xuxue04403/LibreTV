@@ -27,7 +27,7 @@
 | **分类结果缓存**（切回上一个分类立刻出内容） | ✅ 内存 5 分钟 + 落盘 6 小时 | ✅ 同左 |
 | **分类边收边渲染**（首个源回来就出画面，不等全部源） | ✅ 实测约 0.8 秒 | ✅ 同左 |
 | **启动预热与每小时刷新**（后台把各分类第一页抓进缓存） | ✅ | ✅ |
-| **检索结果缓存**（同片名再搜先出缓存） | ✅ 落盘 1 小时 | ✅ 同左 |
+| **检索结果缓存**（同片名再搜先出缓存） | ✅ 落盘 30 分钟 | ✅ 同左 |
 | **拼音首字母搜索**（qmmk → 奇妙萌可） | — | ✅ 本地索引 + 各源最新列表 |
 | **播放列表广告过滤**（摘掉中插广告段） | ✅ | ✅ |
 | **左侧导航焦点即切页**（遥控器划过去就换页） | — | ✅ |
@@ -86,7 +86,7 @@
 
 ```
 defaults/sources.json        内置默认源（两端共用同一份）
-packages/core/               共享 TS 核心：解析 / 聚合 / 订阅 / 存储模型 / 增量解析 / 分类与检索缓存（250 项单测）
+packages/core/               共享 TS 核心：解析 / 聚合 / 订阅 / 存储模型 / 增量解析 / 分类与检索缓存（266 项单测）
 apps/desktop/                Electron 桌面端（main / preload / renderer）
 apps/androidtv/              Android TV（Kotlin + Compose + Media3 + 自研 DLNA DMR）
 tools/mock-cms/              本地假采集站（端到端联调 + 截图）
@@ -114,8 +114,8 @@ npm run dist:desktop     # 打包安装包（NSIS / portable / dmg / AppImage）
 
 ```bash
 cd apps/androidtv
-# 需 JDK 17–21、Android SDK 35、Gradle 8.13
-gradle assembleDebug          # 或使用 Android Studio 打开该目录
+# 需 JDK 17–21、Android SDK 35；Gradle 版本由仓库自带的 wrapper 决定（8.13），不必本机安装
+./gradlew assembleDebug       # Windows：gradlew.bat assembleDebug；也可用 Android Studio 打开该目录
 adb connect <电视IP>:5555     # 电视开启「网络调试」
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
@@ -125,10 +125,12 @@ APK 位置：`apps/androidtv/app/build/outputs/apk/debug/app-debug.apk`（debug 
 ### 测试
 
 ```bash
-npm test                     # 核心解析/聚合/换源/增量解析 \+ 桌面代理 250 项单测
+npm test                     # 核心解析/聚合/换源/增量解析 \+ 桌面代理 266 项单测
 npm run test:dlna            # DLNA 发送端链路（SSDP → 设备描述 → SOAP）
-cd apps/androidtv && gradle testDebugUnitTest   # Kotlin 解析层/换源/缩放/换台/播放器参数/观看记录去重/拼音/广告过滤/缓存/默认源选择 123 项单测
+cd apps/androidtv && ./gradlew testDebugUnitTest   # Kotlin 解析层/换源/缩放/换台/播放器参数/观看记录去重/拼音/广告过滤/缓存/默认源选择/首焦点与遥控器 146 项单测
 ```
+
+电视端的焦点与遥控器行为用 Robolectric 在 JVM 上跑真实 Compose 组合（`ui/AutoFocusUiTest.kt`），不需要真机或模拟器。CI 配置在 `.github/workflows/ci.yml`，同时跑桌面端与电视端两套测试。
 
 端到端联调（本地假采集站 + 真实 HLS 视频）：见 [docs/build.md](docs/build.md#端到端联调)。
 

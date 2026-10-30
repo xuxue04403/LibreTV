@@ -25,8 +25,8 @@ android {
         applicationId = "org.libretv.tv"
         minSdk = 23
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.2.1"
+        versionCode = 9
+        versionName = "1.3.0"
     }
 
     signingConfigs {
@@ -75,6 +75,16 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    /**
+     * Compose UI 测试跑在 JVM 上（Robolectric），需要能读到 Android 资源。
+     * 电视端的焦点/导航类缺陷（H3、T-1、T-2）以前零覆盖，就是因为没有这条通道。
+     */
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+        }
+    }
 }
 
 /**
@@ -96,6 +106,13 @@ dependencies {
 
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)
+    // Compose UI 测试（Robolectric 下跑 JVM，不需要真机/模拟器）：
+    // 焦点与遥控器按键是电视端最容易回归又最没有测试兜底的一块（见 docs/audit-2026-10-29.md 的 H3/T-1/T-2）
+    testImplementation(composeBom)
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core:1.6.1")
+    testImplementation("androidx.test.ext:junit:1.2.1")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
 
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-compose:1.9.3")
@@ -121,4 +138,6 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+    // ui-test-manifest 提供 ComponentActivity 声明，Robolectric 下 createComposeRule() 依赖它
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

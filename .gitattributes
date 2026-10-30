@@ -1,0 +1,19 @@
+# 默认让 git 自行判断文本文件并统一按 LF 存储
+* text=auto
+
+# Unix shell 脚本必须保持 LF，否则检出后报 "bad interpreter"
+gradlew text eol=lf
+*.sh text eol=lf
+
+# Windows 批处理必须保持 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件，禁止任何换行转换
+*.jar binary
+*.jks binary
+*.keystore binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary

@@ -17,16 +17,26 @@ let ready: Promise<AppInfo> | null = null;
 export function initBridge(): Promise<AppInfo> {
   if (ready) return ready;
   ready = (async () => {
-    if (window.libretv) {
-      try {
-        info = await window.libretv.info();
-      } catch {
-        info = FALLBACK_INFO;
-      }
-    }
+    // 浏览器预览（没有 preload）走回退，这是正常路径
+    if (!window.libretv) return info;
+    // 有 preload 却问不到信息，说明主进程那边出了问题，不能静默降级：
+    // 静默降级的结果是 proxyBase 为空，封面与视频全走直连、逐个 CORS/防盗链失败，
+    // 用户看到的是「能打开界面，但所有片子都播不了」，比直接报错更难查。
+    const infoTask = window.libretv.info();
+    // 主进程无响应时不能无限等：10 秒还没回来就当启动失败，让上层给重试入口
+    const timeout = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('主进程 10 秒内没有响应')), 10_000);
+    });
+    info = await Promise.race([infoTask, timeout]);
     return info;
   })();
   return ready;
+}
+
+/** 重试启动：清掉缓存的（可能已失败的）握手结果 */
+export function resetBridge(): void {
+  ready = null;
+  info = FALLBACK_INFO;
 }
 
 export function appInfo(): AppInfo {

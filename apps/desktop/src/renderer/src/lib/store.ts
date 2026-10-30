@@ -22,6 +22,16 @@ import {
   type LiveSourceConfig,
   type SourceConfig,
 } from '@libretv/core';
+import { liveCacheKey, readLiveCache } from './live-cache';
+
+/** 取 URL 的 host；解析不了就返回空串（用于删直播源时按域名兜底清收藏） */
+function safeHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return '';
+  }
+}
 
 export interface AppState {
   settings: AppSettings;
@@ -88,34 +98,80 @@ function uniqueKey(prefix: string, existing: string[]): string {
  * 这里退一步：写不下就先把「可有可无」的缓存键清掉再试一次，仍失败就只打日志。
  * 进度存不下来是遗憾，比整个历史记录写不进去、还连带抛异常好得多。
  */
+/**
+ * localStorage 写盘节流。
+ *
+ * zustand persist 在**每次 set 之后**都对 partialize 的整份状态做
+ * `JSON.stringify` 并 `setItem`。播放页每 5 秒写一次进度，一集 45 分钟就是
+ * ~540 次全量序列化 + 同步写（history 上限 200 条、每条带标题与封面 URL），
+ * 全在渲染主线程上，表现为播放器周期性卡顿。
+ *
+ * 这里把同一时刻的连续写入合并成一次（尾部触发），并在页面隐藏/卸载前强制
+ * flush，保证关窗口不丢最后一次进度。
+ */
+let pendingWrite: { name: string; value: string } | null = null;
+let writeTimer: number | undefined;
+
+function flushPendingWrite(): void {
+  if (writeTimer !== undefined) {
+    window.clearTimeout(writeTimer);
+    writeTimer = undefined;
+  }
+  const job = pendingWrite;
+  if (!job) return;
+  pendingWrite = null;
+  writeNow(job.name, job.value);
+}
+
+function writeNow(name: string, value: string): void {
+  try {
+    localStorage.setItem(name, value);
+  } catch {
+    // 配额满了：先释放纯缓存（分类目录 / 检索 / 直播频道），它们下次能重新抓
+    for (const key of ['libretv-live-cache-v1', 'libretv-search-cache-v1', 'libretv-catalog-v1']) {
+      try {
+        localStorage.removeItem(key);
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      localStorage.setItem(name, value);
+    } catch (err) {
+      console.warn('[libretv] 本地存储写入失败，本次状态未持久化', err);
+    }
+  }
+}
+
+if (typeof window !== 'undefined') {
+  // 页面隐藏/卸载前把未落盘的写刷掉（Electron 关窗口也会走 pagehide）
+  window.addEventListener('pagehide', flushPendingWrite);
+  window.addEventListener('beforeunload', flushPendingWrite);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushPendingWrite();
+  });
+}
+
 const quotaSafeStorage = {
   getItem(name: string): string | null {
     try {
+      // 有未落盘的写入时以内存里的为准，避免读到旧快照
+      if (pendingWrite && pendingWrite.name === name) return pendingWrite.value;
       return localStorage.getItem(name);
     } catch {
       return null;
     }
   },
   setItem(name: string, value: string): void {
-    try {
-      localStorage.setItem(name, value);
-    } catch {
-      // 配额满了：先释放纯缓存（分类目录 / 检索 / 直播频道），它们下次能重新抓
-      for (const key of ['libretv-live-cache-v1', 'libretv-search-cache-v1', 'libretv-catalog-v1']) {
-        try {
-          localStorage.removeItem(key);
-        } catch {
-          /* ignore */
-        }
-      }
-      try {
-        localStorage.setItem(name, value);
-      } catch (err) {
-        console.warn('[libretv] 本地存储写入失败，本次状态未持久化', err);
-      }
-    }
+    pendingWrite = { name, value };
+    if (writeTimer !== undefined) return;
+    writeTimer = window.setTimeout(() => {
+      writeTimer = undefined;
+      flushPendingWrite();
+    }, 400);
   },
   removeItem(name: string): void {
+    if (pendingWrite && pendingWrite.name === name) pendingWrite = null;
     try {
       localStorage.removeItem(name);
     } catch {
@@ -310,9 +366,26 @@ export const useAppStore = create<AppState>()(
         set((s) => {
           const target = s.liveSources.find((x) => x.key === key);
           const isBuiltin = Boolean(target && DEFAULT_LIVE_SOURCES.some((d) => d.url === target.url));
+          // 直播收藏是按频道 url 存的，源删了收藏却留着：设置页的「收藏 N」虚高，
+          // 重新加回同一个源时那些早已消失的频道又会「复活」成收藏。
+          // 点播侧 removeSource 一直会连带清 history/favorites，这里对齐。
+          //
+          // 判断「这条频道属于这个源」只能靠 url：LiveFavoriteEntry 里没有 sourceKey。
+          // 已知频道按「删除前缓存的频道列表」匹配；缓存里没有的（用户只收藏过、
+          // 之后再没加载过那个源）就退一步把同 host 的都算进去。
+          const cached = readLiveCache(liveCacheKey(s.liveSources.map((x) => x.url), s.settings.adultFilter));
+          const owned = new Set(
+            (cached ?? []).filter((ch) => ch.sourceKey === key).map((ch) => ch.url)
+          );
+          const host = target ? safeHost(target.url) : '';
           return {
             liveSources: s.liveSources.filter((x) => x.key !== key),
             liveSelectedKeys: s.liveSelectedKeys.filter((k) => k !== key),
+            liveFavorites: s.liveFavorites.filter((f) => {
+              if (owned.has(f.url)) return false;
+              // 缓存没命中时按域名兜底：同一个源下的频道几乎都在同一个域上
+              return host ? safeHost(f.url) !== host : true;
+            }),
             removedDefaultUrls:
               isBuiltin && target ? [...new Set([...s.removedDefaultUrls, target.url])] : s.removedDefaultUrls,
           };

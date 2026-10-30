@@ -11,7 +11,7 @@ import { useAppStore } from '../lib/store';
 import { DetailPanel } from '../components/DetailPanel';
 import { Icon } from '../components/Icons';
 import { Poster } from '../components/Poster';
-import { useToast } from '../components/Toast';
+import { useToast } from '../components/toast-context';
 import type { WatchTarget } from './Watch';
 
 interface SearchState {
@@ -71,7 +71,7 @@ export function SearchPage({
       addRecentSearch(word);
 
       // 先出缓存结果，网络结果回来后覆盖：同一个片名搜第二遍不该再等十几秒
-      const cached = cachedSearch(word, settings.adultFilter);
+      const cached = cachedSearch(sources, settings.adultFilter, word);
       if (cached && cached.length > 0) {
         setState({ outcomes: [], groups: groupSearchResults(cached) });
         setFromCache(true);
@@ -106,10 +106,12 @@ export function SearchPage({
           toast.push(`没有找到「${word}」的相关内容`);
         } else {
           // 有结果才落盘：把「确实没搜到」也缓存住，会让下次重试直接看到空页面
-          rememberSearch(word, settings.adultFilter, result.list);
+          rememberSearch(sources, settings.adultFilter, word, result.list);
         }
       } catch (err) {
-        if (myRun === runId.current) {
+        // 取消不是失败：离开搜索页时 abort 会让 searchSources 抛错，
+        // 旧写法只判 runId，于是切页时必弹一次红色「搜索失败」。
+        if (!controller.signal.aborted && myRun === runId.current) {
           toast.err(err instanceof Error ? err.message : '搜索失败');
         }
       } finally {
@@ -125,7 +127,14 @@ export function SearchPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keyword, nonce]);
 
-  useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+      // 与分类页同理：abort 后 catch 里 runId 仍相等，得自增才能让这一轮彻底失效
+      runId.current += 1;
+    },
+    []
+  );
 
   const okCount = state.outcomes.filter((o) => o.ok).length;
   const failCount = state.outcomes.filter((o) => !o.ok).length;

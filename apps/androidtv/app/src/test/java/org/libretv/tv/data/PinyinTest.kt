@@ -1,5 +1,6 @@
 package org.libretv.tv.data
 
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -15,23 +16,32 @@ class PinyinTest {
         return String(chars)
     }
 
+    private val fake: String = table(
+        '奇' to 'q',
+        '妙' to 'm',
+        '萌' to 'm',
+        '可' to 'k',
+        '之' to 'z',
+        '闪' to 's',
+        '耀' to 'y',
+        '流' to 'l',
+        '星' to 'x',
+        '沙' to 's',
+        '丘' to 'q',
+    )
+
     @Before
     fun setUp() {
-        Pinyin.install(
-            table(
-                '奇' to 'q',
-                '妙' to 'm',
-                '萌' to 'm',
-                '可' to 'k',
-                '之' to 'z',
-                '闪' to 's',
-                '耀' to 'y',
-                '流' to 'l',
-                '星' to 'x',
-                '沙' to 's',
-                '丘' to 'q',
-            )
-        )
+        Pinyin.install(fake)
+    }
+
+    /**
+     * `Pinyin` 是进程级单例，测试里 clear 过就必须还原：
+     * 否则同一个 JVM 里后跑的测试类（Repository / 搜索）会静默丢掉拼音能力。
+     */
+    @After
+    fun tearDown() {
+        Pinyin.install(fake)
     }
 
     @Test
@@ -43,7 +53,8 @@ class PinyinTest {
     @Test
     fun `标点空白数字英文都按规则处理`() {
         assertEquals("sq", Pinyin.initials(" 沙丘 "))
-        // 表里没有「第/二/季」，它们退化成空串，只剩主标题`r`n        assertEquals("qmmk", Pinyin.initials("奇妙萌可 第二季"))
+        // 表里没有「第/二/季」，它们退化成空串，只剩主标题的首字母
+        assertEquals("qmmk", Pinyin.initials("奇妙萌可 第二季"))
         assertEquals("qmmk2", Pinyin.initials("奇妙萌可2"))
         assertEquals("cctv1", Pinyin.initials("CCTV-1"))
     }

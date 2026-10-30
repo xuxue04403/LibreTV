@@ -72,6 +72,9 @@ fun LibretvApp(vm: AppViewModel) {
                     onSelect = { vm.go(it) },
                     onFocusEnter = { vm.beginNavFocusHold() },
                     onFocusLeave = { vm.releaseNavFocusHoldSoon() },
+                    // 在导航项上按 OK = 明确的「进入这一页」，
+                    // 此时解除焦点保持并让目标页把焦点抓到第一个可操作元素
+                    onConfirm = { vm.requestContentFocus() },
                 )
                 Box(Modifier.weight(1f).fillMaxSize()) {
                     when (screen) {

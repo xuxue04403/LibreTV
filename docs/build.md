@@ -8,7 +8,7 @@
 | npm | ≥ 10 | workspace 依赖管理 |
 | JDK | 17–21（实测 21） | Android 构建 |
 | Android SDK | platform 35 + build-tools 35 + platform-tools | 编译 APK |
-| Gradle | 8.13 | Android 构建（或直接用 Android Studio） |
+| Gradle | 无需安装 | 仓库自带 wrapper（8.13）会自动下载；也可直接用 Android Studio |
 | ffmpeg（可选） | 任意版本 | 生成联调用的 HLS 测试视频 |
 
 ## 桌面端
@@ -76,7 +76,7 @@ apps\desktop\node_modules\electron\dist\electron.exe apps\desktop --user-data-di
 ```bash
 cd apps/androidtv
 export ANDROID_HOME=/path/to/android-sdk     # Windows: $env:ANDROID_HOME='D:\...'
-gradle assembleDebug                          # 需要 JDK 17+
+./gradlew assembleDebug                          # 需要 JDK 17+；Windows 用 gradlew.bat
 ```
 
 产物：`app/build/outputs/apk/debug/app-debug.apk`（约 15 MB，debug 包名带 `.debug` 后缀）。
@@ -97,10 +97,10 @@ adb shell am start -n org.libretv.tv.debug/org.libretv.tv.MainActivity
 
 ```bash
 cd apps/androidtv
-gradle testDebugUnitTest
+./gradlew testDebugUnitTest
 ```
 
-覆盖：搜索列表解析、分集提取、详情兜底、M3U 属性与分组、相关性/成人过滤、同名聚合、订阅宽容解析（11 项）。
+覆盖 146 项：搜索列表解析、分集提取、详情兜底、M3U 属性与分组、相关性/成人过滤、同名聚合、订阅宽容解析、DLNA 请求解析（按字节读 + 上限）、拼音、观看记录去重、分片缓存、默认源选择，以及用 Robolectric 在 JVM 上跑真实 Compose 组合的首焦点/遥控器按键（`ui/AutoFocusUiTest.kt`）。
 
 ### 常见问题
 

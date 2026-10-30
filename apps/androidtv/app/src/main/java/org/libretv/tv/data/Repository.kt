@@ -21,14 +21,36 @@ class Repository(private val net: Net = Net) {
      *
      * 拼音只能在本地比对（采集站不支持），所以「已经搜过/浏览过」的东西
      * 必须留在内存里：用户先翻过动漫分类再敲 `qmmk`，不该再去抓一遍网络。
+     *
+     * 用 LinkedHashMap 而不是 ConcurrentHashMap：落盘时按 `take(PINYIN_INDEX_LIMIT)`
+     * 截断，注释与实现都假设「新的在前」。ConcurrentHashMap.values 没有顺序保证，
+     * 超过上限后淘汰掉的是哈希序里的任意子集 —— 刚浏览过的片名可能根本进不了索引，
+     * 用户敲拼音搜不到自己五分钟前才看过的片子。这里按插入顺序维护（重复插入时
+     * 提到最近），并显式设上限，避免长时间使用后无限增长。
      */
-    private val seenItems = java.util.concurrent.ConcurrentHashMap<String, SearchItem>()
+    private val seenLock = Any()
+    private val seenItems = LinkedHashMap<String, SearchItem>(256, 0.75f, false)
 
-    /** 当前已见过的条目快照（拼音索引持久化用） */
-    fun seenSnapshot(): List<SearchItem> = seenItems.values.toList()
+    /** 内存里最多留多少条（与落盘上限一致，避免两者语义分叉） */
+    private val seenLimit = 6000
+
+    /** 当前已见过的条目快照（拼音索引持久化用）：按插入顺序，最近的在后 */
+    fun seenSnapshot(): List<SearchItem> = synchronized(seenLock) { seenItems.values.toList() }
 
     fun rememberItems(items: List<SearchItem>) {
-        for (item in items) seenItems["${item.sourceKey}:${item.vodId}"] = item
+        synchronized(seenLock) {
+            for (item in items) {
+                val key = "${item.sourceKey}:${item.vodId}"
+                // 先删再放：重复出现的条目要挪到「最近」，而不是停留在首次位置
+                seenItems.remove(key)
+                seenItems[key] = item
+            }
+            // 超上限就丢最老的
+            while (seenItems.size > seenLimit) {
+                val oldest = seenItems.keys.firstOrNull() ?: break
+                seenItems.remove(oldest)
+            }
+        }
     }
 
     /**
@@ -49,14 +71,25 @@ class Repository(private val net: Net = Net) {
 
     fun catalogSnapshot(): CatalogSnapshot = catalog ?: CatalogSnapshot(signature = "")
 
+    /**
+     * 目录缓存的读-改-写锁。
+     *
+     * `cacheCatalogItems` 与 `markCatalogChecked` 都是「读当前快照 → 造新快照 → 写回」。
+     * 首页会并行抓 8 个分类，没有锁时后写的会把先写的整份覆盖掉，
+     * 表现为「明明抓到了，切回来又变成空的」。
+     */
+    private val catalogLock = Any()
+
     /** 写入某个分类的缓存条目（内存 + 回调落盘） */
     fun cacheCatalogItems(key: CategoryKey, items: List<SearchItem>) {
-        val current = catalog
-        val signature = current?.signature ?: return
-        val next = (current).withEntry(key, items)
-        if (next === current) return
-        catalog = next
-        onCatalogChanged?.invoke(next)
+        val changed = synchronized(catalogLock) {
+            val current = catalog ?: return
+            val next = current.withEntry(key, items)
+            if (next === current) return
+            catalog = next
+            next
+        }
+        onCatalogChanged?.invoke(changed)
     }
 
     /**
@@ -66,10 +99,13 @@ class Repository(private val net: Net = Net) {
      * 但不记时间的话，空分类永远不算新鲜，后台每小时都为它重打一轮请求。
      */
     fun markCatalogChecked(key: CategoryKey) {
-        val current = catalog ?: return
-        val next = current.markChecked(key)
-        catalog = next
-        onCatalogChanged?.invoke(next)
+        val changed = synchronized(catalogLock) {
+            val current = catalog ?: return
+            val next = current.markChecked(key)
+            catalog = next
+            next
+        }
+        onCatalogChanged?.invoke(changed)
     }
 
     /** 缓存里这个分类的内容；已过期也返回（界面先用旧内容顶上，后台再刷） */
@@ -94,18 +130,25 @@ class Repository(private val net: Net = Net) {
         val encoded = URLEncoder.encode(keyword, "UTF-8")
 
         val result = withTimeoutOrNull(timeoutMs) {
-            runCatching {
-                val firstText = net.getText("$base?ac=videolist&wd=$encoded&pg=1")
+            try {
+                val firstText = net.getTextGated("$base?ac=videolist&wd=$encoded&pg=1")
                 val root = runCatching { LooseJson.parseToJsonElement(firstText).jsonObject }.getOrNull()
                 val items = Parsers.parseSearchList(firstText, source).toMutableList()
                 val pageCount = root?.str("pagecount")?.toIntOrNull() ?: 1
                 val pages = minOf(maxPages, maxOf(1, pageCount))
                 for (page in 2..pages) {
                     runCatching {
-                        Parsers.parseSearchList(net.getText("$base?ac=videolist&wd=$encoded&pg=$page"), source)
+                        Parsers.parseSearchList(net.getTextGated("$base?ac=videolist&wd=$encoded&pg=$page"), source)
                     }.getOrNull()?.let { items.addAll(it) }
                 }
-                items.distinctBy { it.vodId }.also { rememberItems(it) }
+                Result.success(items.distinctBy { it.vodId }.also { rememberItems(it) })
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // 取消不是「这个源失败」：必须原样抛出去。
+                // runCatching 会连 CancellationException 一起吞掉，用户切分类/退出页面时
+                // 就会看到一条英文的 "Timed out waiting for ..." 被当成源错误展示。
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
             }
         }
 
@@ -145,19 +188,36 @@ class Repository(private val net: Net = Net) {
         return outcome.copy(items = filtered)
     }
 
+    /**
+     * 只吞「真失败」，不吞取消。
+     *
+     * `runCatching` 会把 `CancellationException` 一起装进 `Result.failure`，
+     * 于是用户切分类 / 退出页面触发的取消，会被当成「这个源失败了」上报，
+     * 界面上就会出现一条英文的 `Timed out waiting for ...`。
+     * 取消必须原样抛出去让协程正常结束。
+     */
+    private inline fun <T> catchingIo(block: () -> T): Result<T> =
+        try {
+            Result.success(block())
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+
     suspend fun detail(source: VodSource, vodId: String): VodDetail {
         if (!vodId.matches(Regex("^[\\w-]+$"))) throw IOException("无效的视频ID")
         val base = source.url.trimEnd('/')
         val api = "$base?ac=videolist&ids=${URLEncoder.encode(vodId, "UTF-8")}"
 
-        runCatching { net.getText(api) }.getOrNull()?.let { text ->
-            runCatching { Parsers.parseDetail(text) }.getOrNull()
+        catchingIo { net.getTextGated(api) }.getOrNull()?.let { text ->
+            catchingIo { Parsers.parseDetail(text) }.getOrNull()
                 ?.takeIf { it.episodes.isNotEmpty() }
                 ?.let { return it }
         }
 
         val root = (source.detail ?: originOf(source.url))?.trimEnd('/') ?: throw IOException("获取详情失败")
-        val html = net.getText("$root/index.php/vod/detail/id/$vodId.html")
+        val html = net.getTextGated("$root/index.php/vod/detail/id/$vodId.html")
         val pageDetail = Parsers.parseDetailPage(html)
         if (pageDetail.episodes.isEmpty()) throw IOException("未找到播放资源")
         return pageDetail
@@ -188,14 +248,16 @@ class Repository(private val net: Net = Net) {
             }.awaitAll()
         }
 
-        val wanted = keyword.lowercase()
+        // 比对用的关键字必须和 item.name 走同一套归一化（见 Parsers.sameTitle）：
+        // 上面拿原片名去查询是对的，但如果比对时还用原片名，带空格或标点的片名
+        // （The Matrix、名侦探柯南：黑铁的鱼影）在三条比较里全落空，
+        // 跨源补源等于被关掉。
         val items = outcomes
             .filter { it.ok }
             .flatMap { it.items }
             .filter { item ->
                 if ("${item.sourceKey}:${item.vodId}" in exclude) return@filter false
-                val name = Parsers.normalizeTitle(item.name).lowercase()
-                name.isNotEmpty() && (name == wanted || name.contains(wanted) || wanted.contains(name))
+                Parsers.sameTitle(item.name, keyword)
             }
         return PlaybackCandidate.build(items, sources)
     }
@@ -207,14 +269,16 @@ class Repository(private val net: Net = Net) {
      */
     suspend fun firstPlayable(candidates: List<PlaybackCandidate>): Pair<PlaybackCandidate, VodDetail>? {
         for (candidate in candidates) {
-            val detail = runCatching { detail(candidate.source, candidate.vodId) }.getOrNull()
+            // 用 catchingIo 而不是 runCatching：协程被取消时必须原样抛出，
+            // 否则会被当成「这个源拿不到详情」继续试下一个，取消完全无效。
+            val detail = catchingIo { detail(candidate.source, candidate.vodId) }.getOrNull()
             if (detail != null && detail.episodes.isNotEmpty()) return candidate to detail
         }
         return null
     }
 
     suspend fun liveChannels(source: LiveSource, adultFilter: Boolean = true): List<LiveChannel> {
-        val text = net.getText(source.url, mapOf("Accept" to "application/x-mpegURL, text/plain, */*"))
+        val text = net.getTextGated(source.url, mapOf("Accept" to "application/x-mpegURL, text/plain, */*"))
         val parsed = Parsers.parseM3u(text, source.url)
         if (parsed.isEmpty()) throw IOException("未解析到可用频道")
         // 直播此前完全没有成人过滤：用户自加的 M3U 成人类目会原样露出
@@ -321,9 +385,9 @@ class Repository(private val net: Net = Net) {
                 // 子分类并行抓取：父分类不聚合子分类内容
                 val lists = ids.map { typeId ->
                     async {
-                        runCatching {
+                        catchingIo {
                             Parsers.parseSearchList(
-                                Net.gated(source.url) { net.getText("$base?ac=videolist&t=$typeId&pg=1") },
+                                net.getTextGated("$base?ac=videolist&t=$typeId&pg=1"),
                                 source,
                             )
                         }.getOrDefault(emptyList())
@@ -334,6 +398,9 @@ class Repository(private val net: Net = Net) {
                 Triple(true, merged, null)
             }
             result ?: Triple(false, emptyList(), "请求超时（>${timeoutMs / 1000}s）")
+        } catch (err: kotlinx.coroutines.CancellationException) {
+            // 取消不能被当成「这个源失败」：否则切分类时界面会冒出一条假错误
+            throw err
         } catch (err: Exception) {
             Triple(false, emptyList(), err.message ?: "失败")
         }.also { final ->
@@ -384,17 +451,19 @@ class Repository(private val net: Net = Net) {
         timeoutMs: Long = 9_000,
     ): List<SearchItem> {
         if (!Pinyin.ready || !Pinyin.isQuery(query)) return emptyList()
-        val cached = seenItems.values.filter { Pinyin.matches(it.name, query) }
+        val cached = synchronized(seenLock) { seenItems.values.filter { Pinyin.matches(it.name, query) } }
 
         val fresh = coroutineScope {
             sources.map { source ->
                 async {
                     withTimeoutOrNull(timeoutMs) {
-                        runCatching {
+                        // 这里同样不能用 runCatching：被取消时它会把 CancellationException
+                        // 当普通失败吞掉，接着去抓下一页，取消等于没发生。
+                        catchingIo {
                             val base = source.url.trimEnd('/')
                             val collected = mutableListOf<SearchItem>()
                             for (page in 1..pagesPerSource) {
-                                val text = net.getText("$base?ac=videolist&pg=$page")
+                                val text = net.getTextGated("$base?ac=videolist&pg=$page")
                                 val parsed = Parsers.parseSearchList(text, source)
                                 collected += parsed
                                 if (parsed.size < 20) break
@@ -414,7 +483,7 @@ class Repository(private val net: Net = Net) {
     }
 
     suspend fun importSubscription(url: String): ParsedSubscription {
-        val text = net.getText(url)
+        val text = net.getTextGated(url)
         return Subscriptions.parse(text, url)
     }
 
@@ -447,3 +516,4 @@ class Repository(private val net: Net = Net) {
         "${uri.scheme}://${uri.host}"
     }.getOrNull()
 }
+

@@ -13,10 +13,10 @@ import {
 } from '@libretv/core';
 import { http, proxify } from '../lib/bridge';
 import { loadChannelEpg } from '../lib/live-epg';
-import { liveCacheKey, readLiveCache, writeLiveCache } from '../lib/live-cache';
+import { flushLiveCacheWrite, liveCacheKey, readLiveCache, writeLiveCache } from '../lib/live-cache';
 import { useAppStore } from '../lib/store';
 import { Icon } from '../components/Icons';
-import { useToast } from '../components/Toast';
+import { useToast } from '../components/toast-context';
 
 interface ChannelItem extends LiveChannel {
   sourceKey: string;
@@ -60,6 +60,9 @@ export function LivePage({ onOpenSettings }: { onOpenSettings: () => void }) {
   const toast = useToast();
 
   const [channels, setChannels] = useState<ChannelItem[]>([]);
+  /** 当前频道列表的镜像：load() 是 useCallback，读 state 会拿到过期闭包 */
+  const channelsRef = useRef<ChannelItem[]>([]);
+  channelsRef.current = channels;
   const [status, setStatus] = useState<PlaylistState[]>([]);
   const [loading, setLoading] = useState(false);
   const [fromCache, setFromCache] = useState(false);
@@ -68,6 +71,8 @@ export function LivePage({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [keyword, setKeyword] = useState('');
   const [playing, setPlaying] = useState<ChannelItem | null>(null);
   const runId = useRef(0);
+  /** 当前在跑的这一轮下载；重新加载或卸载时 abort，避免多份全量下载叠加 */
+  const abortRef = useRef<AbortController | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   /**
@@ -83,6 +88,11 @@ export function LivePage({ onOpenSettings }: { onOpenSettings: () => void }) {
   const load = useCallback(
     async (opts: { force?: boolean } = {}) => {
       if (liveSources.length === 0) return;
+      // 上一轮还没结束就再点「重新加载」/进出页面时，必须真正中断网络与 IPC 流：
+      // runId 只能丢弃过期的 setState，播放列表仍会继续下载（每个源 2.5MB+）。
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
       const myRun = ++runId.current;
       const cacheKey = liveCacheKey(
         liveSources.map((s) => s.url),
@@ -106,9 +116,14 @@ export function LivePage({ onOpenSettings }: { onOpenSettings: () => void }) {
           }))
         );
       } else {
-        setChannels([]);
+        // 刷新失败时不要把已有列表清空：只有「首次加载（当前没有频道）」才清。
+        // 旧写法无条件 setChannels([])，用户点「重新加载」后一旦网络失败，
+        // 屏幕上原本正常播放的频道全都消失，只剩一句错误提示——比不刷新更糟。
+        if (channelsRef.current.length === 0) {
+          setChannels([]);
+          setFromCache(false);
+        }
         setLoading(true);
-        setFromCache(false);
         setProgress({ bytes: 0, channels: 0 });
         setStatus(
           liveSources.map((s) => ({ sourceKey: s.key, sourceName: s.name, ok: true, pending: true, channels: 0 }))
@@ -136,6 +151,13 @@ export function LivePage({ onOpenSettings }: { onOpenSettings: () => void }) {
       };
 
       let flushTimer: number | undefined;
+      // 渐进渲染用的累积数组：只把**新**频道追加进去，不每 120ms 从 buffers
+      // 重新拼一遍全量。旧写法每次 flush 都 `for (const list of buffers.values())
+      // merged.push(...list)` 造一个新数组再 setChannels，一万多条频道时每 120ms
+      // 一次全量拷贝 + 全量重渲染（分组、计数、可见集合全部重算），
+      // 低配机器上表现为「滚动直播页一直掉帧」。
+      const rendered: ChannelItem[] = [];
+      const renderedKeys = new Set<string>();
       const scheduleFlush = (): void => {
         // 缓存已经铺满界面时不做渐进刷新：缓存里本来就是全量列表，
         // 再把流式回来的重复项 append 上去只会让人看到重影。
@@ -147,11 +169,21 @@ export function LivePage({ onOpenSettings }: { onOpenSettings: () => void }) {
         flushTimer = window.setTimeout(() => {
           flushTimer = undefined;
           if (myRun !== runId.current) return;
-          const merged: ChannelItem[] = [];
-          for (const list of buffers.values()) merged.push(...list);
-          if (merged.length === 0) return;
-          setChannels(merged);
-          setProgress({ bytes: downloaded, channels: merged.length });
+          let added = false;
+          for (const list of buffers.values()) {
+            for (const ch of list) {
+              const key = `${ch.sourceKey}:${ch.url}`;
+              if (renderedKeys.has(key)) continue;
+              renderedKeys.add(key);
+              rendered.push(ch);
+              added = true;
+            }
+          }
+          if (!added && rendered.length === 0) return;
+          // 传新数组引用是因为 React 需要引用变化才会重渲染；但内容只多不减，
+          // 已挂载的卡片拿到的是同一批对象，React 可以直接跳过它们的子树。
+          setChannels([...rendered]);
+          setProgress({ bytes: downloaded, channels: rendered.length });
           setLoading(false);
         }, 120);
       };
@@ -171,6 +203,7 @@ export function LivePage({ onOpenSettings }: { onOpenSettings: () => void }) {
               append(source.key, safe);
               scheduleFlush();
             },
+            signal: controller.signal,
             timeoutMs: 90_000,
             // 大列表合法地要下很久，只限制「多久没数据」
             idleTimeoutMs: 20_000,
@@ -179,6 +212,8 @@ export function LivePage({ onOpenSettings }: { onOpenSettings: () => void }) {
         })
       );
       if (myRun !== runId.current) return;
+      // 被主动中断（重新加载/离开页面）不是失败：不要落盘、不要弹错误
+      if (controller.signal.aborted) return;
       if (flushTimer !== undefined) window.clearTimeout(flushTimer);
 
       const states: PlaylistState[] = [];
@@ -246,6 +281,14 @@ export function LivePage({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   useEffect(() => {
     void load();
+    return () => {
+      // 离开直播页：中断在跑的下载，别让它们在后台继续吃带宽与 IPC 流
+      abortRef.current?.abort();
+      abortRef.current = null;
+      runId.current += 1;
+      // 写缓存被推迟到空闲时，这里补一次同步落盘，避免刚刷新完就退出导致白下
+      flushLiveCacheWrite();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveSources.map((s) => s.key).join(','), adultFilter]);
 
@@ -497,25 +540,52 @@ function LivePlayer({
   const [muted, setMuted] = useState(false);
   const [switching, setSwitching] = useState(false);
 
+  // EPG 只按频道变化拉一次会把「正在播出」永久定格在第一次的结果上：
+  // 用户在一个台上挂半小时，信息条还在显示半小时前的那一期节目。
+  // 这里加一个按分钟对齐的定时器，每 60 秒重算一次当前节目；
+  // 节目是本地已有数据算出来的（loadChannelEpg 内部按 xmltv 缓存解析结果），
+  // 所以这个刷新不打网络。
   useEffect(() => {
     if (!channel.epg || !channel.tvgId) {
       setEpgText(null);
       return;
     }
     let alive = true;
-    setEpgText(null);
-    loadChannelEpg(channel.epg, channel.tvgId)
-      .then((epg) => {
-        if (!alive || !epg.current) return;
-        const end = new Date(epg.current.stop).toLocaleTimeString('zh-CN', {
-          hour: '2-digit',
-          minute: '2-digit',
+    let timer: number | undefined;
+    // 换台/退出就取消下载：一份 XMLTV 动辄几十 MB，用户在这个台上只待两秒
+    // 就换走时，不取消的话请求会继续把整个文件下完再解析。
+    const controller = new AbortController();
+
+    const refresh = (): void => {
+      loadChannelEpg(channel.epg ?? '', channel.tvgId ?? '', controller.signal)
+        .then((epg) => {
+          if (!alive) return;
+          if (!epg.current) {
+            setEpgText(null);
+            return;
+          }
+          const end = new Date(epg.current.stop).toLocaleTimeString('zh-CN', {
+            hour: '2-digit',
+            minute: '2-digit',
+          });
+          setEpgText(`正在播出：${epg.current.title}（至 ${end}）`);
+          // 节目结束时刻前 2 秒再刷：既不空转，也不会让信息条停在上一期
+          const wait = Math.min(Math.max(epg.current.stop - Date.now() + 2_000, 20_000), 60_000);
+          timer = window.setTimeout(refresh, wait);
+        })
+        .catch(() => {
+          if (!alive) return;
+          // 拉取失败（比如 EPG 地址临时不可达）就退化成按 60 秒重试
+          timer = window.setTimeout(refresh, 60_000);
         });
-        setEpgText(`正在播出：${epg.current.title}（至 ${end}）`);
-      })
-      .catch(() => undefined);
+    };
+
+    setEpgText(null);
+    refresh();
     return () => {
       alive = false;
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [channel.epg, channel.tvgId]);
 

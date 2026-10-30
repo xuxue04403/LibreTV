@@ -8,10 +8,18 @@ import {
   normalizeSettings,
   parseSnapshot,
   toggleFavorite,
+  toggleLiveFavorite,
   upsertHistory,
 } from './storage';
 import { currentAndNext, parseXmltv, parseXmltvTime } from './live';
-import { clampEpisodeIndex, episodeLabel, formatTime, stableKey, trimSlash } from './format';
+import {
+  clampEpisodeIndex,
+  episodeLabel,
+  formatTime,
+  isValidSourceUrl,
+  stableKey,
+  trimSlash,
+} from './format';
 
 describe('parseSubscription', () => {
   it('解析 LibreTV-SourceList', () => {
@@ -224,6 +232,61 @@ describe('storage 纯函数', () => {
     expect(snap?.sources).toHaveLength(1);
     expect(snap?.selectedKeys).toEqual(['k']);
   });
+
+  /**
+   * H4 回归：过去 `parseSnapshot` 只要「能 JSON.parse 出对象」就返回合法快照，
+   * 于是导入一个无关 JSON 会把源/历史/收藏全部覆盖成空（且不重置 defaultsSeeded，
+   * 内置源也回不来）。现在必须显式拒绝。
+   */
+  it('parseSnapshot 对无关 JSON 返回 null，避免一键清空本地数据', () => {
+    expect(parseSnapshot('{}')).toBeNull();
+    expect(parseSnapshot('{"foo":1}')).toBeNull();
+    expect(parseSnapshot('{"version":1}')).toBeNull();
+    // 有字段名但条目全部非法（缺 url / 非 http(s) / 缺 title）
+    expect(parseSnapshot('{"sources":[{"key":"k","url":"file:///etc/passwd"}]}')).toBeNull();
+    expect(parseSnapshot('{"history":[{"sourceKey":"s"}]}')).toBeNull();
+    expect(parseSnapshot('[1,2,3]')).toBeNull();
+  });
+
+  it('parseSnapshot 逐条校验历史，坏条目被丢弃而不是让 normalizeTitle 抛错', () => {
+    const snap = parseSnapshot(
+      JSON.stringify({
+        sources: [{ key: 's', name: 'S', url: 'https://s/api' }],
+        history: [
+          { sourceKey: 's', vodId: '1', title: null },
+          { sourceKey: 's', vodId: '2', title: '   ' },
+          { sourceKey: 's', vodId: '3', title: '三体', episodeIndex: 99, episodeCount: 10 },
+        ],
+      })
+    );
+    expect(snap).not.toBeNull();
+    expect(snap!.history).toHaveLength(1);
+    expect(snap!.history[0]).toMatchObject({ id: 's:3', title: '三体' });
+    // 越界集数在导入时就被夹回合法范围
+    expect(snap!.history[0].episodeIndex).toBe(9);
+    expect(() => snap!.history.map((h) => h.title.toLowerCase())).not.toThrow();
+  });
+
+  it('parseSnapshot 去重源并按历史/收藏上限裁剪', () => {
+    const many = Array.from({ length: 260 }, (_, i) => ({
+      sourceKey: 's',
+      vodId: String(i),
+      title: `剧${i}`,
+    }));
+    const snap = parseSnapshot(
+      JSON.stringify({
+        sources: [
+          { key: 'a', name: 'A', url: 'https://dup/api' },
+          { key: 'b', name: 'B', url: 'https://dup/api' },
+          { key: 'c', name: 'C', url: 'not-a-url' },
+        ],
+        history: many,
+      })
+    );
+    expect(snap!.sources).toHaveLength(1);
+    expect(snap!.sources[0].key).toBe('a');
+    expect(snap!.history).toHaveLength(200);
+  });
 });
 
 describe('EPG', () => {
@@ -291,5 +354,31 @@ describe('format 辅助', () => {
     expect(normalizeHistoryEntry({ ...base, episodeIndex: 14, episodeCount: 16 }).episodeIndex).toBe(14);
     // 没有集数上限的旧记录原样返回，不能把它错误地归零
     expect(normalizeHistoryEntry({ ...base, episodeIndex: 3, episodeCount: 0 }).episodeIndex).toBe(3);
+  });
+});
+
+describe('isValidSourceUrl', () => {
+  it('只放行能被 URL 解析的 http(s) 地址', () => {
+    expect(isValidSourceUrl('https://a.example.com/api.php/provide/vod')).toBe(true);
+    expect(isValidSourceUrl('http://127.0.0.1:8080/api')).toBe(true);
+    // 下面这些旧实现（/^https?:\/\/.+/）全都放过，结果一请求就炸成英文报错
+    expect(isValidSourceUrl('https://exa mple.com/api')).toBe(false);
+    expect(isValidSourceUrl('http://[')).toBe(false);
+    expect(isValidSourceUrl('https://')).toBe(false);
+    expect(isValidSourceUrl('ftp://a.example.com/api')).toBe(false);
+    expect(isValidSourceUrl('')).toBe(false);
+  });
+});
+
+describe('toggleLiveFavorite', () => {
+  it('直播收藏也受条数上限约束', () => {
+    let list: Parameters<typeof toggleLiveFavorite>[0] = [];
+    for (let i = 0; i < 5; i++) {
+      list = toggleLiveFavorite(list, { url: `https://l.example.com/${i}.m3u8`, name: `台 ${i}` }, 3);
+    }
+    // 新的在前、旧的被裁掉：一个两万频道的源不会把快照撑爆
+    expect(list.map((f) => f.name)).toEqual(['台 4', '台 3', '台 2']);
+    // 取消收藏不受上限影响
+    expect(toggleLiveFavorite(list, { url: 'https://l.example.com/4.m3u8', name: '台 4' }, 3)).toHaveLength(2);
   });
 });

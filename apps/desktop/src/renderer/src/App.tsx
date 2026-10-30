@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { initBridge } from './lib/bridge';
+import { initBridge, resetBridge } from './lib/bridge';
 import { startCatalogWarmup, stopCatalogWarmup } from './lib/catalog-warmer';
 import { useAppStore } from './lib/store';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { ToastProvider } from './components/Toast';
 import { Icon, type IconName } from './components/Icons';
 import logo from './assets/logo.png';
@@ -23,6 +24,9 @@ const NAV: { id: View; icon: IconName; label: string }[] = [
 
 export function App() {
   const [ready, setReady] = useState(false);
+  /** 启动失败的原因：preload 没注入 / IPC 握手超时，都必须让用户看见并能重试 */
+  const [fatal, setFatal] = useState<string | null>(null);
+  const [bootAttempt, setBootAttempt] = useState(0);
   const [view, setView] = useState<View>('home');
   const [category, setCategory] = useState<CategoryKey>('movie');
   const [keyword, setKeyword] = useState('');
@@ -34,20 +38,36 @@ export function App() {
   const theme = useAppStore((s) => s.settings.theme);
 
   useEffect(() => {
-    void initBridge().then(() => {
-      setReady(true);
-      // 首次启动导入内置默认源（之后不再自动加回，用户删掉就是删掉）
-      useAppStore.getState().seedDefaults();
-      // 老版本可能把同一个源写了两遍，导致分类请求翻倍、所有源一起超时
-      useAppStore.getState().dedupeSources();
-      // 老版本的观看记录按「源 + vodId」去重，同一部片子从两个源各播一次就会留两条；
-      // 现在改成按片名去重，这里把存量数据清理一遍（幂等）。
-      useAppStore.getState().dedupeHistory();
-      // 启动预热分类目录，并在后台每小时刷新一次
-      startCatalogWarmup();
-    });
-    return () => stopCatalogWarmup();
-  }, []);
+    let alive = true;
+    setFatal(null);
+    // `void initBridge().then(...)` 没有 catch 的后果：preload 没注入（打包漏文件、
+    // 被安全软件拦掉）或 IPC 握手抛错时，ready 永远是 false，界面上只有一个
+    // 永远转下去的 spinner——没有错误信息、没有重试入口，用户只能以为程序坏了。
+    // 而且这是异步错误，根 ErrorBoundary 完全接不住。
+    void initBridge()
+      .then(() => {
+        if (!alive) return;
+        setReady(true);
+        // 首次启动导入内置默认源（之后不再自动加回，用户删掉就是删掉）
+        useAppStore.getState().seedDefaults();
+        // 老版本可能把同一个源写了两遍，导致分类请求翻倍、所有源一起超时
+        useAppStore.getState().dedupeSources();
+        // 老版本的观看记录按「源 + vodId」去重，同一部片子从两个源各播一次就会留两条；
+        // 现在改成按片名去重，这里把存量数据清理一遍（幂等）。
+        useAppStore.getState().dedupeHistory();
+        // 启动预热分类目录，并在后台每小时刷新一次
+        startCatalogWarmup();
+      })
+      .catch((err: unknown) => {
+        if (!alive) return;
+        const reason = err instanceof Error ? err.message : String(err);
+        setFatal(reason || '与主进程通信失败');
+      });
+    return () => {
+      alive = false;
+      stopCatalogWarmup();
+    };
+  }, [bootAttempt]);
 
   useEffect(() => {
     const resolved =
@@ -97,6 +117,41 @@ export function App() {
     setKeyword(kw);
     setView('search');
   };
+
+  if (fatal !== null) {
+    return (
+      <div
+        style={{
+          height: '100vh',
+          display: 'grid',
+          placeItems: 'center',
+          color: '#c9d1de',
+          padding: 32,
+          textAlign: 'center',
+        }}
+      >
+        <div style={{ maxWidth: 520, display: 'grid', gap: 14 }}>
+          <div style={{ fontSize: 17, fontWeight: 600 }}>启动失败</div>
+          <div style={{ color: '#8d97a8', lineHeight: 1.6 }}>{fatal}</div>
+          <div style={{ color: '#6b7688', fontSize: 13, lineHeight: 1.6 }}>
+            常见原因：安装目录被安全软件拦截、安装不完整（缺少 preload 脚本）。
+            可先点重试；仍失败请重新安装。
+          </div>
+          <button
+            className="btn"
+            onClick={() => {
+              setReady(false);
+              // 之前那次握手的结果（成功或失败）必须丢掉，否则重试只是拿回同一个旧 Promise
+              resetBridge();
+              setBootAttempt((n) => n + 1);
+            }}
+          >
+            重试
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (!ready) {
     return (
@@ -161,39 +216,46 @@ export function App() {
           </div>
 
           <div className="content">
-            {view === 'home' ? (
-              <HomePage
-                onPlay={setWatch}
-                onSearch={startSearch}
-                onCategory={(key) => {
-                  setCategory(key);
-                  setView('category');
-                }}
-              />
-            ) : null}
-            {view === 'category' ? (
-              <CategoryPage
-                category={category}
-                onCategoryChange={setCategory}
-                onPlay={setWatch}
-                onOpenSettings={() => setView('settings')}
-              />
-            ) : null}
-            {view === 'search' ? (
-              <SearchPage
-                keyword={keyword}
-                nonce={searchNonce}
-                onPlay={setWatch}
-                onOpenSettings={() => setView('settings')}
-              />
-            ) : null}
-            {view === 'live' ? <LivePage onOpenSettings={() => setView('settings')} /> : null}
-            {view === 'settings' ? <SettingsPage /> : null}
+            {/* 每个页面各包一层边界：某一页渲染崩溃时只坏这一页，
+                而不是把整个界面（含正在播放的视频）一起卸载掉。
+                key 用当前视图：切页就等于换一个新实例，旧页面的错误状态自然作废。 */}
+            <ErrorBoundary key={`page-${view}`} scope="这个页面">
+              {view === 'home' ? (
+                <HomePage
+                  onPlay={setWatch}
+                  onSearch={startSearch}
+                  onCategory={(key) => {
+                    setCategory(key);
+                    setView('category');
+                  }}
+                />
+              ) : null}
+              {view === 'category' ? (
+                <CategoryPage
+                  category={category}
+                  onCategoryChange={setCategory}
+                  onPlay={setWatch}
+                  onOpenSettings={() => setView('settings')}
+                />
+              ) : null}
+              {view === 'search' ? (
+                <SearchPage
+                  keyword={keyword}
+                  nonce={searchNonce}
+                  onPlay={setWatch}
+                  onOpenSettings={() => setView('settings')}
+                />
+              ) : null}
+              {view === 'live' ? <LivePage onOpenSettings={() => setView('settings')} /> : null}
+              {view === 'settings' ? <SettingsPage /> : null}
+            </ErrorBoundary>
           </div>
         </main>
       </div>
 
-      {watch ? <WatchPage target={watch} onClose={() => setWatch(null)} /> : null}
+      <ErrorBoundary key={`watch-${watch ? watch.vodId : 'none'}`} scope="播放页">
+        {watch ? <WatchPage target={watch} onClose={() => setWatch(null)} /> : null}
+      </ErrorBoundary>
     </ToastProvider>
   );
 }

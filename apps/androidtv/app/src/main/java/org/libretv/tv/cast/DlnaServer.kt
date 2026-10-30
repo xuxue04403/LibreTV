@@ -3,8 +3,6 @@ package org.libretv.tv.cast
 import android.content.Context
 import android.net.wifi.WifiManager
 import android.util.Log
-import java.io.BufferedReader
-import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.DatagramPacket
 import java.net.InetAddress
@@ -48,8 +46,12 @@ class DlnaServer(
         private const val RCS_SERVICE = "urn:schemas-upnp-org:service:RenderingControl:1"
         private const val CMS_SERVICE = "urn:schemas-upnp-org:service:ConnectionManager:1"
 
-        /** 请求体上限：SOAP 报文正常几 KB，给 64KB 足够，防止 Content-Length 打爆内存 */
-        private const val MAX_BODY_CHARS = 64 * 1024
+        /**
+         * 请求体上限（**字节**）：SOAP 报文正常几 KB，给 64KB 足够，
+         * 防止伪造的 Content-Length 打爆内存。注意是字节而不是字符——
+         * 旧实现按字符数读，中文标题会永远读不满而超时（投屏必失败）。
+         */
+        private const val MAX_BODY_BYTES = 64 * 1024
         private const val MAX_HEADERS = 64
         private const val MAX_CLIENTS = 4
         private const val CLIENT_TIMEOUT_MS = 5_000
@@ -141,48 +143,28 @@ class DlnaServer(
     private fun handleClient(client: Socket) {
         client.use { socket ->
             runCatching { socket.soTimeout = CLIENT_TIMEOUT_MS }
-            val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
-            val requestLine = reader.readLine() ?: return
-            val headers = mutableMapOf<String, String>()
-            var headerCount = 0
-            while (true) {
-                val line = reader.readLine() ?: break
-                if (line.isEmpty()) break
-                if (++headerCount > MAX_HEADERS) return
-                val idx = line.indexOf(':')
-                if (idx > 0) headers[line.substring(0, idx).trim().lowercase()] = line.substring(idx + 1).trim()
-            }
-            val method = requestLine.substringBefore(' ')
-            val path = requestLine.substringAfter(' ').substringBefore(' ')
+            // 头与体必须从同一个字节流顺序读（旧实现用 BufferedReader 读头 + 按
+            // Content-Length 读字符，中文标题会让它永远凑不满而超时），解析细节见 DlnaHttp。
+            val request = runCatching {
+                DlnaHttp.readRequest(
+                    input = socket.getInputStream(),
+                    maxBodyBytes = MAX_BODY_BYTES,
+                    maxHeaders = MAX_HEADERS,
+                )
+            }.getOrElse {
+                Log.w(TAG, "请求解析失败：${it.message}")
+                return
+            } ?: return
 
-            val body = readBody(reader, headers)
-
-            val response = route(method, path, body, headers)
+            val response = route(request.method, request.path, request.body, request.headers)
             writeResponse(socket.getOutputStream(), response.first, response.second)
         }
     }
 
     /**
-     * 读取请求体。Content-Length 来自网络，必须设上限：
-     * 否则一个 `Content-Length: 1000000000` 就能让电视直接 OOM。
+     * 写响应。Content-Length 必须按**字节**算（body.toByteArray），
+     * 与请求侧读 body 的口径一致。
      */
-    private fun readBody(reader: BufferedReader, headers: Map<String, String>): String {
-        val declared = headers["content-length"]?.toIntOrNull() ?: return ""
-        if (declared <= 0) return ""
-        if (declared > MAX_BODY_CHARS) {
-            Log.w(TAG, "请求体过大，拒绝处理：$declared")
-            return ""
-        }
-        val buffer = CharArray(declared)
-        var read = 0
-        while (read < declared) {
-            val r = reader.read(buffer, read, declared - read)
-            if (r <= 0) break
-            read += r
-        }
-        return String(buffer, 0, read)
-    }
-
     private fun writeResponse(out: OutputStream, status: String, body: String) {
         val bytes = body.toByteArray(Charsets.UTF_8)
         val header = buildString {

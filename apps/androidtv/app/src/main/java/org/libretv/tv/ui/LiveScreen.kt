@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -78,6 +80,10 @@ import org.libretv.tv.ui.theme.TextPrimary
  */
 private const val LIVE_START_TIMEOUT_MS = 15_000L
 
+// 注意用的是 kotlin.OptIn：本文件为 media3 的 @UnstableApi 导入了 androidx.annotation.OptIn，
+// 它会遮蔽默认导入的 kotlin.OptIn，而 ExperimentalLayoutApi 是 Kotlin 侧 @RequiresOptIn，
+// 用 androidx 那个版本不会生效，编译仍会报 "The API of this layout is experimental"。
+@kotlin.OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun LiveScreen(vm: AppViewModel, data: AppData) {
     val live = vm.live
@@ -147,7 +153,13 @@ fun LiveScreen(vm: AppViewModel, data: AppData) {
 
             if (live.statuses.isNotEmpty()) {
                 Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // 用 FlowRow 而不是 Row：每个源一个状态 Chip，源多了（默认 2 个，
+                // 用户可加十几个）单行摆不下，Row 会直接把超出的部分裁掉，
+                // 表现为「后面几个源的状态永远看不到」。
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
                     live.statuses.forEach { (name, status) ->
                         Chip("$name · $status", active = status.endsWith("频道"))
                     }
@@ -297,20 +309,21 @@ fun LivePlayerScreen(
     var overlay by remember { mutableStateOf(true) }
     var switching by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
+    // 错误面板里的「重试」按钮：面板一出现就把焦点交给它，
+    // 否则根 Box 一直持有焦点、方向键被 onPreviewKeyEvent 吃掉，三个按钮永远点不到
+    val errorFocus = remember { FocusRequester() }
 
     val index = indexOfChannel(playlist, current.url)
     val total = playlist.size
 
-    // 播放器与频道 URL 绑定：切台时必须重建，否则会复用已 release 的实例
-    val exo = remember(current.url) {
-        Playback.build(context).apply { playWhenReady = true }
-    }
+    // 播放器整屏复用一个实例，切台只换 MediaItem。
+    // 旧写法是 remember(current.url) { Playback.build(...) } + onDispose release，
+    // 每换一台就新建一个 ExoPlayer 再销毁一个：连按换台时（每秒 1-2 次）低端盒子
+    // 的 codec 申请来不及释放，会出现「切到某台就黑屏/报解码错误」，甚至
+    // MediaCodec 池耗尽。复用实例只做 setMediaItem + prepare，开销小得多。
+    val exo = remember { Playback.build(context).apply { playWhenReady = true } }
 
-    DisposableEffect(current.url) {
-        error = null
-        buffering = true
-        exo.setMediaItem(MediaItem.fromUri(current.url))
-        exo.prepare()
+    DisposableEffect(Unit) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 buffering = playbackState == Player.STATE_BUFFERING || playbackState == Player.STATE_IDLE
@@ -335,6 +348,16 @@ fun LivePlayerScreen(
         }
     }
 
+    // 换台：同一个播放器换源
+    LaunchedEffect(current.url) {
+        error = null
+        buffering = true
+        runCatching {
+            exo.setMediaItem(MediaItem.fromUri(current.url))
+            exo.prepare()
+        }.onFailure { error = "无法打开这个频道：${it.message ?: "未知错误"}" }
+    }
+
     // 看门狗：有的台返回的是 HTML 错误页，ExoPlayer 既不报错也不出画面，
     // 界面会永远停在「正在连接直播流…」。超时就直接给结论并允许换台。
     LaunchedEffect(current.url) {
@@ -347,6 +370,23 @@ fun LivePlayerScreen(
     }
 
     LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
+
+    /**
+     * 焦点归属随错误面板来回切换。
+     *
+     * 面板出现时把焦点交给「重试」，根 Box 就不再持有焦点、下面那段
+     * onPreviewKeyEvent 也不会再吃掉所有按键；面板消失（重试成功或换台）
+     * 时再把焦点还给根 Box，恢复「方向键换台」。
+     */
+    LaunchedEffect(error != null) {
+        if (error != null) {
+            // 等一帧让面板的节点先组合出来，否则 requestFocus 会抛
+            kotlinx.coroutines.delay(60)
+            runCatching { errorFocus.requestFocus() }
+        } else {
+            runCatching { focusRequester.requestFocus() }
+        }
+    }
 
     // 换台闸门兜底：某些流迟迟不到 READY 也不报错，不设死线会让上下键永久失灵
     LaunchedEffect(current.url) {
@@ -384,6 +424,10 @@ fun LivePlayerScreen(
             .focusable()
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                // 错误面板可见时把所有按键让给面板里的按钮。
+                // 不这么写的话这里对方向键无条件 return true，焦点永远上不到 TvButton，
+                // 「重试 / 下一个频道 / 返回」三个按钮在遥控器上就是死的。
+                if (error != null) return@onPreviewKeyEvent false
                 when (event.key) {
                     Key.DirectionCenter, Key.Enter -> {
                         if (exo.isPlaying) exo.pause() else exo.play()
@@ -434,7 +478,7 @@ fun LivePlayerScreen(
                 Text(error ?: "", color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    TvButton("重试", onClick = { error = null; exo.prepare() })
+                    TvButton("重试", onClick = { error = null; exo.prepare() }, focusRequester = errorFocus)
                     if (playlist.size > 1) {
                         TvButton("下一个频道", onClick = { switchTo(1) })
                     }

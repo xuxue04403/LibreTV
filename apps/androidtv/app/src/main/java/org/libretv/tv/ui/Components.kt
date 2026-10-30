@@ -71,6 +71,8 @@ fun TvCard(
      * 都靠它），在这里转发才可靠。
      */
     onFocusChange: ((Boolean) -> Unit)? = null,
+    /** 置灰并禁用点击：重复进同一个长任务（如导入）时不给第二次机会 */
+    enabled: Boolean = true,
     content: @Composable (Boolean) -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -84,12 +86,18 @@ fun TvCard(
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
+                if (!enabled) alpha = 0.45f
             }
             .clip(shape)
             .background(if (focused) Panel2 else containerColor)
             .border(if (focused) 2.dp else 1.dp, if (focused) Accent else Line, shape)
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = enabled,
+                onClick = onClick,
+            )
     ) {
         content(focused)
     }
@@ -103,6 +111,7 @@ fun TvButton(
     modifier: Modifier = Modifier,
     primary: Boolean = false,
     focusRequester: FocusRequester? = null,
+    enabled: Boolean = true,
 ) {
     TvCard(
         onClick = onClick,
@@ -111,6 +120,7 @@ fun TvButton(
         containerColor = if (primary) Accent else Panel2,
         focusedScale = 1.06f,
         focusRequester = focusRequester,
+        enabled = enabled,
     ) { focused ->
         Text(
             text = text,

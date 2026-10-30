@@ -152,7 +152,8 @@ class AppStore(private val context: Context) {
      *
      * 采集站的 `wd` 只认中文，拼音只能拿「已经见过的片名」反查：浏览过分类、
      * 搜过片名，这些条目的首字母就有据可查。索引落盘后，第二次输入 `qmmk`
-     * 不用等网络。上限 [PINYIN_INDEX_LIMIT] 条，超出按原顺序截断（新的在前）。
+     * 不用等网络。上限 [PINYIN_INDEX_LIMIT] 条，超出时**保留最新的那些**
+     * （Repository.seenSnapshot 按插入顺序给出，最近的在后）。
      */
     suspend fun pinyinIndex(): List<SearchItem> {
         val raw = context.appDataStore.data.first()[pinyinIndexKey] ?: return emptyList()
@@ -163,8 +164,10 @@ class AppStore(private val context: Context) {
 
     suspend fun savePinyinIndex(items: List<SearchItem>) {
         if (items.isEmpty()) return
+        // takeLast 而不是 take：调用方给的是「老 → 新」顺序，
+        // 截断时丢掉老条目才符合「新的在前」的语义（之前 take 丢的是最新的）。
         val body = runCatching {
-            LooseJson.encodeToString(items.take(PINYIN_INDEX_LIMIT).map { IndexEntry.from(it) })
+            LooseJson.encodeToString(items.takeLast(PINYIN_INDEX_LIMIT).map { IndexEntry.from(it) })
         }.getOrNull() ?: return
         context.appDataStore.edit { prefs -> prefs[pinyinIndexKey] = body }
     }

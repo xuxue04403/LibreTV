@@ -17,6 +17,11 @@ const SSDP_HOST = '239.255.255.250';
 const SSDP_PORT = 1900;
 const AVT_SERVICE = 'urn:schemas-upnp-org:service:AVTransport:1';
 
+/** 设备描述上限：正常几十 KB，给 1MB 足够，防止局域网恶意设备把我们打死 */
+const MAX_DESCRIPTION_BYTES = 1024 * 1024;
+/** SOAP 响应上限：只有一个 errorCode/errorDescription，256KB 绰绰有余 */
+const MAX_SOAP_BYTES = 256 * 1024;
+
 export interface DlnaDevice {
   /** 设备友好名 */
   name: string;
@@ -76,11 +81,39 @@ export function parseDeviceDescription(xml: string, location: string): DlnaDevic
   return null;
 }
 
+/**
+ * 带字节上限的响应体读取。
+ *
+ * DLNA 的对端永远是局域网里的「别人家的设备」，不是可信服务：只设超时
+ * （4s/6s）而不设字节上限的话，同网段任意主机都能在这几秒里推几百 MB，
+ * 把主进程（进而整个应用）打死。与媒体代理的 readLimited 同一思路：
+ * 先看 Content-Length 早退，再边收边累加。
+ */
+async function readLimitedText(res: Response, limit: number): Promise<string> {
+  const declared = Number(res.headers.get('content-length') || 0);
+  if (declared > limit) {
+    await res.body?.cancel().catch(() => undefined);
+    throw new Error('响应体过大');
+  }
+  if (!res.body) return '';
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+    total += chunk.byteLength;
+    if (total > limit) {
+      await res.body.cancel().catch(() => undefined);
+      throw new Error('响应体过大');
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString('utf8');
+}
+
 async function describe(location: string): Promise<DlnaDevice | null> {
   try {
     const res = await fetch(location, { signal: AbortSignal.timeout(4000) });
     if (!res.ok) return null;
-    return parseDeviceDescription(await res.text(), location);
+    return parseDeviceDescription(await readLimitedText(res, MAX_DESCRIPTION_BYTES), location);
   } catch {
     return null;
   }
@@ -225,7 +258,8 @@ async function soap(controlUrl: string, action: string, args: Record<string, str
     body,
     signal: AbortSignal.timeout(6000),
   });
-  const text = await res.text();
+  // 同上：SOAP 响应同样来自不可信的局域网设备，必须有字节上限
+  const text = await readLimitedText(res, MAX_SOAP_BYTES);
   if (!res.ok) {
     // UPnP 错误也返回 200，真正的失败通常在 body 的 errorCode 里
     throw new Error(`投屏失败（HTTP ${res.status}）`);

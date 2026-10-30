@@ -50,13 +50,23 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
     // 首屏焦点落在「开始搜索」上。必须重试：组合第一次跑时目标节点还没挂载，
     // requestFocus() 会抛「FocusRequester is not initialized」，被 runCatching 吞掉之后
     // 焦点就默认落到第一个可聚焦项（左侧导航栏的「首页」），看起来像没有选中项。
-    LaunchedEffect(Unit) {
+    // 进入本页时的确认序号：只有「进入之后」用户在导航项上按了 OK，
+    // 才说明是明确要进这一页，这时才抢焦点（见 FocusPolicy）。
+    // 注意必须用页面自持的可变状态记录「已响应过的序号」，
+    // 写成 `remember(tick) { tick }` 会让两边一起变、判定恒假。
+    val autoFocus = rememberAutoFocusState(vm.contentFocusTick)
+    LaunchedEffect(vm.contentFocusTick) {
         // 焦点还在左侧导航里移动（导航支持「移上去就切页」）时不抢，
         // 否则焦点一进导航就被首页拽到「开始搜索」，↓ 走不到「搜索」。
-        if (vm.navFocusHold) return@LaunchedEffect
+        if (!autoFocus.consume(vm.navFocusHold, vm.contentFocusTick)) {
+            return@LaunchedEffect
+        }
         repeat(4) { attempt ->
             if (attempt > 0) kotlinx.coroutines.delay(80L)
-            if (runCatching { firstFocus.requestFocus() }.isSuccess) return@LaunchedEffect
+            if (runCatching { firstFocus.requestFocus() }.isSuccess) {
+                autoFocus.handledTick = vm.contentFocusTick
+                return@LaunchedEffect
+            }
         }
     }
 

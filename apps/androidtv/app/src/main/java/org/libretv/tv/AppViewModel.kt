@@ -140,6 +140,14 @@ private const val DETAIL_FANOUT = 3
 private const val HOME_ROW_SIZE = 14
 
 /**
+ * 收藏条数上限（与桌面端 `FAVORITE_LIMIT` 对齐）。
+ *
+ * 直播收藏原来完全不设上限：一个两万频道的源被逐个收藏后，整份快照会撑爆
+ * DataStore 落盘预算，写失败时连观看记录一起丢。
+ */
+private const val FAVORITE_LIMIT = 500
+
+/**
  * 目录落盘的合并窗口。
  *
  * 一轮 refreshCatalog 会写 8+1 次快照，每份序列化约 557KB 且 DataStore 是整文件
@@ -486,6 +494,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         navHoldRelease?.cancel()
         navHoldRelease = null
         navFocusHold = false
+    }
+
+    /**
+     * 「现在请把焦点交给内容区的第一个可操作元素」的信号。
+     *
+     * 导航栏是「焦点移上去就切页」，所以目标页组合的那一刻 `navFocusHold`
+     * 必然是 true，它自己那段 `LaunchedEffect(Unit)` 里的首焦点逻辑 100% 被跳过——
+     * 也就是说进入任何页面都不会有首焦点。这里改用显式信号：
+     * 用户在导航项上按 OK（明确的「我要进这一页」），才让页面去抢焦点。
+     * 只靠 `releaseNavFocusHoldSoon` 的 250ms 宽限期做不到这件事，
+     * 因为它分不清「用户按 ↓ 进内容」和「焦点在导航项之间移动」。
+     */
+    var contentFocusTick by mutableStateOf(0)
+        private set
+
+    fun requestContentFocus() {
+        endNavFocusHold()
+        contentFocusTick++
     }
 
     fun go(target: Screen) {
@@ -1085,7 +1111,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val detail = runCatchingCancellable { repo.detail(next.source, next.vodId) }.getOrNull()
             if (detail == null || detail.episodes.isEmpty()) continue
 
-            val aligned = episodeIndex.coerceIn(0, (detail.episodes.size - 1).coerceAtLeast(0))
+            // 与详情页/观看记录用同一个夹紧口径（HistoryDedupe.clampEpisodeIndex），
+            // 各写一份 coerceIn 才会出现「显示第 15 集、实际播第 2 集」的错位。
+            val aligned = HistoryDedupe.clampEpisodeIndex(episodeIndex, detail.episodes.size)
             val target = player.copy(
                 source = next.source,
                 vodId = next.vodId,
@@ -1309,14 +1337,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val exists = data.liveFavorites.any { it.url == channel.url }
                 if (exists) data.copy(liveFavorites = data.liveFavorites.filter { it.url != channel.url })
                 else data.copy(
-                    liveFavorites = listOf(
-                        org.libretv.tv.data.LiveFavoriteEntry(
-                            url = channel.url,
-                            name = channel.name,
-                            logo = channel.logo,
-                            createdAt = System.currentTimeMillis(),
-                        )
-                    ) + data.liveFavorites
+                    liveFavorites = (
+                        listOf(
+                            org.libretv.tv.data.LiveFavoriteEntry(
+                                url = channel.url,
+                                name = channel.name,
+                                logo = channel.logo,
+                                createdAt = System.currentTimeMillis(),
+                            )
+                        ) + data.liveFavorites
+                        ).take(FAVORITE_LIMIT)
                 )
             }
         }
@@ -1327,11 +1357,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { store.update { it.copy(settings = transform(it.settings)) } }
     }
 
-    fun addSource(name: String, url: String, detailUrl: String?) {
+    /**
+     * 添加点播源。返回 false 表示校验没过（UI 据此决定是否清空输入框）——
+     * 以前 UI 无条件清空，输错一个字符名称/地址/详情全丢，只能重打。
+     */
+    fun addSource(name: String, url: String, detailUrl: String?): Boolean {
         val cleanUrl = url.trim().trimEnd('/')
         if (!cleanUrl.startsWith("http")) {
             showToast("请填写 http(s) 开头的采集接口地址")
-            return
+            return false
         }
         val key = "custom_${UUID.randomUUID().toString().take(8)}"
         viewModelScope.launch {
@@ -1348,6 +1382,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             showToast("已添加点播源")
         }
+        return true
     }
 
     fun removeSource(key: String) {
@@ -1383,11 +1418,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun addLiveSource(name: String, url: String, epg: String?) {
+    /** 添加直播源；返回 false 表示校验没过（UI 据此决定是否清空输入框） */
+    fun addLiveSource(name: String, url: String, epg: String?): Boolean {
         val cleanUrl = url.trim().trimEnd('/')
         if (!cleanUrl.startsWith("http")) {
             showToast("请填写 http(s) 开头的 M3U 地址")
-            return
+            return false
         }
         val key = "live_${UUID.randomUUID().toString().take(8)}"
         viewModelScope.launch {
@@ -1404,6 +1440,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             showToast("已添加直播源")
         }
+        return true
     }
 
     fun removeLiveSource(key: String) {
@@ -1437,6 +1474,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun importSubscription(url: String) {
+        // 重入守卫：遥控器连按 OK 会并发跑两次导入，store.update 的
+        // read-modify-write 可能把同一批源重复追加、勾选集合互相覆盖。
+        // importing 以前只用于改按钮文案，挡不住任何东西。
+        if (importing) {
+            showToast("正在导入，请稍候")
+            return
+        }
         val trimmed = url.trim()
         if (!trimmed.startsWith("http")) {
             showToast("请填写订阅地址")
@@ -1456,7 +1500,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             liveSelected = (data.liveSelected + lives.map { it.key }).distinct(),
                         )
                     }
-                    showToast("已导入 ${parsed.sources.size} 个点播源、${parsed.liveSources.size} 个直播源")
+                    if (parsed.sources.isEmpty() && parsed.liveSources.isEmpty()) {
+                        showToast("订阅里没有可用的源")
+                    } else {
+                        showToast("已导入 ${parsed.sources.size} 个点播源、${parsed.liveSources.size} 个直播源")
+                    }
                 }
                 .onFailure { showToast(it.message ?: "导入失败") }
             importing = false

@@ -117,6 +117,18 @@ class ParsersTest {
     }
 
     @Test
+    fun `片名比对忽略空格与标点（跨源补源的必要条件）`() {
+        // 采集站返回的片名与用户点进来时的片名常常一个带空格/标点一个不带，
+        // 比对时若只归一化一边，跨源补源会静默失效（桌面端 M9 的同类缺陷）。
+        assertTrue(Parsers.sameTitle("The Matrix", "The-Matrix"))
+        assertTrue(Parsers.sameTitle("名侦探柯南：黑铁的鱼影", "名侦探柯南 黑铁的鱼影"))
+        assertTrue(Parsers.sameTitle("流浪地球2", "流浪地球 2"))
+        assertFalse(Parsers.sameTitle("流浪地球", "三体"))
+        assertFalse(Parsers.sameTitle("", ""))
+        assertFalse(Parsers.sameTitle("  ", "流浪地球"))
+    }
+
+    @Test
     fun `订阅解析支持注释与尾随逗号并跳过 Spider`() {
         val text = """
             {

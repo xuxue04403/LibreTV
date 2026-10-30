@@ -1,6 +1,6 @@
 import { browseCategory, CATALOG_REFRESH_MS, HOME_CATEGORIES, type CategoryKey } from '@libretv/core';
 import { http } from './bridge';
-import { cachedItems, missingCategories, rememberItems } from './catalog-cache';
+import { cachedItems, markCategoryChecked, missingCategories, rememberItems, signatureOf } from './catalog-cache';
 import { useAppStore } from './store';
 /**
  * 分类目录预热与后台刷新。
@@ -43,6 +43,10 @@ function targetCategories(): CategoryKey[] {
 
 async function warmOnce(): Promise<void> {
   if (state.running) return;
+  // 最小化/托盘时别跑整轮：一轮就是 4 源 × 8 分类，上百个请求，
+  // 用户看不见结果却要为此付流量、机器醒来时还会和用户操作抢带宽。
+  // 恢复可见时由调用方的 interval 在下一小时补上；这里直接跳过即可。
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
   const store = useAppStore.getState();
   const sources = store.sources.filter((s) => store.selectedKeys.includes(s.key));
   if (sources.length === 0) return;
@@ -70,7 +74,23 @@ async function warmOnce(): Promise<void> {
             filterAdult: adultFilter,
             timeoutMs: 15_000,
           });
-          if (result.items.length > 0) rememberItems(sources, adultFilter, key, result.items);
+          if (result.items.length > 0) {
+            // 写缓存前重新取一次状态：这一轮要跑十几秒，期间用户完全可能改了源。
+            // 用开跑时的旧 sources 写下去，会覆盖掉另一个签名下的新缓存
+            // （旧实现就是这样把用户刚加的源产生的缓存整份盖掉的）。
+            const now = useAppStore.getState();
+            const nowSources = now.sources.filter((s) => now.selectedKeys.includes(s.key));
+            const nowAdult = now.settings.adultFilter;
+            if (signatureOf(nowSources, nowAdult) !== signatureOf(sources, adultFilter)) continue;
+            rememberItems(nowSources, nowAdult, key, result.items);
+          } else {
+            // 空分类也记一次「刚查过」，否则它永远算 stale，每小时被重抓一轮
+            const now = useAppStore.getState();
+            const nowSources = now.sources.filter((s) => now.selectedKeys.includes(s.key));
+            const nowAdult = now.settings.adultFilter;
+            if (signatureOf(nowSources, nowAdult) !== signatureOf(sources, adultFilter)) continue;
+            markCategoryChecked(nowSources, nowAdult, key);
+          }
         } catch {
           /* 预热失败无所谓：用户点进分类时页面自己还会再拉一次 */
         }

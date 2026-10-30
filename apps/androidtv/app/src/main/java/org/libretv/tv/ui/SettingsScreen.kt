@@ -88,10 +88,12 @@ fun SettingsScreen(vm: AppViewModel, data: AppData) {
                         modifier = Modifier.weight(1f),
                     )
                     TvButton("添加", onClick = {
-                        vm.addSource(vodName, vodUrl, vodDetail.ifBlank { null })
-                        vodName = ""
-                        vodUrl = ""
-                        vodDetail = ""
+                        // 校验没过就别清空输入框：输错一个字符名称/地址/详情全丢，只能重打
+                        if (vm.addSource(vodName, vodUrl, vodDetail.ifBlank { null })) {
+                            vodName = ""
+                            vodUrl = ""
+                            vodDetail = ""
+                        }
                     }, primary = true)
                 }
             }
@@ -139,10 +141,11 @@ fun SettingsScreen(vm: AppViewModel, data: AppData) {
                         modifier = Modifier.weight(1f),
                     )
                     TvButton("添加", onClick = {
-                        vm.addLiveSource(liveName, liveUrl, liveEpg.ifBlank { null })
-                        liveName = ""
-                        liveUrl = ""
-                        liveEpg = ""
+                        if (vm.addLiveSource(liveName, liveUrl, liveEpg.ifBlank { null })) {
+                            liveName = ""
+                            liveUrl = ""
+                            liveEpg = ""
+                        }
                     }, primary = true)
                 }
             }
@@ -175,6 +178,9 @@ fun SettingsScreen(vm: AppViewModel, data: AppData) {
                     if (vm.importing) "导入中…" else "导入",
                     onClick = { vm.importSubscription(subUrl) },
                     primary = true,
+                    // 置灰而不只是改文案：原来连按 OK 会并发跑两次导入，
+                    // store 的 read-modify-write 会把同一批源重复追加
+                    enabled = !vm.importing,
                 )
                 TvButton("恢复默认源", onClick = { vm.restoreBuiltinSources() })
             }

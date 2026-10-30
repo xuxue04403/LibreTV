@@ -2,6 +2,7 @@ package org.libretv.tv.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,9 +26,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -57,6 +62,7 @@ fun NavRail(
     onSelect: (Screen) -> Unit,
     onFocusEnter: () -> Unit = {},
     onFocusLeave: () -> Unit = {},
+    onConfirm: () -> Unit = {},
 ) {
     // 导航收窄到 84dp：104dp 常显时占掉 960dp 设计宽的 11%，
     // 而电视上没人需要一直看到文字标签——聚焦时再显示就够了。
@@ -81,7 +87,13 @@ fun NavRail(
         items.forEach { item ->
             val active = current::class == item.screen::class
             TvCard(
-                onClick = { onSelect(item.screen) },
+                onClick = {
+                    onSelect(item.screen)
+                    // 显式确认进入：解除导航焦点保持，让页面自己抢首焦点。
+                    // 不加这一句的话「焦点移上去就切页」会让 navFocusHold 恒为 true，
+                    // 每个页面的首焦点 LaunchedEffect 都被早退掉，永远不会执行。
+                    onConfirm()
+                },
                 // 焦点移到导航项就切过去，不用再按 OK：电视上「先选中再确认」
                 // 是鼠标时代遗留的操作方式，遥控器连着按过去才是自然的手感。
                 // 只对「按页切换」的项生效；Home 之外的状态（播放页等）不会出现在导航里。
@@ -144,7 +156,24 @@ fun NavRail(
 
 @Composable
 fun CastScreen() {
-    Column(Modifier.fillMaxSize().padding(ScreenPadding)) {
+    // 整页原来只有 Text/Panel，没有任何可聚焦元素：从导航进来后焦点仍留在导航项上，
+    // 按 ↓ 直接跳到下一个导航项，用户根本「停不住」在投屏页看地址。
+    // 这里让页面容器本身可聚焦并请求焦点——不伪造一个「点了什么也不做」的按钮。
+    val pageFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        repeat(4) { attempt ->
+            if (attempt > 0) kotlinx.coroutines.delay(80L)
+            if (runCatching { pageFocus.requestFocus() }.isSuccess) return@LaunchedEffect
+        }
+    }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(ScreenPadding)
+            .focusRequester(pageFocus)
+            .focusable()
+    ) {
         Text("投屏接收", color = TextPrimary, fontSize = MaterialTheme.typography.headlineLarge.fontSize, fontWeight = FontWeight.Bold)
         Text(
             "电视作为 DLNA 接收端运行，手机与电视连同一个 Wi-Fi 即可投屏。",

@@ -51,10 +51,20 @@ fun SearchScreen(vm: AppViewModel, data: AppData) {
     }
 
     // 焦点还在左侧导航里移动时不抢：否则焦点一进导航就被这里拽到搜索框，
-    // 用户没法用 ↓ 从「搜索」走到「直播」。
-    LaunchedEffect(Unit) {
-        if (vm.navFocusHold) return@LaunchedEffect
-        runCatching { searchButtonFocus.requestFocus() }
+    // 用户没法用 ↓ 从「搜索」走到「直播」。见 FocusPolicy 的说明。
+    // 用页面自持的「已响应序号」，不能写成 `remember(tick) { tick }`（两边一起变、判定恒假）。
+    val autoFocus = rememberAutoFocusState(vm.contentFocusTick)
+    LaunchedEffect(vm.contentFocusTick) {
+        if (!autoFocus.consume(vm.navFocusHold, vm.contentFocusTick)) {
+            return@LaunchedEffect
+        }
+        repeat(4) { attempt ->
+            if (attempt > 0) kotlinx.coroutines.delay(80L)
+            if (runCatching { searchButtonFocus.requestFocus() }.isSuccess) {
+                autoFocus.handledTick = vm.contentFocusTick
+                return@LaunchedEffect
+            }
+        }
     }
 
     Column(Modifier.fillMaxSize().padding(ScreenPadding)) {

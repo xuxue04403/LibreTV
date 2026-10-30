@@ -12,15 +12,26 @@ import org.junit.Test
  */
 class TvUiScaleTest {
 
+    /**
+     * 按「像素宽高 + 上报 dpi」算出缩放。
+     *
+     * 这个换算必须放在测试里做一遍：直接给 [tvUiScale] 喂 dp，等于假设
+     * 「4K@640dpi 就是 960×540dp」，而这条假设本身才是要被验证的东西。
+     */
+    private fun scaleOf(pxW: Int, pxH: Int, dpi: Int): Float {
+        val density = dpi / 160f
+        return tvUiScale(pxW / density, pxH / density)
+    }
+
     @Test
     fun `1080p 上报 320dpi 时保持原样`() {
-        assertEquals(1f, tvUiScale(960f, 540f), 0.001f)
+        assertEquals(1f, scaleOf(1920, 1080, 320), 0.001f)
     }
 
     @Test
     fun `4K 上报 640dpi 时仍是 1`() {
         // 3840x2160 @ 640dpi = 960x540dp，与设计基准一致
-        assertEquals(1f, tvUiScale(960f, 540f), 0.001f)
+        assertEquals(1f, scaleOf(3840, 2160, 640), 0.001f)
     }
 
     @Test

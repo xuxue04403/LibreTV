@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { startMediaProxy, assertAllowedTarget, type MediaProxy } from './proxy';
+import { startMediaProxy, assertAllowedTarget, fetchChecked, readLimited, type MediaProxy } from './proxy';
 import { castToDevice, discoverDevices, stopCast, type DlnaDevice } from './dlna';
 
 const DEFAULT_UA =
@@ -232,16 +232,26 @@ ipcMain.handle(
       ...(options?.headers ?? {}),
     };
     try {
-      const res = await fetch(target.href, {
-        method,
-        headers,
-        body: options?.body,
-        redirect: 'follow',
-        signal: AbortSignal.timeout(Math.min(60_000, Math.max(1000, options?.timeoutMs ?? 12_000))),
-      });
-      const buf = new Uint8Array(await res.arrayBuffer());
-      // 元数据接口正常几十 KB；给 16MB 上限，大文件请走媒体代理
-      if (buf.byteLength > MAX_IPC_BODY_BYTES) return fail(413, '响应体过大');
+      // 逐跳校验（S2）：只在入口校验一次、然后 redirect:'follow' 的话，
+      // 一个公网 URL 302 到 127.0.0.1 就能绕过全部内网防护。
+      const res = await fetchChecked(
+        target,
+        {
+          method,
+          headers,
+          body: options?.body,
+          signal: AbortSignal.timeout(Math.min(60_000, Math.max(1000, options?.timeoutMs ?? 12_000))),
+        },
+        process.env.LTV_ALLOW_PRIVATE_MEDIA === '1'
+      );
+      // 流式限长（M1）：不能先 arrayBuffer() 再判长度，chunked 响应不受控
+      let buf: Uint8Array;
+      try {
+        buf = await readLimited(res, MAX_IPC_BODY_BYTES);
+      } catch (err) {
+        if (err instanceof Error && err.message === '响应体过大') return fail(413, '响应体过大');
+        throw err;
+      }
       const headerMap: Record<string, string> = {};
       res.headers.forEach((v, k) => {
         headerMap[k.toLowerCase()] = v;
@@ -267,7 +277,7 @@ ipcMain.handle(
 /**
  * 流式抓取（直播 M3U / XMLTV）。
  *
- * 为什么单独开一条通道：`http:fetch` 必须等 `arrayBuffer()` 落地才返回，
+ * 为什么单独开一条通道：`http:fetch` 必须等响应体整个落地才返回，
  * 而 iptv-org 的 index.m3u 有 2.5MB、实测服务器限速到 ~35KB/s，要下 70 秒。
  * 这里改为边收边把分块推给渲染层，主播只要几百毫秒就能看到第一批频道。
  *
@@ -304,15 +314,21 @@ ipcMain.handle(
 
     try {
       armIdle();
-      const res = await fetch(target.href, {
-        headers: {
-          'User-Agent': DEFAULT_UA,
-          Accept: 'application/x-mpegURL, application/vnd.apple.mpegurl, application/xml, text/plain, */*',
-          ...(options?.headers ?? {}),
+      // 同样必须逐跳校验（S2）：直播源 302 到内网时，follow 会绕开入口校验
+      const res = await fetchChecked(
+        target,
+        {
+          headers: {
+            'User-Agent': DEFAULT_UA,
+            Accept: 'application/x-mpegURL, application/vnd.apple.mpegurl, application/xml, text/plain, */*',
+            ...(options?.headers ?? {}),
+          },
+          signal: controller.signal,
         },
-        redirect: 'follow',
-        signal: controller.signal,
-      });
+        process.env.LTV_ALLOW_PRIVATE_MEDIA === '1',
+        assertAllowedTarget,
+        idleTimeoutMs
+      );
 
       const headerMap: Record<string, string> = {};
       res.headers.forEach((v, k) => {
@@ -391,6 +407,31 @@ ipcMain.handle('dialog:save-text', async (_event, defaultName: string, content: 
   return { ok: true as const, path: result.filePath };
 });
 
+/**
+ * 校验渲染层传来的 DLNA 设备对象。
+ *
+ * S3 当初只修了 `dlna:cast`，`dlna:stop` 仍然把渲染层给的 `device.controlUrl`
+ * 直接交给 `soap()` 去 POST。于是渲染层获得一个「向任意地址 POST XML」的原语
+ * （能打内网，而 `http:fetch` 只能到公网）。这里统一收口：两个 handler 都必须
+ * 先通过同一个校验，且必须与设备描述（location）同源。
+ */
+function assertCastableDevice(device: DlnaDevice): void {
+  if (!device || typeof device.location !== 'string' || typeof device.controlUrl !== 'string') {
+    throw new Error('设备信息不完整');
+  }
+  let deviceUrl: URL;
+  let control: URL;
+  try {
+    deviceUrl = new URL(device.location);
+    control = new URL(device.controlUrl);
+  } catch {
+    throw new Error('设备地址无效');
+  }
+  if (deviceUrl.protocol !== 'http:' && deviceUrl.protocol !== 'https:') throw new Error('设备地址协议不受支持');
+  if (control.protocol !== 'http:' && control.protocol !== 'https:') throw new Error('控制地址协议不受支持');
+  if (control.origin !== deviceUrl.origin) throw new Error('控制地址与设备不同源');
+}
+
 // —— DLNA 投屏（发送端） ——
 ipcMain.handle('dlna:discover', async () => {
   try {
@@ -403,9 +444,7 @@ ipcMain.handle('dlna:discover', async () => {
 ipcMain.handle('dlna:cast', async (_event, device: DlnaDevice, url: string, title: string) => {
   try {
     // 渲染层传来的 device 不可全信：控制地址必须与设备描述同源，且设备描述本身要能被解析
-    const deviceUrl = new URL(device.location);
-    const control = new URL(device.controlUrl);
-    if (control.origin !== deviceUrl.origin) throw new Error('控制地址与设备不同源');
+    assertCastableDevice(device);
     if (!/^https?:\/\//i.test(url)) throw new Error('投屏地址无效');
     await castToDevice(device, url, title);
     return { ok: true as const };
@@ -416,6 +455,8 @@ ipcMain.handle('dlna:cast', async (_event, device: DlnaDevice, url: string, titl
 
 ipcMain.handle('dlna:stop', async (_event, device: DlnaDevice) => {
   try {
+    // 与 cast 同一套校验：stop 也会向 controlUrl 发 SOAP，不能留成后门
+    assertCastableDevice(device);
     await stopCast(device);
     return { ok: true as const };
   } catch (err) {

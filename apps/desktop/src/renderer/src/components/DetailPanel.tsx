@@ -12,7 +12,7 @@ import {
 } from '@libretv/core';
 import { http } from '../lib/bridge';
 import { useAppStore } from '../lib/store';
-import { useToast } from './Toast';
+import { useToast } from './toast-context';
 import { Icon } from './Icons';
 import { Poster } from './Poster';
 import type { WatchTarget } from '../pages/Watch';
@@ -68,6 +68,13 @@ export function DetailPanel({
     const { history: historySnapshot } = useAppStore.getState();
     const source = resolveSource(selected);
     if (!source.url) {
+      // 早退时必须把上一次的详情一起清掉：面板是按「同一部片换了源」复用的，
+      // 不清 detail/loading 就会残留上一部（或上一个源）的选集列表，
+      // 用户点「立即播放」用的还是旧 episodes。loading 不清更糟——
+      // 面板会一直转圈，而请求根本没发出去。
+      setDetail(null);
+      setLoading(false);
+      setEpisodeIndex(0);
       setError('该来源缺少接口地址，无法获取详情');
       return;
     }
@@ -130,7 +137,9 @@ export function DetailPanel({
                 className="btn primary"
                 disabled={!detail || detail.episodes.length === 0}
                 onClick={() => {
-                  if (!detail) return;
+                  // 换源瞬间 detail 可能还是上一部片的：按钮的 disabled 已挡住，
+                  // 这里再兜一次，绝不用旧 episodes 起播
+                  if (!detail || detail.episodes.length === 0) return;
                   onPlay({
                     source: resolveSource(selected),
                     vodId: selected.vodId,

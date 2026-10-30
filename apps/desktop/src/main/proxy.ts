@@ -31,10 +31,29 @@ const DEFAULT_UA =
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 /** 流式直通的总量上限：只防失控，正常分片远小于这个值 */
 const MAX_STREAM_BYTES = 1024 * 1024 * 1024;
+/**
+ * 实际生效的流式上限。
+ *
+ * 走环境变量是为了能被测试覆盖：真实上限 1GB，跑测试不可能真下 1GB 数据，
+ * 没有这个开关，「超限必须断流」这条就只能靠读代码相信。
+ */
+function streamByteLimit(): number {
+  const raw = Number(process.env.LTV_MAX_STREAM_BYTES);
+  return Number.isFinite(raw) && raw > 0 ? raw : MAX_STREAM_BYTES;
+}
 /** 重定向跟随上限：每跳都要重新校验，避免无限套娃 */
 const MAX_REDIRECTS = 3;
 /** 媒体代理只应服务这几类内容，其余一律按二进制处理且不发可执行 MIME */
 const SAFE_IMAGE_TYPES = /^image\//i;
+/**
+ * `/p` 允许原样透传的媒体类型。
+ *
+ * 上游是第三方采集站/CDN，`Content-Type` 完全由它说了算：直接把 `text/html`
+ * 以 `127.0.0.1` 同源的形式回给渲染层，等于给 XSS 留了一扇门
+ * （`<video>`/hls.js 不会执行它，但同源下任何 `fetch` + 写 DOM 都会）。
+ * 只放行真正会被播放器消费的类型，其余降级为 `application/octet-stream`。
+ */
+const SAFE_MEDIA_TYPES = /^(video\/|audio\/|application\/vnd\.apple\.mpegurl|application\/x-mpegurl|application\/octet-stream)/i;
 /** 分片这类不可变内容，允许浏览器缓存，seek 回来直接命中 */
 const CACHE_SEGMENT = 'public, max-age=3600, immutable';
 /**
@@ -90,6 +109,38 @@ function mediaRequestHeaders(target: URL): Record<string, string> {
   };
 }
 
+/**
+ * 把 URL 里内嵌的 `user:pass@` 转成 `Authorization: Basic` 头。
+ *
+ * undici 对含凭据的 URL 直接抛 `TypeError: Request cannot be constructed from
+ * a URL that includes credentials`，于是 `http://user:pass@host/...` 这类源
+ * （部分采集站的接口地址就是这种）在桌面端 100% 不可播。
+ * 转成请求头既让它们能播，又不会把明文密码留在 URL 里。
+ */
+function splitCredentials(url: URL): { href: string; authorization?: string } {
+  if (!url.username && !url.password) return { href: url.href };
+  let user = url.username;
+  let pass = url.password;
+  try {
+    user = decodeURIComponent(user);
+    pass = decodeURIComponent(pass);
+  } catch {
+    /* 百分号编码不合法就按原样用 */
+  }
+  const clean = new URL(url.href);
+  clean.username = '';
+  clean.password = '';
+  return {
+    href: clean.href,
+    authorization: `Basic ${Buffer.from(`${user}:${pass}`, 'utf8').toString('base64')}`,
+  };
+}
+
+/** 错误文案里不能出现明文密码：把 `scheme://user:pass@` 里的凭据抹掉 */
+export function redactUrl(text: string): string {
+  return text.replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, '$1***@');
+}
+
 export interface MediaProxy {
   base: string;
   token: string;
@@ -109,10 +160,32 @@ function isPrivateAddress(ip: string): boolean {
   }
   const lower = ip.toLowerCase();
   if (lower === '::1' || lower === '::') return true;
-  if (lower.startsWith('fe80') || lower.startsWith('fc') || lower.startsWith('fd')) return true;
-  // IPv4-mapped IPv6
-  if (lower.startsWith('::ffff:')) return isPrivateAddress(lower.slice(7));
+  // IPv4-mapped IPv6：既可能是 ::ffff:127.0.0.1，也可能是 ::ffff:7f00:1（压缩十六进制），
+  // 后者 net.isIPv4 不认，必须先把末 32 位按数值还原成点分再判
+  const mapped = mappedIPv4(lower);
+  if (mapped) return isPrivateAddress(mapped);
+  // IPv6 按首字节判段：fe80::/10 是链路本地（含 feb0/fec0…），fc00::/7 是唯一本地
+  const firstHextet = parseInt(lower.split(':')[0] || '0', 16);
+  if (Number.isFinite(firstHextet)) {
+    if ((firstHextet & 0xffc0) === 0xfe80) return true; // fe80::/10
+    if ((firstHextet & 0xfe00) === 0xfc00) return true; // fc00::/7
+    if (firstHextet === 0x64 && lower.startsWith('64:ff9b')) return true; // NAT64
+  }
   return false;
+}
+
+/** 把 ::ffff:a.b.c.d / ::ffff:7f00:1 这类 IPv4-mapped 地址还原成点分十进制 */
+function mappedIPv4(lower: string): string | null {
+  if (!lower.startsWith('::ffff:')) return null;
+  const tail = lower.slice('::ffff:'.length);
+  if (net.isIPv4(tail)) return tail;
+  // 压缩写法：最后两段各是 16 位十六进制
+  const groups = tail.split(':');
+  if (groups.length !== 2) return null;
+  const hi = parseInt(groups[0], 16);
+  const lo = parseInt(groups[1], 16);
+  if (!Number.isFinite(hi) || !Number.isFinite(lo)) return null;
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
 }
 
 interface DnsEntry {
@@ -158,7 +231,11 @@ export async function assertAllowedTarget(raw: string, allowPrivate = false): Pr
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('仅支持 http(s) 地址');
   if (allowPrivate) return url;
-  const host = url.hostname;
+  // IPv6 字面量在 WHATWG URL 里带方括号（new URL('http://[::1]/').hostname === '[::1]'），
+  // 而 net.isIP('[::1]') === 0。不剥括号就会落到 dns.lookup('[::1]') 那一支，
+  // 靠「解析失败」被间接拦住——防护只剩副作用，任何解析行为变化都会立刻变成真 SSRF。
+  const hostname = url.hostname;
+  const host = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
   if (host === 'localhost' || host.endsWith('.localhost')) throw new Error('拒绝访问本机地址');
   if (net.isIP(host)) {
     if (isPrivateAddress(host)) throw new Error('拒绝访问内网地址');
@@ -197,7 +274,12 @@ export async function fetchChecked(
     const signal = init.signal ? AbortSignal.any([init.signal as AbortSignal, gate.signal]) : gate.signal;
     let res: Response;
     try {
-      res = await fetch(current.href, { ...init, redirect: 'manual', method: init.method, signal });
+      // 含凭据的 URL 交给 undici 会直接抛错：这里转成 Authorization 头再发，
+      // 顺带让 query/metrics 里不再出现明文密码。
+      const { href, authorization } = splitCredentials(current);
+      const headers = new Headers(init.headers);
+      if (authorization) headers.set('Authorization', authorization);
+      res = await fetch(href, { ...init, headers, redirect: 'manual', method: init.method, signal });
     } finally {
       clearTimeout(timer);
     }
@@ -280,7 +362,15 @@ function looksLikePlaylistHead(head: Uint8Array): boolean {
  * 之前的实现在 `arrayBuffer()` 之后才判长度——那时数据已经全量进堆，
  * 判长只能挡「写完才发现超了」，挡不住 OOM。这里改为流式累加，超限立即取消。
  */
-async function readLimited(res: Response, limit = MAX_BODY_BYTES): Promise<Buffer> {
+/**
+ * 流式读取响应体并限长。
+ *
+ * 关键点：**先看 Content-Length 早退，再边收边累加**。旧写法
+ * `new Uint8Array(await res.arrayBuffer())` 会先把整份响应读进堆再判长度，
+ * chunked 或没有 Content-Length 的响应根本不受上限约束——一个无限流就能把
+ * 主进程打爆。分类/搜索走的就是这条 IPC，触发面很广。
+ */
+export async function readLimited(res: Response, limit = MAX_BODY_BYTES): Promise<Buffer> {
   const declared = Number(res.headers.get('content-length') || 0);
   if (declared > limit) {
     await res.body?.cancel().catch(() => undefined);
@@ -477,7 +567,9 @@ export async function startMediaProxy(): Promise<MediaProxy> {
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     void handle(req, res).catch((err: unknown) => {
-      if (!res.headersSent) sendText(res, 502, `代理失败：${err instanceof Error ? err.message : '未知错误'}`);
+      // 错误文案会打到界面上：上游地址里可能内嵌 user:pass，必须先抹掉
+      const message = redactUrl(err instanceof Error ? err.message : '未知错误');
+      if (!res.headersSent) sendText(res, 502, `代理失败：${message}`);
       else res.end();
     });
   });
@@ -645,9 +737,15 @@ export async function startMediaProxy(): Promise<MediaProxy> {
       const buf = await readRest(reader, first);
       const text = buf.toString('utf8');
       const playlistBase = upstream.url || targetUrl.href;
-      // 没有 `#EXT-X-ENDLIST` 就是还在滚动的直播列表（master 列表同理）：
-      // 它的子地址一律带上 live=1，让下游分片请求跳过缓存与预取。
-      const liveMode = isLive || !text.includes('#EXT-X-ENDLIST');
+      // 判直播只看**媒体列表**：没有 `#EXT-X-ENDLIST` 说明它还在滚动。
+      //
+      // master 列表（#EXT-X-STREAM-INF）按 RFC 8216 本来就不含 ENDLIST，它的
+      // 「分片行」其实是变体播放列表地址。早先这里把 master 也当成直播，于是
+      // `&live=1` 被写进变体地址、再被写进每个分片地址，下游全部跳过缓存：
+      // SegmentCache 与 /prefetch 对多码率源整条链路失效，白白回源与烧带宽。
+      // 正确做法是 master 不传播 live，让变体自己按 ENDLIST 判定。
+      const masterPlaylist = isMasterPlaylist(text);
+      const liveMode = isLive || (!masterPlaylist && !text.includes('#EXT-X-ENDLIST'));
       const rewritten = upstream.ok
         ? rewritePlaylist(text, playlistBase, `${base}${prefix}`, adFilter, liveMode)
         : text;
@@ -864,19 +962,24 @@ export async function startMediaProxy(): Promise<MediaProxy> {
     reader: ReadableStreamDefaultReader<Uint8Array> | null,
     first: Uint8Array | null,
     res: ServerResponse,
-    contentType: string,
+    rawContentType: string,
     req: IncomingMessage,
     cacheable = false,
     cacheKey = '',
     live = false
   ): Promise<void> {
+    // 上游的 Content-Type 只当"声明"，不当"事实"：非媒体类型一律降级成二进制，
+    // 避免把 text/html 之类以本机同源形式回给渲染层（见 SAFE_MEDIA_TYPES）。
+    const contentType = SAFE_MEDIA_TYPES.test(rawContentType) ? rawContentType : 'application/octet-stream';
     const headers: Record<string, string | number> = {
       'Content-Type': contentType,
       'X-Content-Type-Options': 'nosniff',
       'Access-Control-Allow-Origin': '*',
       // 分片内容按 URL 恒定：允许缓存，seek/重播不用回源；
-      // 直播分片只此一次，缓存一小时后半段早已过期，反而会让人看到旧画面
-      'Cache-Control': live ? 'no-store' : CACHE_SEGMENT,
+      // 直播分片只此一次，缓存一小时后半段早已过期，反而会让人看到旧画面。
+      // 上游失败（403/404/500）时绝不能给 immutable：否则一次瞬时错误
+      // 会被浏览器按「一小时不变」缓存，重试也刷不出来。
+      'Cache-Control': live || !upstream.ok ? 'no-store' : CACHE_SEGMENT,
     };
     // 上游带了 content-encoding 时，undici 已经把响应体解压好了，但**响应头原样保留**
     // （实测 gzip：头里仍是压缩后的 content-length=52，body 却是 540 字节明文）。
@@ -905,6 +1008,8 @@ export async function startMediaProxy(): Promise<MediaProxy> {
 
     let total = 0;
     let completed = false;
+    let truncated = false;
+    const byteLimit = streamByteLimit();
     // 边发边攒一份副本进预取缓存：播放器回头 seek/重播同一个分片时直接命中内存。
     // 只在分片不大时攒，避免把大文件整份留在堆里。
     const mirrored: Buffer[] = [];
@@ -920,7 +1025,14 @@ export async function startMediaProxy(): Promise<MediaProxy> {
     };
     const write = async (chunk: Uint8Array): Promise<boolean> => {
       total += chunk.byteLength;
-      if (total > MAX_STREAM_BYTES) return false;
+      if (total > byteLimit) {
+        // 超限不能只是「停止搬运然后 res.end()」：我们已经按上游的
+        // Content-Length 写好了响应头，客户端会以为还有数据、一直等到超时，
+        // 拿到的却是半截文件，而且没有任何错误线索。
+        // 这里标记截断并在 finally 里 destroy 连接，让客户端立刻看到「断了」。
+        truncated = true;
+        return false;
+      }
       mirror(chunk);
       if (res.write(chunk)) return true;
       // 等背压解除，但连接被关掉时 drain 永远不会来：
@@ -939,7 +1051,9 @@ export async function startMediaProxy(): Promise<MediaProxy> {
 
     try {
       if (first && first.byteLength > 0 && !(await write(first))) {
-        res.end();
+        // 超限时不能先 res.end() 再 destroy：end 会把一个「正常结束」的空响应
+        // 推给客户端，看起来像成功。交给 finally 里的 destroy 表达「断了」。
+        if (!truncated) res.end();
         return;
       }
       for (;;) {
@@ -970,7 +1084,13 @@ export async function startMediaProxy(): Promise<MediaProxy> {
           headers: {},
         });
       }
-      res.end();
+      if (truncated) {
+        // 连接直接断掉，别让客户端对着半截数据等超时
+        console.warn(`[proxy] 媒体流超过 ${byteLimit} 字节上限，已中断：${redactUrl(cacheKey)}`);
+        res.destroy();
+      } else {
+        res.end();
+      }
     }
   }
 

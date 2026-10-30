@@ -46,6 +46,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -94,12 +96,31 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
     var playing by remember { mutableStateOf(true) }
     var position by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
+    /**
+     * 控件显示/隐藏。
+     *
+     * [controlsTick] 让「每次操作都重新计时」成立：只靠 `controlsVisible` 当 key 的话，
+     * 控件本来就可见时再按键不会重启 LaunchedEffect，3.5 秒的隐藏计时照旧走完——
+     * 表现为连续快进时控件突然消失。
+     */
     var controlsVisible by remember { mutableStateOf(true) }
+    var controlsTick by remember { mutableIntStateOf(0) }
+    fun showControls() {
+        controlsVisible = true
+        controlsTick++
+    }
     var drawerVisible by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var rate by remember { mutableFloatStateOf(1f) }
     var resumedOnce by remember { mutableStateOf(false) }
     var buffering by remember { mutableStateOf(true) }
+    /**
+     * 当前集是否已播完（STATE_ENDED）。
+     *
+     * ticker 与 onDispose 都要靠它闭嘴：播完之后 currentPosition == duration，
+     * 再写一次进度就会把「已看完」覆盖成「看到片尾」，下次进入直接秒结束。
+     */
+    var ended by remember { mutableStateOf(false) }
     /** 换源过程中的提示（「正在切换到 XX…」） */
     var note by remember { mutableStateOf<String?>(null) }
     var failingOver by remember { mutableStateOf(false) }
@@ -150,7 +171,11 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
 
     DisposableEffect(Unit) {
         onDispose {
-            vm.saveProgress(current, currentIndex, exo.currentPosition.coerceAtLeast(0), exo.duration.coerceAtLeast(0))
+            // 已经播完的集不要再写一次：此时 currentPosition == duration，
+            // 写下去会把 onPlaybackStateChanged 里刚写的 finished=true 覆盖成 false
+            if (!ended) {
+                vm.saveProgress(current, currentIndex, exo.currentPosition.coerceAtLeast(0), exo.duration.coerceAtLeast(0))
+            }
             exo.release()
             // 预取缓存是进程级单例，退出播放页就该还给系统：
             // 电视盒子 heap 常见只有 192MB，留着几十 MB 的 ByteArray 没有收益
@@ -172,17 +197,35 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                 } else {
                     tried += result.candidate.key
                     discovered = discovered || result.target.candidates.any { it.key !in target.candidates.map { c -> c.key } }
-                    current = result.target
-                    index = result.episodeIndex
                     error = null
                     note = "已切换到「${result.candidate.sourceName}」"
-                    play(result.target.episodes[result.episodeIndex])
-                    exo.playWhenReady = true
+                    // 注意：这里**不能**再调 play()。
+                    // 下面那个 LaunchedEffect(current.source.key, current.vodId, index)
+                    // 会因 current/index 变化而重跑，里面已经 play + playWhenReady。
+                    // 两处都调会连续 setMediaSource + prepare 两次：第一次刚拉起的
+                    // 清单解析被第二次顶掉，表现为换源后多等一个超时周期、甚至误报错误。
+                    current = result.target
+                    index = result.episodeIndex
                     delay(2_400)
                     note = null
                 }
                 failingOver = false
             }
+        }
+    }
+
+    /**
+     * 退到后台（按 Home、切输入源、系统弹窗）时暂停。
+     *
+     * 不暂停的话电视盒子会继续解码：画面在后台不可见，声音照放，
+     * 而且 CPU/带宽全占着——回来时还得手动补一次暂停。
+     * 这里只处理 ON_STOP（真正的「不在前台」），不用 ON_PAUSE：
+     * ON_PAUSE 在系统权限弹窗时也会触发，会让播放无故中断。
+     */
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        if (exo.isPlaying) {
+            exo.pause()
+            vm.saveProgress(current, currentIndex, exo.currentPosition.coerceAtLeast(0), exo.duration.coerceAtLeast(0))
         }
     }
 
@@ -217,6 +260,7 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 buffering = playbackState == Player.STATE_BUFFERING || playbackState == Player.STATE_IDLE
                 if (playbackState == Player.STATE_ENDED) {
+                    ended = true
                     val next = currentIndex + 1
                     val total = exo.duration.coerceAtLeast(0)
                     // 连播前把当前集记为「已看完」：位置 = 时长，但下次进入应从头播而不是跳到片尾
@@ -227,6 +271,8 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                         discovered = false
                         index = next
                     }
+                } else {
+                    ended = false
                 }
             }
 
@@ -257,15 +303,19 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                 stalled = 0
                 tryFailover("加载超时")
             }
-            if (tick % 4 == 0 && position > 0) {
+            // STATE_ENDED 之后不能再写：那时 currentPosition == duration，
+            // 每 4 秒写一条 finished=false、position=duration 的记录会把
+            // onPlaybackStateChanged 里刚写的 finished=true 覆盖掉，
+            // 下次进入就会按「续播到片尾」直接 seekTo(duration) 秒结束。
+            if (tick % 4 == 0 && position > 0 && !ended) {
                 vm.saveProgress(current, currentIndex, position, duration)
             }
             delay(1000)
         }
     }
 
-    // 控件自动隐藏
-    LaunchedEffect(controlsVisible, playing, drawerVisible) {
+    // 控件自动隐藏（controlsTick 变化即重新计时，见 showControls）
+    LaunchedEffect(controlsVisible, controlsTick, playing, drawerVisible) {
         if (controlsVisible && playing && !drawerVisible) {
             delay(3500)
             controlsVisible = false
@@ -286,11 +336,20 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
         }
     }
 
-    // 错误面板出现时同理：根节点吃掉了方向键，必须主动把焦点交给第一个按钮
+    /**
+     * 焦点归属随错误面板来回切换。
+     *
+     * 旧实现只在 `error != null` 时抢焦点，error 归 null 的四条路径
+     * （自动换源成功、切集、换源重试、重试）都不归还——持有焦点的按钮被移出
+     * 组合后 Compose 会 clearFocus，根 Box 的 onPreviewKeyEvent 再也收不到键，
+     * 遥控器除返回键外全部失灵，只能退出重进。
+     */
     LaunchedEffect(error) {
         if (error != null) {
             delay(60)
             runCatching { errorFocus.requestFocus() }
+        } else {
+            runCatching { focusRequester.requestFocus() }
         }
     }
 
@@ -302,8 +361,11 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
             .focusable()
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                // 选集抽屉或错误面板可见时，把方向键/OK 让给里面的卡片，否则它们永远拿不到焦点
-                if (drawerVisible || error != null || note != null) {
+                // 选集抽屉或错误面板可见时，把方向键/OK 让给里面的卡片，否则它们永远拿不到焦点。
+                // 注意不要在这里判 note：note 只是「已切换到 XX」这种纯文本提示，
+                // 里面没有任何可聚焦元素，把它算进来会让提示显示的 2.4 秒内所有按键都被吞掉
+                //（连暂停、快进、开抽屉都不响应，用户会以为播放器卡死了）。
+                if (drawerVisible || error != null) {
                     return@onPreviewKeyEvent when (event.key) {
                         Key.DirectionDown -> {
                             drawerVisible = false
@@ -315,22 +377,22 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                 when (event.key) {
                     Key.DirectionCenter, Key.Enter, Key.Spacebar -> {
                         if (exo.isPlaying) exo.pause() else exo.play()
-                        controlsVisible = true
+                        showControls()
                         true
                     }
                     Key.DirectionLeft -> {
                         exo.seekTo((exo.currentPosition - SEEK_STEP_MS).coerceAtLeast(0))
-                        controlsVisible = true
+                        showControls()
                         true
                     }
                     Key.DirectionRight -> {
                         exo.seekTo(exo.currentPosition + SEEK_STEP_MS)
-                        controlsVisible = true
+                        showControls()
                         true
                     }
                     Key.DirectionUp -> {
                         drawerVisible = true
-                        controlsVisible = true
+                        showControls()
                         true
                     }
                     Key.MediaPlayPause, Key.MediaPlay, Key.MediaPause -> {
@@ -418,6 +480,12 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                     TvButton("换源重试", focusRequester = errorFocus, onClick = {
                         error = null
                         buffering = true
+                        // 候选链耗尽后 tried 已经是满的，不重置的话 failoverPlayback
+                        // 第一轮就 untried.isEmpty() 直接返回 null —— 按钮点了没反应。
+                        // 「重试」的语义就是把除当前源以外的记录清掉，重新从候选链开头找。
+                        tried.clear()
+                        tried += "${current.source.key}:${current.vodId}"
+                        discovered = false
                         tryFailover("手动切换")
                     })
                     TvButton("重试", onClick = {

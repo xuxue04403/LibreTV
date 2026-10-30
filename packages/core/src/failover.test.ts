@@ -327,6 +327,26 @@ describe('discoverCandidates', () => {
     expect(http.hits).toEqual([]);
   });
 
+  // 回归护栏：比对用的是 normalizeTitle(item.name)，关键字不归一化就会全落空。
+  // 带空格/标点的片名（英文片名、带副标题的中文名）以前一个候选都补不到，
+  // 而中文无空格标题看起来完全正常，所以这个缺陷很难被手动发现。
+  it('带空格与标点的片名也能补源', async () => {
+    const en = fakeHttp({
+      'a.example.com': () => jsonResponse(searchBody([{ vod_id: 1, vod_name: 'The Matrix' }])),
+      'b.example.com': () => jsonResponse(searchBody([{ vod_id: 7, vod_name: 'The-Matrix' }])),
+    });
+    expect((await discoverCandidates('The Matrix', sources, en)).map((c) => candidateKey(c)).sort()).toEqual([
+      'a:1',
+      'b:7',
+    ]);
+
+    const zh = fakeHttp({
+      'a.example.com': () => jsonResponse(searchBody([{ vod_id: 2, vod_name: '流浪地球2' }])),
+    });
+    // 「流浪地球 2」归一化后是「流浪地球2」，与片库写法一致
+    expect((await discoverCandidates('流浪地球 2', [sources[0]], zh)).map((c) => candidateKey(c))).toEqual(['a:2']);
+  });
+
   it('搜索全部失败时返回空数组而不抛错', async () => {
     const http = fakeHttp({
       'a.example.com': () => {

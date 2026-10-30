@@ -1,20 +1,11 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
-
-type ToastKind = 'ok' | 'err' | 'info';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { ToastContext, type ToastApi, type ToastKind } from './toast-context';
 
 interface ToastItem {
   id: number;
   kind: ToastKind;
   text: string;
 }
-
-interface ToastApi {
-  push: (text: string, kind?: ToastKind) => void;
-  ok: (text: string) => void;
-  err: (text: string) => void;
-}
-
-const ToastContext = createContext<ToastApi | null>(null);
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([]);
@@ -42,10 +33,4 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       </div>
     </ToastContext.Provider>
   );
-}
-
-export function useToast(): ToastApi {
-  const ctx = useContext(ToastContext);
-  if (!ctx) throw new Error('useToast 必须在 ToastProvider 内使用');
-  return ctx;
 }
