@@ -204,6 +204,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private var searchJob: Job? = null
 
+    /** 拼音索引预热的后台任务，用户一旦开始检索就取消 */
+    private var warmJob: Job? = null
+
     /** 检索序号：见 [startSearch] 里的说明 */
     private var searchSeq: Int = 0
 
@@ -258,7 +261,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // 索引太薄时补扫一批：拼音检索只能命中「见过的片名」，
         // 光靠首页分类刷新（每分类一页）根本不够，用户按首字母搜什么都搜不到。
         // 补完就落盘，之后启动不再重复打这批请求。
-        viewModelScope.launch {
+        // 注意：这个 Job 会被 startSearch() 取消 —— 预热是后台任务，用户一开口
+        // 检索就得让路。gated() 的 Semaphore 是 FIFO 公平的，预热启动时会一口气
+        // 排上几十个请求，用户的搜索请求排在它们后面，实测 45 秒都翻不完第一页。
+        warmJob = viewModelScope.launch {
             kotlinx.coroutines.delay(8_000) // 让首页与目录刷新先跑，别抢带宽
             if (repo.seenSnapshot().size >= WARM_INDEX_THRESHOLD) return@launch
             val sources = _data.value.activeSources()
@@ -809,6 +815,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val word = keyword.trim()
         if (word.isEmpty()) return
         searchJob?.cancel()
+        // 后台预热会给 FIFO 闸门塞几十个请求，用户检索必须插到前面去
+        warmJob?.cancel()
         search = SearchUi(keyword = word, loading = true, searched = true)
         // 序号守卫：取消是协作式的，被取消的那一轮仍可能跑到 collect 之后的
         // 「收尾」语句（loading=false、写缓存、落拼音索引），把新一次检索的
@@ -824,8 +832,45 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // 拼音首字母：采集站只支持中文 LIKE，本地扫「最近列表」再按首字母过滤。
             // 遥控器输中文极难，`qmmk` 能搜到「奇妙萌可」是电视端最实用的一条输入路径。
             if (Pinyin.isQuery(word)) {
+                val adult = _data.value.settings.adultFilter
+                // 先把「拼音」这一条结果挂上去：不然检索期间标题栏按「0/10 个源」算，
+                // 看着像什么都没干，用户以为卡死了。
+                search = search.copy(
+                    outcomes = listOf(
+                        SourceOutcome(
+                            sourceKey = PINYIN_SOURCE_KEY,
+                            sourceName = "拼音「${word.lowercase()}」",
+                            ok = true,
+                            items = emptyList(),
+                        ),
+                    ),
+                    groups = emptyList(),
+                    loading = true,
+                )
                 val hits = runCatching {
-                    repo.pinyinSearch(sources, word, _data.value.settings.adultFilter)
+                    // 边扫边把已命中的结果顶到界面上：拼音要在各源「最新列表」里
+                    // 一页页往后翻（「师兄啊师兄」在 ffzyapi 第 11 页），全程
+                    // 盯十几秒空白谁也受不了。
+                    repo.pinyinSearch(sources, word, adult) { page, partial ->
+                        if (mySeq != searchSeq) return@pinyinSearch
+                        search = search.copy(
+                            outcomes = listOf(
+                                SourceOutcome(
+                                    sourceKey = PINYIN_SOURCE_KEY,
+                                    // 没命中时把进度显示出来，让用户知道它还在翻页
+                                    sourceName = if (partial.isEmpty()) {
+                                        "拼音「${word.lowercase()}」· 已翻到第 $page 页"
+                                    } else {
+                                        "拼音「${word.lowercase()}」"
+                                    },
+                                    ok = true,
+                                    items = partial,
+                                ),
+                            ),
+                            groups = if (partial.isEmpty()) search.groups else Parsers.group(partial),
+                            loading = true,
+                        )
+                    }
                 }.getOrDefault(emptyList())
                 // 深扫出来的片名要落盘，否则每次冷启动都从零开始、
                 // 拼音检索永远只有「最新几页」覆盖的那点片名。

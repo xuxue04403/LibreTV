@@ -6,10 +6,36 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.net.URLEncoder
 import kotlinx.serialization.json.jsonObject
+
+/** 拼音检索最多翻到「各源最新列表」的第几页 */
+private const val PINYIN_MAX_PAGES = 24
+
+/** 拼音检索的总预算：太短会扫不到（「师兄啊师兄」在 ffzyapi 第 11 页），太长用户等不起 */
+private const val PINYIN_BUDGET_MS = 30_000L
+
+/** 单源单页的超时：一个源挂住不能拖住整轮 */
+private const val PINYIN_PAGE_TIMEOUT_MS = 6_000L
+
+/** 每个源一次并发抓几页（滑动窗口）。串行翻页每页都要付一次完整 TTFB，太慢 */
+private const val PINYIN_WINDOW = 5
+
+/** 拼音扫描自己的并发上限：不走全局闸门（FIFO 会排在目录刷新后面），但要防打爆采集站 */
+private const val PINYIN_CONCURRENCY = 12
+
+/** 已经找到这么多条就不再往下翻，剩下的留给下次 */
+private const val PINYIN_ENOUGH_HITS = 8
+
+/** 启动预热：每个源补扫到第几页 */
+private const val PINYIN_WARM_PAGES = 20
+
+/** 启动预热的预算（后台跑，不挡用户操作） */
+private const val PINYIN_WARM_BUDGET_MS = 60_000L
 
 /**
  * 业务仓库：把「抓取 + 解析」封装成挂起函数。
@@ -438,19 +464,18 @@ class Repository(private val net: Net = Net) {
      *
      * 采集站的 `wd` 只支持中文 LIKE，拼音必然只能在本地做，所以先建索引：
      * 1. 本次会话已经见过的条目（搜索/分类浏览留下的），命中即出，零网络；
-     * 2. 再扫每个源的「最新列表」（`?ac=videolist&pg=n`，不带 wd/t 就是全站最新），
-     *    抓到不满一页就停，避免白跑。
+     * 2. 再按页码逐层扫每个源的「最新列表」（`?ac=videolist&pg=n`，不带 wd/t
+     *    就是全站最新），某个源不满一页就从后续页码里剔除。
      *
-     * 每源默认 4 页（80 条），4 个源并发，电视上大约 2~4 秒。
+     * 总预算见 [PINYIN_BUDGET_MS]，找到 [PINYIN_ENOUGH_HITS] 条就收手。
      */
     suspend fun pinyinSearch(
         sources: List<VodSource>,
         query: String,
         adultFilter: Boolean,
-        pagesPerSource: Int = 4,
-        timeoutMs: Long = 9_000,
-        deepPages: Int = 16,
-        deepBudgetMs: Long = 7_000,
+        maxPages: Int = PINYIN_MAX_PAGES,
+        budgetMs: Long = PINYIN_BUDGET_MS,
+        onProgress: ((pagesScanned: Int, hits: List<SearchItem>) -> Unit)? = null,
     ): List<SearchItem> {
         if (!Pinyin.ready || !Pinyin.isQuery(query)) return emptyList()
         val cached = synchronized(seenLock) { seenItems.values.filter { Pinyin.matches(it.name, query) } }
@@ -461,29 +486,73 @@ class Repository(private val net: Net = Net) {
                 .distinctBy { "${it.sourceKey}:${it.vodId}" }
         }
 
-        // 第一轮：各源最新几页。新片更新快，先把这一小段扫掉
-        val quick = scanPagesForPinyin(sources, query, 1..pagesPerSource, timeoutMs)
-        rememberItems(quick)
-        if (quick.isNotEmpty()) {
-            return (quick + cached)
-                .let { Parsers.filterAdult(it, adultFilter) }
-                .distinctBy { "${it.sourceKey}:${it.vodId}" }
+        // 扫描策略：源内滑动窗口并发 + 扫描专用限流。
+        //
+        // 为什么不用 gated()：它的 Semaphore(6) 是 FIFO 公平的，启动时的目录刷新
+        // 会先排上几十个请求，用户的检索排在队尾；实测（AVD tv35）45 秒都翻不完
+        // 第一页。这里改用扫描自己的 Semaphore(PINYIN_CONCURRENCY)，不走全局闸门。
+        //
+        // 为什么窗口并发：单源串行翻页时每页都要付一次完整 TTFB（实测 ffzyapi
+        // 约 2.3s/页），「师兄啊师兄」在第 11 页 → 串行要 26 秒，超预算。
+        // 一次并发 [PINYIN_WINDOW] 页后，11 页约 3 轮 ≈ 7 秒。
+        val found = java.util.Collections.synchronizedList(ArrayList<SearchItem>())
+        val deadline = System.nanoTime() + budgetMs * 1_000_000
+        val scanGate = Semaphore(PINYIN_CONCURRENCY)
+        coroutineScope {
+            sources
+                .map { source ->
+                    async {
+                        var next = 1
+                        while (next <= maxPages &&
+                            found.size < PINYIN_ENOUGH_HITS &&
+                            System.nanoTime() < deadline
+                        ) {
+                            val window = (next until minOf(next + PINYIN_WINDOW, maxPages + 1)).toList()
+                            val batches = window
+                                .map { page ->
+                                    async {
+                                        // 这里不能用 runCatching：被取消时它会把
+                                        // CancellationException 当普通失败吞掉。
+                                        withTimeoutOrNull(PINYIN_PAGE_TIMEOUT_MS) {
+                                            scanGate.withPermit {
+                                                catchingIo {
+                                                    val base = source.url.trimEnd('/')
+                                                    val text = net.getText("$base?ac=videolist&pg=$page")
+                                                    val parsed = Parsers.parseSearchList(text, source)
+                                                    parsed.filter { Pinyin.matches(it.name, query) } to
+                                                        (parsed.size < 20)
+                                                }.getOrNull()
+                                            }
+                                        }
+                                    }
+                                }
+                                .awaitAll()
+                            var stop = false
+                            for (batch in batches) {
+                                // 本页超时/失败：这个源放弃，别在它身上继续耗预算
+                                if (batch == null) {
+                                    stop = true
+                                    continue
+                                }
+                                val (hits, shortPage) = batch
+                                if (hits.isNotEmpty()) {
+                                    found.addAll(hits)
+                                    rememberItems(hits)
+                                    stop = true
+                                }
+                                if (shortPage) stop = true
+                            }
+                            next += window.size
+                            // 每翻完一个窗口回报一次，界面可以显示「已翻到第 N 页」
+                            onProgress?.invoke(next - 1, found.toList())
+                            if (stop) break
+                        }
+                    }
+                }
+                .awaitAll()
         }
 
-        // 第二轮：深扫。采集站不支持按拼音查，只能用本地索引筛；
-        // 只扫最新 4 页时绝大多数片名都落在索引之外，用户看到的就是
-        // 「按首字母什么都搜不到」。这里再往后翻一段，命中率才够用。
-        // 结果会进 seenItems，由 ViewModel 落盘，下次直接走上面的快路径。
-        val deepStart = pagesPerSource + 1
-        val deep = scanPagesForPinyin(
-            sources,
-            query,
-            deepStart..(deepStart + deepPages - 1),
-            deepBudgetMs,
-        )
-        rememberItems(deep)
-
-        return (deep + quick + cached)
+        return (found.toList() + cached)
             .let { Parsers.filterAdult(it, adultFilter) }
             .distinctBy { "${it.sourceKey}:${it.vodId}" }
     }
@@ -500,68 +569,42 @@ class Repository(private val net: Net = Net) {
      */
     suspend fun warmPinyinIndex(
         sources: List<VodSource>,
-        pagesPerSource: Int = 12,
-        budgetMs: Long = 45_000,
+        pagesPerSource: Int = PINYIN_WARM_PAGES,
+        budgetMs: Long = PINYIN_WARM_BUDGET_MS,
     ): Int {
         if (!Pinyin.ready || sources.isEmpty()) return 0
         val collected = java.util.Collections.synchronizedList(ArrayList<SearchItem>())
+        val deadline = System.nanoTime() + budgetMs * 1_000_000
         coroutineScope {
-            sources.map { source ->
-                async {
-                    withTimeoutOrNull(budgetMs) {
-                        catchingIo {
-                            for (page in 1..pagesPerSource) {
-                                val base = source.url.trimEnd('/')
-                                val text = net.getTextGated("$base?ac=videolist&pg=$page")
-                                val parsed = Parsers.parseSearchList(text, source)
-                                if (parsed.isEmpty()) break
-                                collected.addAll(parsed)
-                                // 不满一页说明已经到底，没必要继续翻
-                                if (parsed.size < 20) break
+            sources
+                .map { source ->
+                    async {
+                        var page = 1
+                        while (page <= pagesPerSource && System.nanoTime() < deadline) {
+                            val lastPage = withTimeoutOrNull(PINYIN_PAGE_TIMEOUT_MS) {
+                                catchingIo {
+                                    val base = source.url.trimEnd('/')
+                                    val text = net.getTextGated("$base?ac=videolist&pg=$page")
+                                    val parsed = Parsers.parseSearchList(text, source)
+                                    collected.addAll(parsed)
+                                    // 每页都进一次索引：用户中途开口检索会取消预热，
+                                    // 只留到最后一并 rememberItems 的话进度全丢。
+                                    if (parsed.isNotEmpty()) rememberItems(parsed)
+                                    parsed.size < 20
+                                }.getOrNull()
                             }
+                            if (lastPage == null || lastPage) break
+                            page++
                         }
                     }
                 }
-            }.awaitAll()
+                .awaitAll()
         }
-        val items = collected.toList()
-        if (items.isEmpty()) return 0
-        rememberItems(items)
-        return items.size
+        if (collected.isEmpty()) return 0
+        rememberItems(collected.toList())
+        return collected.size
     }
 
-    /**
-     * 在「最近更新」列表的 [pages] 页码区间里筛出拼音命中的条目。
-     *
-     * 每页解析完立刻过滤，只留下命中的那几条：深扫最多翻十几页，
-     * 把整段结果都攒着会白占内存。
-     */
-    private suspend fun scanPagesForPinyin(
-        sources: List<VodSource>,
-        query: String,
-        pages: IntRange,
-        budgetMs: Long,
-    ): List<SearchItem> = coroutineScope {
-        sources.map { source ->
-            async {
-                withTimeoutOrNull(budgetMs) {
-                    // 这里同样不能用 runCatching：被取消时它会把 CancellationException
-                    // 当普通失败吞掉，接着去抓下一页，取消等于没发生。
-                    catchingIo {
-                        val base = source.url.trimEnd('/')
-                        val collected = mutableListOf<SearchItem>()
-                        for (page in pages) {
-                            val text = net.getTextGated("$base?ac=videolist&pg=$page")
-                            val parsed = Parsers.parseSearchList(text, source)
-                            collected += parsed.filter { Pinyin.matches(it.name, query) }
-                            if (parsed.size < 20) break
-                        }
-                        collected
-                    }.getOrDefault(emptyList())
-                } ?: emptyList()
-            }
-        }.awaitAll().flatten()
-    }
 
     suspend fun importSubscription(url: String): ParsedSubscription {
         val text = net.getTextGated(url)
