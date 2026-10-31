@@ -3,9 +3,9 @@ package org.libretv.tv.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,9 +14,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -30,7 +32,9 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import org.libretv.tv.AppViewModel
 import org.libretv.tv.HomeRow
 import org.libretv.tv.Screen
@@ -48,6 +52,10 @@ import org.libretv.tv.ui.theme.TextPrimary
 
 /** 首页「继续观看 / 收藏」卡宽：比内容页海报略小，一屏能多看几张。 */
 private val HOME_CARD_WIDTH = 116.dp
+
+/** 分类胶囊的宽度区间：按文字收缩，最多这么宽；再多就横向滚动 */
+private val MIN_CATEGORY_CHIP_WIDTH = 84.dp
+private val MAX_CATEGORY_CHIP_WIDTH = 176.dp
 
 @Composable
 fun HomeScreen(vm: AppViewModel, data: AppData) {
@@ -81,12 +89,13 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(ScreenPadding),
+            .padding(HomePadding),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         // 分类入口：一排胶囊，进屋就能选「电影 / 电视剧 / 少儿 / 综艺 …」
         // 只显示真的有内容的分类：点了进空页面比看不到入口更糟
-        item { SectionHeader("分类浏览", "按源站分类直接打开") }
+        // 第一块紧贴顶栏：默认 26dp 的上边距会把首屏推下去一大截
+        item { SectionHeader("分类浏览", "按源站分类直接打开", topPadding = 2.dp) }
         item { CategoryRow(vm, data, firstFocus) }
 
         // 继续观看：有记录才出现，放在内容流最上面（用户回来大概率是为了接着看）
@@ -112,6 +121,7 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
         // 内容流：每个可用分类一排真实海报。数据来自本地目录缓存，
         // 所以进首页不需要等网络；缓存没到位时这几排先不渲染，不会留空框。
         items(rows, key = { it.key.name }) { row ->
+
             Column {
                 SectionHeader(
                     row.key.label,
@@ -202,7 +212,6 @@ fun HomeScreen(vm: AppViewModel, data: AppData) {
     }
 }
 
-@kotlin.OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CategoryRow(vm: AppViewModel, data: AppData, firstFocus: FocusRequester? = null) {
     // 进首页即探测各分类是否有内容；看到的是「已过滤后的入口」而不是全量。
@@ -230,43 +239,52 @@ private fun CategoryRow(vm: AppViewModel, data: AppData, firstFocus: FocusReques
         return
     }
 
-    // 用 FlowRow 而不是 LazyRow：分类数量随源变化（常见 6~10 个），
-    // 单排 128dp 的胶囊在 960dp 设计宽下会溢出到屏幕外、右侧几个分类
-    // 只能靠横向滚动才看得到。换行后一屏内全部可见，宽度也随分辨率自适应。
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        keys.forEachIndexed { index, key ->
-            TvCard(
-                onClick = { vm.selectCategory(key) },
-                modifier = Modifier.width(128.dp),
-                containerColor = Panel,
-                shape = RoundedCornerShape(12.dp),
-                focusedScale = 1.06f,
-                focusRequester = if (index == 0) firstFocus else null,
-            ) { focused ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(
+    // 单行不换行；胶囊按文字长短自己收缩，不摊满整行 —— 之前按「均分可用宽度」
+    // 算，7 个分类时每个宽到 125dp、里面只有两个字，看着又宽又空。
+    // 放不下（分类特别多）才横向滚动，遥控器 ← → 移过去。
+    // 字号按设计宽度（960dp）等比例给：换到 720p / 4K 上整体缩放，不会一大一小。
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val gap = 8.dp
+        val labelSize = (maxWidth.value / 62f).coerceIn(13f, 19f).sp
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(gap),
+            contentPadding = PaddingValues(end = 6.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            itemsIndexed(keys, key = { _, key -> key.name }) { index, key ->
+                TvCard(
+                    onClick = { vm.selectCategory(key) },
+                    modifier = Modifier.widthIn(
+                        min = MIN_CATEGORY_CHIP_WIDTH,
+                        max = MAX_CATEGORY_CHIP_WIDTH,
+                    ),
+                    containerColor = Panel,
+                    shape = RoundedCornerShape(9.dp),
+                    focusedScale = 1.06f,
+                    focusRequester = if (index == 0) firstFocus else null,
+                ) { focused ->
+                    Row(
                         Modifier
-                            .size(7.dp)
-                            .background(
-                                if (focused) Accent else Color(0xFFFFB199),
-                                androidx.compose.foundation.shape.CircleShape,
-                            )
-                    )
-                    Spacer(Modifier.width(9.dp))
-                    Text(
-                        key.label,
-                        color = if (focused) Accent else TextPrimary,
-                        fontSize = MaterialTheme.typography.bodyMedium.fontSize,
-                        maxLines = 1,
-                    )
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            Modifier
+                                .size(6.dp)
+                                .background(
+                                    if (focused) Accent else Color(0xFFFFB199),
+                                    androidx.compose.foundation.shape.CircleShape,
+                                )
+                        )
+                        Spacer(Modifier.width(7.dp))
+                        Text(
+                            key.label,
+                            color = if (focused) Accent else TextPrimary,
+                            fontSize = labelSize,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
         }

@@ -67,6 +67,9 @@ import org.libretv.tv.ui.theme.TextPrimary
 
 private const val SEEK_STEP_MS = 10_000L
 
+/** 连按两次「下」切下一集的判定窗口；再慢就当成两次单独的按键 */
+private const val DOUBLE_DOWN_MS = 700L
+
 /** HLS 播放列表判定：只有 HLS 才有分片可预取 */
 private val HLS_URL = Regex("""\.m3u8($|[?#&/])""", RegexOption.IGNORE_CASE)
 /** 连续缓冲超过这个时长就判定为卡死并换源（秒） */
@@ -110,6 +113,11 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
         controlsTick++
     }
     var drawerVisible by remember { mutableStateOf(false) }
+    // 连按两次「下」切下一集：电视遥控器上没有专门的「下一集」键，进选集抽屉
+    // 再挑太绕。记下上一次按下「下」的时间，窗口内再来一次就切集。
+    var lastDownAt by remember { mutableLongStateOf(0L) }
+    // 按住不放会连发 KeyDown，靠「有没有收到过 KeyUp」判断这是新的按下还是一次长按
+    var downHeld by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var rate by remember { mutableFloatStateOf(1f) }
     var resumedOnce by remember { mutableStateOf(false) }
@@ -360,6 +368,12 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
             .focusRequester(focusRequester)
             .focusable()
             .onPreviewKeyEvent { event ->
+                // 松开「下」才算一次按键结束：遥控器按住不放会一直发 KeyDown，
+                // 不排掉的话「按住下」会被当成连按，一路跳集。
+                if (event.key == Key.DirectionDown && event.type == KeyEventType.KeyUp) {
+                    downHeld = false
+                    return@onPreviewKeyEvent false
+                }
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 // 选集抽屉或错误面板可见时，把方向键/OK 让给里面的卡片，否则它们永远拿不到焦点。
                 // 注意不要在这里判 note：note 只是「已切换到 XX」这种纯文本提示，
@@ -393,6 +407,27 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                     Key.DirectionUp -> {
                         drawerVisible = true
                         showControls()
+                        true
+                    }
+                    // 「下」单击只是把控制条叫出来；连按两次切下一集。
+                    // 遥控器按住不放会连发 KeyDown（repeatCount > 0），那不是「又按了一次」，
+                    // 不排掉的话按住「下」会一路跳集。
+                    Key.DirectionDown -> {
+                        val now = System.currentTimeMillis()
+                        val fresh = !downHeld
+                        downHeld = true
+                        if (fresh && lastDownAt > 0 && now - lastDownAt <= DOUBLE_DOWN_MS) {
+                            lastDownAt = 0L
+                            if (index + 1 < current.episodes.size) {
+                                index += 1
+                            } else {
+                                note = "已经是最后一集"
+                                showControls()
+                            }
+                        } else {
+                            if (fresh) lastDownAt = now
+                            showControls()
+                        }
                         true
                     }
                     Key.MediaPlayPause, Key.MediaPlay, Key.MediaPause -> {
@@ -525,7 +560,7 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                 }
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "OK 播放/暂停   ←→ 快退/快进 10s   ↑ 选集   菜单 换源   返回 退出",
+                    "OK 播放/暂停   ←→ 快退/快进 10s   ↑ 选集   ↓↓ 下一集   菜单 换源   返回 退出",
                     color = Color(0xFF9AA4B4),
                     fontSize = MaterialTheme.typography.bodySmall.fontSize,
                 )

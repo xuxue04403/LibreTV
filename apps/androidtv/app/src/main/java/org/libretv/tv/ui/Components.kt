@@ -36,6 +36,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
@@ -192,12 +193,14 @@ fun SectionHeader(
     hint: String? = null,
     modifier: Modifier = Modifier,
     onMore: (() -> Unit)? = null,
+    // 首页第一个分区不需要再空一大截（顶栏下面本来就有留白），其它页面保持默认
+    topPadding: Dp = 26.dp,
 ) {
     // 参数顺序符合 Compose 约定：modifier 是第一个可选参数（lint ModifierParameter）
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(top = 26.dp, bottom = 10.dp),
+            .padding(top = topPadding, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -347,6 +350,12 @@ fun VSpacer(height: Int = 10) {
 // 左右留白对称：导航收窄到 84dp 之后，左边不再比右边多出一截。
 // 原来是 horizontal = 46dp，加上 104dp 导航，左侧视觉留白 150dp、右侧只有 46dp。
 val ScreenPadding = PaddingValues(horizontal = 36.dp, vertical = 22.dp)
+
+/**
+ * 首页专用内边距：顶栏已经有 76dp 高，再叠 22dp 会在内容上方留出
+ * 一块什么也没有的空白（截图里被用户圈出来的那块）。上边只留 6dp。
+ */
+val HomePadding = PaddingValues(start = 36.dp, top = 6.dp, end = 36.dp, bottom = 16.dp)
 
 @Composable
 fun ProgressBar(progress: Float, modifier: Modifier = Modifier, color: Color = Accent) {

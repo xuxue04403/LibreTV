@@ -33,6 +33,8 @@ export interface WatchTarget {
 }
 
 const SKIP_SECONDS = 10;
+/** 连按两次「↓」切下一集的判定窗口；再慢就当成两次单独的音量调整 */
+const DOUBLE_DOWN_MS = 700;
 /** 同一集内允许的自动重试次数（分片抖动通常一次就好，再失败就换源） */
 const MAX_RECOVERIES = 2;
 /** 同一集内允许的 hls.js 就地媒体恢复次数（recoverMediaError 有内部状态，次数要单独记） */
@@ -57,6 +59,13 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
   const mediaRecoverRef = useRef(0);
   /** 已经发过预取的地址：effect 会因错误恢复重跑，同一条不必再抢一次带宽 */
   const prefetchedRef = useRef<string | null>(null);
+  /**
+   * 上一次按「↓」的时间戳（ms）。
+   *
+   * 「↓」本来是调音量，但连按两次在遥控器/键盘上是电视那套「切下一集」的手感，
+   * 而桌面上按 N 也能切集却没人知道。窗口内连按两次就切集，单击仍然是音量。
+   */
+  const lastDownRef = useRef(0);
   /** 是否已经按片名反查过补充候选（只查一次） */
   const discoveredRef = useRef(false);
   /** 进行中的换源任务：同一时刻只跑一轮，避免并发换源互相覆盖状态 */
@@ -625,13 +634,23 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
             setVolume(videoRef.current.volume);
           }
           break;
-        case 'ArrowDown':
+        case 'ArrowDown': {
           e.preventDefault();
+          // 按住不放时浏览器会连发 keydown（e.repeat === true）：那不是「又按了一次」，
+          // 不排掉的话按住 ↓ 会被当成连按，音量没减下去反而一路跳集。
+          const now = performance.now();
+          if (!e.repeat && lastDownRef.current > 0 && now - lastDownRef.current <= DOUBLE_DOWN_MS) {
+            lastDownRef.current = 0;
+            changeEpisode(index + 1);
+            break;
+          }
+          if (!e.repeat) lastDownRef.current = now;
           if (videoRef.current) {
             videoRef.current.volume = Math.max(0, videoRef.current.volume - 0.1);
             setVolume(videoRef.current.volume);
           }
           break;
+        }
         case 'f':
         case 'F':
           void toggleFullscreen();
@@ -759,7 +778,7 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
           <button className="ctrl" onClick={() => setCastOpen(true)} title="投屏到电视（DLNA）">
             <Icon name="tv" size={20} />
           </button>
-          <button className="ctrl" onClick={() => setDrawerOpen(true)} title="选集（N 下一集）">
+          <button className="ctrl" onClick={() => setDrawerOpen(true)} title="选集（N 切下一集）">
             <Icon name="list" size={20} />
           </button>
         </div>
@@ -794,7 +813,7 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
               className="ctrl"
               onClick={() => changeEpisode(index + 1)}
               disabled={index + 1 >= episodes.length}
-              title="下一集（N）"
+              title="下一集（N 或连按两次 ↓）"
             >
               <Icon name="right" size={18} />
             </button>
