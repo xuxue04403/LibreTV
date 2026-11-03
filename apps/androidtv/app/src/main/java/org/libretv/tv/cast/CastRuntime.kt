@@ -36,4 +36,60 @@ object CastRuntime {
         seq += 1
         pending = CastRequest(url, title, seq)
     }
+
+    // —— 传输控制面（DLNA 的 Play/Pause/Stop/Seek 靠它真正起作用） ——
+    //
+    // ExoPlayer 只能在它的应用线程（主线程）上调用，而 DlnaServer 跑在自己的线程里，
+    // 所以这里不直接持有 player：CastPlayerScreen 注册一个 [CastTransport]，
+    // 由它把调用 post 回主线程。没有注册（尚未开始播放）时所有命令都是空操作，
+    // 但**状态仍要如实回报**，否则手机端的控制条会一直显示「播放中」。
+
+    /** 投屏播放器的控制入口，由 CastPlayerScreen 注册/注销。 */
+    interface CastTransport {
+        fun play()
+        fun pause()
+        fun seekTo(positionMs: Long)
+    }
+
+    @Volatile
+    var transport: CastTransport? = null
+
+    /** "PLAYING" / "PAUSED_PLAYBACK" / "STOPPED"，GetTransportInfo 直接回这个。 */
+    @Volatile
+    var playbackState: String = "STOPPED"
+
+    @Volatile
+    var positionMs: Long = 0L
+
+    @Volatile
+    var durationMs: Long = 0L
+
+    fun play() {
+        transport?.play()
+        playbackState = "PLAYING"
+    }
+
+    fun pause() {
+        transport?.pause()
+        playbackState = "PAUSED_PLAYBACK"
+    }
+
+    fun stop() {
+        transport?.pause()
+        playbackState = "STOPPED"
+        positionMs = 0L
+    }
+
+    fun seek(ms: Long) {
+        transport?.seekTo(ms.coerceAtLeast(0L))
+        positionMs = ms.coerceAtLeast(0L)
+    }
+
+    /** 播放器页面销毁时调用，避免把命令发给已释放的 ExoPlayer。 */
+    fun clearTransport() {
+        transport = null
+        playbackState = "STOPPED"
+        positionMs = 0L
+        durationMs = 0L
+    }
 }

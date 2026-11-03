@@ -1,5 +1,7 @@
 package org.libretv.tv.ui
 
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
@@ -147,6 +149,36 @@ private fun CastPlayerScreen(target: Screen.CastPlayer, onExit: () -> Unit) {
         exo.setMediaItem(MediaItem.fromUri(target.url))
         exo.prepare()
         onDispose { exo.release() }
+    }
+
+    // —— 把播放器交给 DLNA 控制 ——
+    // 手机端的暂停/停止/拖动进度条发到 DlnaServer（它跑在自己的线程），
+    // 而 ExoPlayer 只能在主线程上调用，所以这里用主线程 Handler 转一手。
+    // 以前这些命令是空实现，投屏后按暂停毫无反应，进度条永远停在 00:00:00。
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    androidx.compose.runtime.DisposableEffect(exo) {
+        CastRuntime.transport = object : CastRuntime.CastTransport {
+            override fun play() = mainHandler.post { runCatching { exo.play() } }.let {}
+            override fun pause() = mainHandler.post { runCatching { exo.pause() } }.let {}
+            override fun seekTo(positionMs: Long) =
+                mainHandler.post { runCatching { exo.seekTo(positionMs) } }.let {}
+        }
+        onDispose { CastRuntime.clearTransport() }
+    }
+    // 每秒刷新一次状态供 GetTransportInfo / GetPositionInfo 读取。
+    // 用 playWhenReady 而不是 isPlaying 判断「在播」：缓冲中 isPlaying 就是 false，
+    // 手机端会看到播放中的片子显示成暂停。
+    LaunchedEffect(exo) {
+        while (true) {
+            CastRuntime.positionMs = runCatching { exo.currentPosition }.getOrDefault(0L)
+            CastRuntime.durationMs = runCatching { exo.duration }.getOrDefault(0L)
+            CastRuntime.playbackState = when {
+                !exo.playWhenReady -> "PAUSED_PLAYBACK"
+                exo.playbackState == androidx.media3.common.Player.STATE_ENDED -> "STOPPED"
+                else -> "PLAYING"
+            }
+            delay(1000)
+        }
     }
     BackHandler { onExit() }
 

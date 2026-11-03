@@ -51,11 +51,21 @@ const bridge = {
     onChunk: (chunk: Uint8Array) => void
   ): Promise<BridgeStreamResponse> => {
     const channel = 'http:stream:chunk';
-    const listener = (_event: unknown, id: number, chunk: Uint8Array): void => {
-      if (id === options.streamId) onChunk(chunk);
+    const startedChannel = 'http:stream:started';
+    // 主进程在 options.streamId 缺省时会自己分配 id，并在开流前用
+    // `http:stream:started` 回推。原来这里只比对 options.streamId，
+    // 省略该参数时所有 chunk 都被静默丢掉（「成功但 0 字节」）。
+    let assignedId: number | undefined;
+    const onStarted = (_event: unknown, id: number): void => {
+      if (assignedId === undefined) assignedId = id;
     };
+    const listener = (_event: unknown, id: number, chunk: Uint8Array): void => {
+      if (id === (assignedId ?? options.streamId)) onChunk(chunk);
+    };
+    ipcRenderer.on(startedChannel, onStarted);
     ipcRenderer.on(channel, listener);
     const cleanup = (): void => {
+      ipcRenderer.removeListener(startedChannel, onStarted);
       ipcRenderer.removeListener(channel, listener);
     };
     return ipcRenderer.invoke('http:stream', url, options).finally(cleanup) as Promise<BridgeStreamResponse>;

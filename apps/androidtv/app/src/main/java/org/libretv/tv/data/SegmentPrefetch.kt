@@ -1,6 +1,7 @@
 package org.libretv.tv.data
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
@@ -30,6 +31,9 @@ object SegmentPrefetch {
     /** 并发闸门：别为了预取把带宽全抢走，播放器自己也要拉流 */
     private val permits = Semaphore(3)
 
+    /** 当前这一轮预取。换集/换片/退出播放页时必须取消，否则还在下用户已经不看的内容。 */
+    private var job: Job? = null
+
     /** 正在预取的地址，避免同一分片被重复抓两遍 */
     private val inflight = ConcurrentHashMap.newKeySet<String>()
 
@@ -40,7 +44,21 @@ object SegmentPrefetch {
 
     fun cachedCount(): Int = lru.size
 
-    fun clear() = lru.clear()
+    fun clear() {
+        stop()
+        lru.clear()
+    }
+
+    /**
+     * 停止当前预取。
+     *
+     * 以前只在对象销毁时才会停，而这是进程级单例：切集、换片、退出播放页之后
+     * 上一轮的 8 个分片仍在后台下载，白占带宽和 [permits]，还让新一轮预取排在后面。
+     */
+    fun stop() {
+        job?.cancel()
+        job = null
+    }
 
     /**
      * 后台预取播放列表开头若干分片。
@@ -54,7 +72,9 @@ object SegmentPrefetch {
      *   前几片挤到后面去。
      */
     fun start(playlistUrl: String, count: Int = DEFAULT_COUNT, adFilter: Boolean = true) {
-        scope.launch {
+        // 新的一轮开始前先掐掉旧的：它下的是已经不看的内容了。
+        job?.cancel()
+        job = scope.launch {
             // 必须拿**最终地址**当基准：m3u8 常被 302 到另一个 CDN 目录，
             // 用入口地址拼相对分片会全部拼错（404），且现象只有「预取毫无效果」。
             var url = playlistUrl
@@ -93,7 +113,9 @@ object SegmentPrefetch {
                 return@launch
             }
             segments.forEach { segment ->
-                scope.launch {
+                // 用当前协程作用域（job）的子协程：job.cancel() 时能一起取消，
+                // 之前写 scope.launch 是兄弟协程，取消 job 管不到它们。
+                launch {
                     if (!inflight.add(segment)) return@launch
                     try {
                         if (take(segment) == null) {

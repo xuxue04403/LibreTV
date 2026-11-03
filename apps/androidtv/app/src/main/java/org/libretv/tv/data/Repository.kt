@@ -538,7 +538,9 @@ class Repository(private val net: Net = Net) {
                                 if (hits.isNotEmpty()) {
                                     found.addAll(hits)
                                     rememberItems(hits)
-                                    stop = true
+                                    // 命中**不**终止本源的翻页：同名的续集/不同季往往分散在
+                                    // 后面几页，一命中就停会把结果截成 1-2 条。
+                                    // 是否收手交给循环条件里的 found.size >= PINYIN_ENOUGH_HITS。
                                 }
                                 if (shortPage) stop = true
                             }

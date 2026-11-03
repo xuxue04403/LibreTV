@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -50,10 +51,12 @@ import org.libretv.tv.ui.theme.Panel
 import org.libretv.tv.ui.theme.Panel2
 import org.libretv.tv.ui.theme.TextMuted
 import org.libretv.tv.ui.theme.TextPrimary
+import kotlinx.coroutines.delay
 
 @Composable
 fun CategoryScreen(vm: AppViewModel, data: AppData) {
     val state = vm.category
+    val chipsState = rememberLazyListState()
     val firstFocus = remember { FocusRequester() }
     // 首屏焦点落在当前分类的胶囊上：进去就能用左右键换分类，往下进网格。
     //
@@ -61,11 +64,23 @@ fun CategoryScreen(vm: AppViewModel, data: AppData) {
     // 若每次 state.key 变化都抢一次，用户刚按 ↓ 进网格就会被拽回分类行。
     // 页面在导航离开时会被销毁、回来时重新组合，所以 remember 会在下次进入时归零，
     // 「从详情返回分类页」依然能恢复焦点。
+    //
+    // 两个必须做对的地方（H3 整改的漏网之鱼）：
+    // 1. 目标胶囊在 LazyRow 里，选中的分类靠后时它**还没被组合**，
+    //    requestFocus 会抛 "FocusRequester is not initialized"，所以先 scrollToItem；
+    // 2. 单次请求失败就永久放弃会让整页没有焦点框（下一次方向键会落到顶栏导航，
+    //    而导航项一聚焦就切页，用户被弹走），因此重试几次、只有成功才置位。
     var focusRestored by remember { mutableStateOf(false) }
     LaunchedEffect(state.key) {
-        if (!focusRestored) {
-            runCatching { firstFocus.requestFocus() }
-            focusRestored = true
+        if (focusRestored) return@LaunchedEffect
+        val idx = CategoryKey.home.indexOf(state.key)
+        if (idx >= 0) runCatching { chipsState.scrollToItem(idx) }
+        repeat(4) { attempt ->
+            if (attempt > 0) delay(80)
+            if (runCatching { firstFocus.requestFocus() }.isSuccess) {
+                focusRestored = true
+                return@LaunchedEffect
+            }
         }
     }
 
@@ -105,7 +120,7 @@ fun CategoryScreen(vm: AppViewModel, data: AppData) {
         // 分类回到顶部横排：竖栏吃掉 196dp 的横向空间——电视上横向宽度比纵向更金贵，
         // 少一列海报比多滚一下更难受。横排用 LazyRow，分类多到放不下时可以横向滚，
         // 不会像固定 Row 那样把最后几个硬裁一半。
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        LazyRow(state = chipsState, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             items(CategoryKey.home, key = { it.name }) { key ->
                 val selected = key == state.key
                 TvCard(

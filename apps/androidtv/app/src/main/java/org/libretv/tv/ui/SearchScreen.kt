@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -50,6 +52,8 @@ fun SearchScreen(vm: AppViewModel, data: AppData) {
     // 只给 String 时 Compose 会把光标停在 0（首字母之前），接着输入就往回插字。
     var input by remember { mutableStateOf(TextFieldValue("")) }
     val word = input.text.trim()
+    // 空输入按搜索时给一句提示：startSearch 对空串是静默 return，否则用户不知道发生了什么。
+    var emptyHint by remember { mutableStateOf(false) }
     val searchButtonFocus = remember { FocusRequester() }
     val suggestions = remember(data.history, search.keyword) {
         (search.keyword.takeIf { it.isNotBlank() }?.let { listOf(it) } ?: emptyList()) +
@@ -77,15 +81,22 @@ fun SearchScreen(vm: AppViewModel, data: AppData) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 value = input,
-                onValueChange = { input = it },
+                onValueChange = { input = it; emptyHint = false },
                 modifier = Modifier.width(520.dp),
                 singleLine = true,
                 placeholder = { Text("输入片名、剧名、演员或拼音首字母", color = TextMuted) },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { vm.startSearch(word) }),
+                keyboardActions = KeyboardActions(onSearch = { if (word.isEmpty()) emptyHint = true else vm.startSearch(word) }),
             )
             Spacer(Modifier.width(12.dp))
-            TvButton("搜索", onClick = { vm.startSearch(word) }, primary = true, focusRequester = searchButtonFocus)
+            // 空输入时 startSearch 会直接 return（连 loading 都不置），按下去毫无反馈，
+            // 看着像遥控器没响应。这里给一句明确的提示。
+            TvButton(
+                "搜索",
+                onClick = { if (word.isEmpty()) emptyHint = true else vm.startSearch(word) },
+                primary = true,
+                focusRequester = searchButtonFocus,
+            )
             Spacer(Modifier.width(16.dp))
             Text(
                 if (search.loading) "搜索中… ${search.outcomes.size}/${data.activeSources().size} 个源"
@@ -94,6 +105,11 @@ fun SearchScreen(vm: AppViewModel, data: AppData) {
                 color = TextMuted,
                 fontSize = MaterialTheme.typography.bodySmall.fontSize,
             )
+        }
+
+        if (emptyHint) {
+            Spacer(Modifier.height(10.dp))
+            Text("先输入片名、演员或拼音首字母，再按搜索", color = Accent, fontSize = MaterialTheme.typography.bodySmall.fontSize)
         }
 
         if (Pinyin.isQuery(word)) {
@@ -107,9 +123,11 @@ fun SearchScreen(vm: AppViewModel, data: AppData) {
 
         if (suggestions.isNotEmpty() && !search.searched) {
             Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("试试：", color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
-                suggestions.take(8).forEach { kw ->
+            // 用 LazyRow 而不是 Row：建议词一多，后面的胶囊被裁在屏幕外，
+            // 但焦点仍能移过去（看不见焦点框），遥控器使用者会以为卡住了。
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                item { Text("试试：", color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize) }
+                items(suggestions.take(8)) { kw ->
                     Chip(kw) { input = TextFieldValue(kw, TextRange(kw.length)); vm.startSearch(kw) }
                 }
             }
@@ -117,8 +135,8 @@ fun SearchScreen(vm: AppViewModel, data: AppData) {
 
         if (search.outcomes.isNotEmpty()) {
             Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                search.outcomes.forEach { outcome ->
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                items(search.outcomes, key = { it.sourceKey }) { outcome ->
                     val text = if (outcome.ok) "${outcome.sourceName} · ${outcome.items.size} 条 · ${outcome.ms}ms"
                     else "${outcome.sourceName} · ${if (outcome.timedOut) "超时" else outcome.error ?: "失败"}"
                     Chip(text, active = outcome.ok)

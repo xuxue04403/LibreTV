@@ -663,8 +663,12 @@ export async function startMediaProxy(): Promise<MediaProxy> {
         stats.hits += 1;
         // 缓存里也可能是播放列表，但它带 token、必须每次重写，不能按 hour 缓存
         const cachedPlaylist = looksLikePlaylistHead(cached.body);
+        // 命中分支也要过白名单：cache 里存的是上游原始 Content-Type（写入时不改，
+        // 因为 /p 返回 206 时同样要回原值），直接透传就等于给 text/html 开了
+        // 一条「以本机同源身份执行」的旁路 —— pipeStream 那边已经降级了，这里不能漏。
+        const cachedType = SAFE_MEDIA_TYPES.test(cached.contentType) ? cached.contentType : 'application/octet-stream';
         res.writeHead(cached.status, {
-          'Content-Type': cached.contentType,
+          'Content-Type': cachedType,
           'Content-Length': String(cached.body.byteLength),
           'Access-Control-Allow-Origin': '*',
           'X-Content-Type-Options': 'nosniff',
@@ -822,6 +826,9 @@ export async function startMediaProxy(): Promise<MediaProxy> {
 
     const first = await assertAllowedTarget(target, allowPrivate);
     const init: RequestInit = { headers: mediaRequestHeaders(first), redirect: 'manual' };
+    // 预取链路上的每个请求都要自带死线：预取是后台行为，上游半死不活时
+    // 不能把连接和缓存配额一直占着（`/p` 那条路早就这么做了）。
+    const withDeadline = (): RequestInit => ({ ...init, signal: AbortSignal.timeout(PREFETCH_TIMEOUT_MS) });
 
     // master 播放列表里列的是子播放列表而不是分片。遇到这种必须往下钻一层
     // 再取分片，否则「预取」在多码率源（国内采集站的主流形态）上恒等于空操作，
@@ -830,16 +837,16 @@ export async function startMediaProxy(): Promise<MediaProxy> {
     let text = '';
     let lastBody = '';
     for (let depth = 0; depth <= PREFETCH_MAX_DEPTH; depth += 1) {
-      const playlistRes = await fetchChecked(listUrl, init, allowPrivate);
+      const playlistRes = await fetchChecked(listUrl, withDeadline(), allowPrivate);
       if (!playlistRes.ok) {
         return { ok: false, cached: 0, bytes: cache.bytesCached, playlist: false, error: `HTTP ${playlistRes.status}` };
       }
-      lastBody = (await readLimited(playlistRes)).toString('utf8');
+      lastBody = (await readLimited(playlistRes, PREFETCH_MAX_SEGMENT)).toString('utf8');
       text = adFilter ? stripAdGroups(lastBody) : lastBody;
       const listed = segmentUrls(text, playlistRes.url || listUrl.href);
       if (listed.length === 0) {
         // 不是播放列表（直链 mp4 之类）：把这条直链本身读进缓存
-        const single = await fetchChecked(first, init, allowPrivate);
+        const single = await fetchChecked(first, withDeadline(), allowPrivate);
         if (!single.ok) {
           return { ok: false, cached: 0, bytes: cache.bytesCached, playlist: false, error: `HTTP ${single.status}` };
         }

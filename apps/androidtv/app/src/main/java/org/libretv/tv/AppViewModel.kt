@@ -3,10 +3,12 @@ package org.libretv.tv
 import android.app.Application
 import android.util.Log
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -22,6 +24,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.libretv.tv.data.AppData
 import org.libretv.tv.data.AppSettings
@@ -133,6 +136,15 @@ private const val PINYIN_SOURCE_KEY = "pinyin"
 private const val CACHE_SOURCE_KEY = "cache"
 private const val DETAIL_TIMEOUT_MS = 9_000L
 
+/**
+ * 换源时拉单个候选详情的超时。必须小于 [DETAIL_TIMEOUT_MS] × 2，
+ * 否则一个坏源就能让「正在切换到…」卡住半分钟（看门狗在 failingOver 期间不介入）。
+ */
+private const val FAILOVER_CANDIDATE_TIMEOUT_MS = 8_000L
+
+/** 换源时跨源反查片名的总超时。 */
+private const val FAILOVER_DISCOVER_TIMEOUT_MS = 12_000L
+
 /** 同时发起的候选详情请求上限（电视盒子并发能力有限） */
 private const val DETAIL_FANOUT = 3
 
@@ -173,6 +185,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var live by mutableStateOf(LiveUi())
         private set
+    /**
+     * 直播源已下载字节数。
+     *
+     * 单独放一个状态、不塞进 [live]：这个值由下载协程在 IO 线程上高频写入，
+     * 而 [live] 是「读快照 → 改字段 → 整体写回」的写法，两处并发写会把
+     * 对方的字段回退掉（典型现象：渐进加载时用户刚点的分组被弹回「全部」）。
+     */
+    var liveBytes by mutableLongStateOf(0L)
+        private set
     var category by mutableStateOf(CategoryUi())
         private set
     var toast by mutableStateOf<String?>(null)
@@ -206,6 +227,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 拼音索引预热的后台任务，用户一旦开始检索就取消 */
     private var warmJob: Job? = null
+
+    /** 「继续观看 / 收藏」起播的详情请求：同一时刻只允许一个在飞，避免连点叠请求。 */
+    private var openingJob: Job? = null
 
     /** 检索序号：见 [startSearch] 里的说明 */
     private var searchSeq: Int = 0
@@ -541,6 +565,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun go(target: Screen) {
+        // 直接跳播放页（比如首页「直播收藏」里点一个台）也要记下来源，
+        // 否则返回键会落到用户从没去过的页面：NavStack 对 LivePlayer 是硬编码回
+        // 「直播」列表，而从首页收藏直接起播的人从没打开过那个列表。
+        if (target is Screen.LivePlayer || target is Screen.Player) nav.playFrom(screen)
         screen = target
         if (target is Screen.Search) {
             // 从详情返回搜索时保留结果
@@ -784,7 +812,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun back() {
         val current = screen
-        if (current is Screen.Player) saveProgressNow(current)
+        // 这里不再「补存一次进度」：播放页的 onDispose 会带着 exo 的真实位置调
+        // saveProgress，而 ViewModel 拿不到播放器位置（旧实现 saveProgressNow
+        // 是个空函数，属于死调用，容易让人误以为退出前一定会落盘）。
         screen = nav.target(current)
     }
 
@@ -1029,13 +1059,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun resumeFromHistory(entry: HistoryEntry) {
-        viewModelScope.launch {
+        // 连按 OK 会叠出多个并发请求，每个都能走 20 秒；这里只允许一个在飞，
+        // 并给它一个可见的上限（超时给提示），否则界面看起来像「按了没反应」。
+        if (openingJob?.isActive == true) return
+        openingJob = viewModelScope.launch {
             val source = _data.value.sources.firstOrNull { it.key == entry.sourceKey }
             if (source == null) {
                 showToast("该片源已被删除")
                 return@launch
             }
-            val result = runCatching { repo.detail(source, entry.vodId) }
+            val detail = withTimeoutOrNull(DETAIL_TIMEOUT_MS) { repo.detail(source, entry.vodId) }
+            val result = runCatching { detail ?: throw IllegalStateException("超时") }
             result.onSuccess { vod ->
                 if (vod.episodes.isEmpty()) {
                     showToast("该片源暂无可用播放地址")
@@ -1068,13 +1102,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         val fav = _data.value.favorites.firstOrNull { it.id == favoriteId } ?: return
-        viewModelScope.launch {
+        if (openingJob?.isActive == true) return
+        openingJob = viewModelScope.launch {
             val source = _data.value.sources.firstOrNull { it.key == fav.sourceKey }
             if (source == null) {
                 showToast("该片源已被删除")
                 return@launch
             }
-            runCatching { repo.detail(source, fav.vodId) }
+            val detail = withTimeoutOrNull(DETAIL_TIMEOUT_MS) { repo.detail(source, fav.vodId) }
+            runCatching { detail ?: throw IllegalStateException("超时") }
                 .onSuccess { vod ->
                     if (vod.episodes.isEmpty()) {
                         showToast("该片源暂无可用播放地址")
@@ -1135,10 +1171,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun saveProgressNow(player: Screen.Player) {
-        // 具体位置由播放页在退出前调用 saveProgress 写入
-    }
-
     /**
      * 播放失败时切换到下一个候选源（失败转移）。
      *
@@ -1164,13 +1196,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (untried.isEmpty()) {
                 if (searched) return null
                 searched = true
-                val extra = runCatchingCancellable {
-                    repo.discoverCandidates(
-                        title = player.title,
-                        sources = _data.value.activeSources(),
-                        exclude = attempted,
-                    )
-                }.getOrDefault(emptyList())
+                // 跨源反查片名要走一整轮多源搜索，同样不能无限等：超时就当作「没找到」，
+                // 直接把控制权交回播放页（提示「没有更多可用片源了」），别让界面空转。
+                val extra = withTimeoutOrNull(FAILOVER_DISCOVER_TIMEOUT_MS) {
+                    runCatchingCancellable {
+                        repo.discoverCandidates(
+                            title = player.title,
+                            sources = _data.value.activeSources(),
+                            exclude = attempted,
+                        )
+                    }.getOrDefault(emptyList())
+                } ?: emptyList()
                 if (extra.isEmpty()) return null
                 chain = (chain + extra).distinctBy { it.key }
                 continue
@@ -1178,7 +1214,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
             val next = untried.first()
             attempted += next.key
-            val detail = runCatchingCancellable { repo.detail(next.source, next.vodId) }.getOrNull()
+            // 必须给超时：repo.detail 内部是「先 ?ac=videolist&ids=，失败再爬详情页」，
+            // 两段各 20 秒。不加超时时单个候选最长挂 40 秒，而这段时间
+            // failingOver=true 让看门狗也不敢介入，界面上就是「正在切换到…」卡死。
+            val detail = withTimeoutOrNull(FAILOVER_CANDIDATE_TIMEOUT_MS) {
+                runCatchingCancellable { repo.detail(next.source, next.vodId) }.getOrNull()
+            }
             if (detail == null || detail.episodes.isEmpty()) continue
 
             // 与详情页/观看记录用同一个夹紧口径（HistoryDedupe.clampEpisodeIndex），
@@ -1282,7 +1323,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (live.loading) return
         val adultFilter = _data.value.settings.adultFilter
         val signature = liveSignature(sources, adultFilter)
-        live = live.copy(loading = true, downloadedBytes = 0)
+        live = live.copy(loading = true)
+        liveBytes = 0L
 
         viewModelScope.launch {
             // 1) 缓存优先
@@ -1329,7 +1371,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         var lastPush = 0L
         val pushIntervalMs = 400L
         val reportProgress = { bytes: Long ->
-            live = live.copy(downloadedBytes = bytes)
+            // 只写独立的字节计数状态：这里在下载协程（IO）上高频回调，
+            // 改成 live.copy(...) 会和下面 onBatch 的写入互相覆盖字段。
+            liveBytes = bytes
         }
 
         coroutineScope {
@@ -1353,10 +1397,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                                     )
                                     // loading 保持 true：列表已经在长，但仍需显示"仍在读取"，
                                     // 也让 loadLive 的并发保护继续生效
-                                    live = live.copy(
-                                        channels = merged,
-                                        groups = listOf("全部") + Parsers.groups(merged),
-                                    )
+                                    // live 是「读快照 → 改字段 → 整体写回」，这段在下载协程里跑，
+                                    // 和主线程的 setLiveGroup/setLiveKeyword 并发写会互相回退字段
+                                    //（表现：刚点的分组被弹回「全部」）。统一挪到主线程串行写。
+                                    withContext(Dispatchers.Main) {
+                                        live = live.copy(
+                                            channels = merged,
+                                            groups = listOf("全部") + Parsers.groups(merged),
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1439,6 +1488,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             showToast("请填写 http(s) 开头的采集接口地址")
             return false
         }
+        // 同一地址加两次会让搜索/分类对同一个接口发两份请求，详情页的「同片源」
+        // 也会出现两个同名条目。导入订阅与恢复默认源都做了去重，手动添加漏了。
+        if (_data.value.sources.any { it.url.trimEnd('/') == cleanUrl }) {
+            showToast("这个采集接口已经添加过了")
+            return false
+        }
         val key = "custom_${UUID.randomUUID().toString().take(8)}"
         viewModelScope.launch {
             store.update { data ->
@@ -1495,6 +1550,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val cleanUrl = url.trim().trimEnd('/')
         if (!cleanUrl.startsWith("http")) {
             showToast("请填写 http(s) 开头的 M3U 地址")
+            return false
+        }
+        // 同 addSource：重复地址会在直播列表里出现两份同样的频道
+        if (_data.value.liveSources.any { it.url.trimEnd('/') == cleanUrl }) {
+            showToast("这个直播源已经添加过了")
             return false
         }
         val key = "live_${UUID.randomUUID().toString().take(8)}"

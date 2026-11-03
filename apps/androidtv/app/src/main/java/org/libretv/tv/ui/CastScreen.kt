@@ -15,7 +15,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
@@ -190,6 +192,10 @@ fun CastScreen() {
         Modifier
             .fillMaxSize()
             .padding(ScreenPadding)
+            // 内容约 570dp，16:9 电视的可视高度只有 420dp 左右：没有滚动时
+            // 「怎么投屏」后半段和「最近一次投屏」整块永远看不到（遥控器也够不到）。
+            // SettingsScreen 早就这么做了，这里当初漏了。
+            .verticalScroll(rememberScrollState())
             .focusRequester(pageFocus)
             .focusable()
     ) {

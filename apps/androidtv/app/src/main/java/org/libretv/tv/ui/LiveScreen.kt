@@ -28,9 +28,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -136,8 +139,8 @@ fun LiveScreen(vm: AppViewModel, data: AppData) {
                 Text(
                     when {
                         live.channels.isNotEmpty() && live.loading -> "已加载 ${live.channels.size} 个频道，仍在读取…"
-                        live.loading -> if (live.downloadedBytes > 0) {
-                            "正在读取直播源 ${live.downloadedBytes / 1024} KB…"
+                        live.loading -> if (vm.liveBytes > 0) {
+                            "正在读取直播源 ${vm.liveBytes / 1024} KB…"
                         } else {
                             "连接直播源…"
                         }
@@ -307,6 +310,12 @@ fun LivePlayerScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var buffering by remember { mutableStateOf(true) }
     var overlay by remember { mutableStateOf(true) }
+    // 信息条每次按键都要重新计时：overlay 已经是 true 时再赋 true 不会重启
+    // LaunchedEffect，4 秒的倒计时会按第一次显示的时间走完，用户连按也照样消失。
+    var overlayTick by remember { mutableIntStateOf(0) }
+    // 「重试」也要重启看门狗：它只依赖 current.url，不改 url 的话重试后
+    // 该台仍然空转时就没有第二次兜底了，界面会静默停住。
+    var retryTick by remember { mutableIntStateOf(0) }
     var switching by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
     // 错误面板里的「重试」按钮：面板一出现就把焦点交给它，
@@ -360,12 +369,28 @@ fun LivePlayerScreen(
 
     // 看门狗：有的台返回的是 HTML 错误页，ExoPlayer 既不报错也不出画面，
     // 界面会永远停在「正在连接直播流…」。超时就直接给结论并允许换台。
-    LaunchedEffect(current.url) {
+    LaunchedEffect(current.url, retryTick) {
         kotlinx.coroutines.delay(LIVE_START_TIMEOUT_MS)
         if (exo.playbackState != Player.STATE_READY && error == null) {
             buffering = false
             switching = false
             error = "这个频道 ${LIVE_START_TIMEOUT_MS / 1000} 秒内没有出画面，可能已下线或被地区限制"
+        }
+    }
+
+    /**
+     * 退到后台就暂停：直播是持续拉流的，不暂停的话按 Home 之后
+     * 声音照放、解码器与带宽全占着，低端盒子回来还会掉帧。
+     */
+    var resumeOnStart by remember { mutableStateOf(false) }
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        resumeOnStart = exo.playWhenReady
+        exo.pause()
+    }
+    LifecycleEventEffect(Lifecycle.Event.ON_START) {
+        if (resumeOnStart) {
+            resumeOnStart = false
+            exo.play()
         }
     }
 
@@ -397,7 +422,7 @@ fun LivePlayerScreen(
     }
 
     // 信息条 4 秒后自动隐藏：常驻会一直压住画面上沿
-    LaunchedEffect(overlay, current.url) {
+    LaunchedEffect(overlay, overlayTick, current.url) {
         if (overlay) {
             kotlinx.coroutines.delay(4_000)
             overlay = false
@@ -432,6 +457,7 @@ fun LivePlayerScreen(
                     Key.DirectionCenter, Key.Enter -> {
                         if (exo.isPlaying) exo.pause() else exo.play()
                         overlay = true
+                        overlayTick++
                         true
                     }
                     // 上下键换台，左右键做上一台/下一台（遥控器上左右更顺手）
@@ -451,6 +477,7 @@ fun LivePlayerScreen(
                     // 导致 BackHandler 再触发一次、一次退两级
                     else -> {
                         overlay = true
+                        overlayTick++
                         false
                     }
                 }
@@ -478,7 +505,7 @@ fun LivePlayerScreen(
                 Text(error ?: "", color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    TvButton("重试", onClick = { error = null; exo.prepare() }, focusRequester = errorFocus)
+                    TvButton("重试", onClick = { error = null; buffering = true; retryTick++; exo.prepare() }, focusRequester = errorFocus)
                     if (playlist.size > 1) {
                         TvButton("下一个频道", onClick = { switchTo(1) })
                     }

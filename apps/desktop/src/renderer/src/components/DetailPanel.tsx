@@ -62,6 +62,21 @@ export function DetailPanel({
   );
 
   useEffect(() => {
+    // 关闭按钮上写着「关闭（Esc）」，但这个面板之前没有任何键盘监听：
+    // 在首页/分类/搜索里打开详情后按 Esc 毫无反应，用户只能去点右上角的叉。
+    // 面板打开时独占键盘（后面的列表页不该同时响应），所以这里直接 preventDefault。
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [onClose]);
+
+  useEffect(() => {
     let alive = true;
     // 观看记录每 5 秒就会被播放页写一次，放进依赖会导致详情被反复重拉、
     // 同时还把 detail 置空让选集闪一下——这里现取快照，依赖只留「选了哪个源」。

@@ -192,16 +192,26 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
     }
 
     /** 失败转移：优先用候选链，全部失败后按片名反查补充 */
-    val tryFailover: (String) -> Unit = { reason ->
+    val tryFailover: (String, Boolean) -> Unit = { reason, manual ->
         if (!failingOver) {
             failingOver = true
             note = "$reason，正在切换片源…"
             scope.launch {
                 val result = vm.failoverPlayback(current, tried.toSet(), currentIndex, discovered)
                 if (result == null) {
-                    note = null
-                    error = "$reason（已尝试全部片源）"
-                    buffering = false
+                    if (manual) {
+                        // 手动按菜单键只是「想换条线看看」，画面还在正常播：
+                        // 不能弹整屏「播放失败」，否则等于把正在看的片子判死，
+                        // 而且错误面板会吞掉除返回/重试以外所有按键。
+                        note = "没有更多可用片源了"
+                        error = null
+                        delay(2_400)
+                        note = null
+                    } else {
+                        note = null
+                        error = "$reason（已尝试全部片源）"
+                        buffering = false
+                    }
                 } else {
                     tried += result.candidate.key
                     discovered = discovered || result.target.candidates.any { it.key !in target.candidates.map { c -> c.key } }
@@ -229,11 +239,21 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
      * 而且 CPU/带宽全占着——回来时还得手动补一次暂停。
      * 这里只处理 ON_STOP（真正的「不在前台」），不用 ON_PAUSE：
      * ON_PAUSE 在系统权限弹窗时也会触发，会让播放无故中断。
+     *
+     * 守卫**不能**用 `exo.isPlaying`：缓冲中（刚换源/刚换集/弱网）它就是 false，
+     * 于是后台继续拉流，缓冲完还会自动出声，而且 ticker 还在跑，卡住 15 秒会在
+     * 后台触发自动换源。以 playWhenReady 为准，回前台再按这个标记恢复。
      */
+    var resumeOnStart by remember { mutableStateOf(false) }
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
-        if (exo.isPlaying) {
-            exo.pause()
-            vm.saveProgress(current, currentIndex, exo.currentPosition.coerceAtLeast(0), exo.duration.coerceAtLeast(0))
+        resumeOnStart = exo.playWhenReady
+        exo.pause()
+        vm.saveProgress(current, currentIndex, exo.currentPosition.coerceAtLeast(0), exo.duration.coerceAtLeast(0))
+    }
+    LifecycleEventEffect(Lifecycle.Event.ON_START) {
+        if (resumeOnStart) {
+            resumeOnStart = false
+            exo.play()
         }
     }
 
@@ -289,7 +309,7 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                 val message = playerError.errorCodeName + "：" + (playerError.message ?: "播放失败").take(120)
                 error = message
                 // 自动换源：这是本次改动的核心，用户不必手动返回重选
-                tryFailover("播放失败")
+                tryFailover("播放失败", false)
             }
         }
         exo.addListener(listener)
@@ -309,7 +329,7 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
             stalled = if (buffering && !exo.isPlaying) stalled + 1 else 0
             if (stalled >= STALL_SECONDS && error == null && !failingOver) {
                 stalled = 0
-                tryFailover("加载超时")
+                tryFailover("加载超时", false)
             }
             // STATE_ENDED 之后不能再写：那时 currentPosition == duration，
             // 每 4 秒写一条 finished=false、position=duration 的记录会把
@@ -400,7 +420,12 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                         true
                     }
                     Key.DirectionRight -> {
-                        exo.seekTo(exo.currentPosition + SEEK_STEP_MS)
+                        // 必须自己夹到片尾之前：ExoPlayer 会把越界目标夹到 duration，
+                        // 于是 STATE_ENDED 立刻触发 —— 用户只想快进看结尾，
+                        // 却被记成「看完」并（开了自动连播时）直接跳下一集。
+                        val limit = exo.duration
+                        val target = exo.currentPosition + SEEK_STEP_MS
+                        exo.seekTo(if (limit > 0) target.coerceAtMost(limit - 1_000L) else target)
                         showControls()
                         true
                     }
@@ -414,6 +439,10 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                     // 不排掉的话按住「下」会一路跳集。
                     Key.DirectionDown -> {
                         val now = System.currentTimeMillis()
+                        // KeyUp 正常都会来，但焦点被抽屉/错误面板抢走时可能落空；
+                        // 一旦漏掉一次，downHeld 就永远是 true，↓↓ 切集会整场失效。
+                        // 隔得过久就当这次是新的按下，给它一条自愈路径。
+                        if (now - lastDownAt > DOUBLE_DOWN_MS * 3) downHeld = false
                         val fresh = !downHeld
                         downHeld = true
                         if (fresh && lastDownAt > 0 && now - lastDownAt <= DOUBLE_DOWN_MS) {
@@ -432,6 +461,9 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                     }
                     Key.MediaPlayPause, Key.MediaPlay, Key.MediaPause -> {
                         if (exo.isPlaying) exo.pause() else exo.play()
+                        // 与 OK 键一致：不呼出控件的话，用遥控器的播放/暂停键操作时
+                        // 既看不到「已暂停」也看不到进度，控制条还按旧计时直接消失。
+                        showControls()
                         true
                     }
                     Key.MediaNext -> {
@@ -444,7 +476,7 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                     }
                     // 菜单键：手动换源（自动换源失败后的兜底，也给想主动换线的用户）
                     Key.Menu -> {
-                        tryFailover("手动切换")
+                        tryFailover("手动切换", true)
                         true
                     }
                     // 返回键不在这里消费：交给 Activity 的 BackHandler 统一处理，
@@ -521,7 +553,7 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                         tried.clear()
                         tried += "${current.source.key}:${current.vodId}"
                         discovered = false
-                        tryFailover("手动切换")
+                        tryFailover("手动切换", true)
                     })
                     TvButton("重试", onClick = {
                         error = null
@@ -529,7 +561,12 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                         exo.play()
                     })
                     TvButton("下一集", onClick = {
-                        if (index + 1 < current.episodes.size) index += 1
+                        if (index + 1 < current.episodes.size) {
+                            index += 1
+                        } else {
+                            // 末集点了毫无反馈，用户会以为按钮坏了
+                            note = "已经是最后一集"
+                        }
                     })
                     TvButton("返回", onClick = onExit)
                 }

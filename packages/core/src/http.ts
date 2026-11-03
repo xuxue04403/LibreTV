@@ -6,6 +6,9 @@
  * Android 端有 OkHttp。这里只定义最小接口，由各宿主注入实现。
  */
 
+/** 单次流式响应默认最多收 64MB，见 HttpStreamOptions.maxBytes */
+export const DEFAULT_STREAM_MAX_BYTES = 64 * 1024 * 1024;
+
 export interface HttpRequestOptions {
   method?: 'GET' | 'POST';
   headers?: Record<string, string>;
@@ -31,6 +34,14 @@ export interface HttpStreamOptions extends HttpRequestOptions {
   onChunk: (chunk: Uint8Array) => void;
   /** 多久没收到任何数据就判定卡死（默认 20 秒），与总时长无关 */
   idleTimeoutMs?: number;
+  /**
+   * 最多收多少字节（默认 64MB）。
+   *
+   * 直播源列表是用户随手填的地址，指向一个「无限输出」的端点（错配成视频流、
+   * 或者服务端一直吐数据）时，原来的实现会一直收下去并把每一块留一份，
+   * 几百 MB 直接把主进程堆撑爆。超过就断流并抛错。
+   */
+  maxBytes?: number;
 }
 
 export interface HttpClient {
@@ -116,7 +127,7 @@ export function createFetchHttp(fetchImpl?: typeof fetch): HttpClient {
     },
 
     async stream(url, options) {
-      const { onChunk, idleTimeoutMs = 20_000, ...rest } = options;
+      const { onChunk, idleTimeoutMs = 20_000, maxBytes = DEFAULT_STREAM_MAX_BYTES, ...rest } = options;
       // 总时长不设死线（大列表可能合法地下一分钟），只设「多久没数据」的空闲死线。
       // 但连接阶段必须有人管：上游接受连接后一直不响应时，下面那句 read() 会永久挂住。
       const res = await send(url, { ...rest, timeoutMs: idleTimeoutMs });
@@ -144,6 +155,12 @@ export function createFetchHttp(fetchImpl?: typeof fetch): HttpClient {
             if (done) break;
             armIdle();
             total += value.byteLength;
+            if (total > maxBytes) {
+              // 先停读取再抛：不止抛出去，还要把上游连接断掉，
+              // 否则服务端会继续把剩下的内容推过来
+              void reader?.cancel().catch(() => undefined);
+              throw new HttpError(`响应超过 ${Math.round(maxBytes / 1024 / 1024)}MB 上限`, 0);
+            }
             onChunk(value);
             // 同时留一份：调用方要 text 时不必重下
             chunks.push(value);

@@ -205,12 +205,25 @@ function LiveSources() {
 
   const submit = () => {
     const u = url.trim();
+    // 和点播源那边一样：正则只保证前缀，`https://` 能过正则但 new URL() 会抛。
+    // 异常在 onClick 的同步栈里，ErrorBoundary 接不住，表现是「点添加没反应」。
     if (!/^https?:\/\//i.test(u)) {
       toast.err('请填写 http(s) 开头的 M3U 地址');
       return;
     }
+    let host: string;
+    try {
+      host = new URL(u).hostname;
+    } catch {
+      toast.err('地址不完整，请填写完整的 M3U 地址');
+      return;
+    }
+    if (!host) {
+      toast.err('地址不完整，请填写完整的 M3U 地址');
+      return;
+    }
     addLiveSource({
-      name: name.trim() || new URL(u).hostname,
+      name: name.trim() || host,
       url: u,
       epg: epg.trim() || undefined,
     });
@@ -558,6 +571,10 @@ function DataPanel() {
       return;
     }
     replaceAll(snapshot);
+    // 撤销只能撤销「上一次」。备份留着不放的话，按钮会一直挂在那儿，
+    // 用户之后再点一次就会用这份旧快照覆盖他导入之后新加的源和历史。
+    localStorage.removeItem(IMPORT_BACKUP_KEY);
+    setHasBackup(false);
     toast.ok('已撤销上次导入');
   };
 

@@ -116,7 +116,15 @@ export async function fetchLivePlaylist(
       // 流式中途失败但已经拿到部分频道时用已解析结果兜底（总比空白页好）
       emit(parser.end(), true);
       if (all.length === 0) throw err;
-      return { channels: all, groups: collectGroups(all), name: readPlaylistName(head) };
+      // 兜底返回也要带 epgUrl：head 里通常已经有 x-tvg-url 了，
+      // 漏掉它会让「节目单」在直播中断后突然整片变空。成功路径（:131-136）
+      // 与非流式路径都带了这个字段。
+      return {
+        channels: all,
+        groups: collectGroups(all),
+        name: readPlaylistName(head),
+        epgUrl: parseM3uEpgUrl(head, url),
+      };
     }
     emit(parser.push(decoder.flush()), false);
     emit(parser.end(), true);

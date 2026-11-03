@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { startMediaProxy, assertAllowedTarget, fetchChecked, readLimited, type MediaProxy } from './proxy';
-import { castToDevice, discoverDevices, stopCast, type DlnaDevice } from './dlna';
+import { castToDevice, discoverDevices, parseDeviceDescription, stopCast, type DlnaDevice } from './dlna';
 
 const DEFAULT_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
@@ -304,6 +304,9 @@ ipcMain.handle(
     const streamId = options?.streamId ?? ++streamSeq;
     const controller = new AbortController();
     activeStreams.set(streamId, controller);
+    // 先把分配到的 id 告诉渲染层：chunk 是在 invoke 返回**之前**就一路推过去的，
+    // 渲染层只能靠这个事件知道「自己该听哪个 id」。
+    event.sender.send('http:stream:started', streamId);
     const idleTimeoutMs = Math.min(120_000, Math.max(5_000, options?.idleTimeoutMs ?? 30_000));
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
     const armIdle = (): void => {
@@ -359,6 +362,9 @@ ipcMain.handle(
       return { ok: true, status: res.status, url: res.url || url, headers: headerMap, bytes, ms: Date.now() - started };
     } catch (err) {
       const aborted = err instanceof Error && (err.name === 'AbortError' || controller.signal.aborted);
+      // 读循环里抛错时上游连接还挂着：这里主动断一次，
+      // 否则那条 socket 要等对端超时才会释放（大列表翻页失败时会累积）。
+      if (!aborted) controller.abort();
       return {
         ok: false,
         status: aborted ? 408 : 0,
@@ -408,14 +414,20 @@ ipcMain.handle('dialog:save-text', async (_event, defaultName: string, content: 
 });
 
 /**
- * 校验渲染层传来的 DLNA 设备对象。
+ * 校验渲染层传来的 DLNA 设备对象，并返回**可信的那一份**。
  *
  * S3 当初只修了 `dlna:cast`，`dlna:stop` 仍然把渲染层给的 `device.controlUrl`
  * 直接交给 `soap()` 去 POST。于是渲染层获得一个「向任意地址 POST XML」的原语
- * （能打内网，而 `http:fetch` 只能到公网）。这里统一收口：两个 handler 都必须
- * 先通过同一个校验，且必须与设备描述（location）同源。
+ * （能打内网，而 `http:fetch` 只能到公网）。
+ *
+ * 只校验「controlUrl 与 location 同源」是不够的：这两个字段**都来自渲染层**，
+ * 传 `{location:'http://10.0.0.5:8080/desc.xml', controlUrl:'http://10.0.0.5:8080/任意路径'}`
+ * 就能满足同源，照样向任意内网地址发 SOAP。
+ *
+ * 所以改成：拿 location 去拉设备描述，**从描述 XML 里重新解析 controlURL**，
+ * 并且要求它和渲染层传来的那个一致。这样 SOAP 的目标必须真的被那台设备声明过。
  */
-function assertCastableDevice(device: DlnaDevice): void {
+async function assertCastableDevice(device: DlnaDevice): Promise<DlnaDevice> {
   if (!device || typeof device.location !== 'string' || typeof device.controlUrl !== 'string') {
     throw new Error('设备信息不完整');
   }
@@ -430,6 +442,22 @@ function assertCastableDevice(device: DlnaDevice): void {
   if (deviceUrl.protocol !== 'http:' && deviceUrl.protocol !== 'https:') throw new Error('设备地址协议不受支持');
   if (control.protocol !== 'http:' && control.protocol !== 'https:') throw new Error('控制地址协议不受支持');
   if (control.origin !== deviceUrl.origin) throw new Error('控制地址与设备不同源');
+
+  // 最后一步：真的去读一次设备描述，用 XML 里声明的 controlURL 作为可信来源。
+  // 这既是「设备确实存在」的确认，也让 SOAP 的目标不能再由渲染层随意指定。
+  // DLNA 设备必然在内网，所以这里 allowPrivate = true；但能发 SOAP 的地址
+  // 必须是这台设备在自己的描述里声明过的那个，而不是渲染层给的字符串。
+  const desc = await fetchChecked(
+    deviceUrl,
+    { signal: AbortSignal.timeout(6_000), headers: { Accept: 'text/xml, application/xml' } },
+    true
+  );
+  if (!desc.ok) throw new Error(`设备描述读取失败（HTTP ${desc.status}）`);
+  const xml = (await readLimited(desc, 64 * 1024)).toString('utf8');
+  const parsed = parseDeviceDescription(xml, device.location);
+  if (!parsed) throw new Error('设备描述无法解析');
+  if (parsed.controlUrl !== control.href) throw new Error('控制地址与设备描述不一致');
+  return parsed;
 }
 
 // —— DLNA 投屏（发送端） ——
@@ -443,10 +471,10 @@ ipcMain.handle('dlna:discover', async () => {
 
 ipcMain.handle('dlna:cast', async (_event, device: DlnaDevice, url: string, title: string) => {
   try {
-    // 渲染层传来的 device 不可全信：控制地址必须与设备描述同源，且设备描述本身要能被解析
-    assertCastableDevice(device);
+    // 渲染层传来的 device 不可全信：用设备描述里声明的那份 controlURL 覆盖掉它
+    const trusted = await assertCastableDevice(device);
     if (!/^https?:\/\//i.test(url)) throw new Error('投屏地址无效');
-    await castToDevice(device, url, title);
+    await castToDevice(trusted, url, title);
     return { ok: true as const };
   } catch (err) {
     return { ok: false as const, error: err instanceof Error ? err.message : '投屏失败' };
@@ -456,8 +484,8 @@ ipcMain.handle('dlna:cast', async (_event, device: DlnaDevice, url: string, titl
 ipcMain.handle('dlna:stop', async (_event, device: DlnaDevice) => {
   try {
     // 与 cast 同一套校验：stop 也会向 controlUrl 发 SOAP，不能留成后门
-    assertCastableDevice(device);
-    await stopCast(device);
+    const trusted = await assertCastableDevice(device);
+    await stopCast(trusted);
     return { ok: true as const };
   } catch (err) {
     return { ok: false as const, error: err instanceof Error ? err.message : '停止失败' };
@@ -471,6 +499,12 @@ ipcMain.handle('dialog:open-text', async () => {  if (!win) return { ok: false a
   });
   const file = result.filePaths[0];
   if (result.canceled || !file) return { ok: false as const, canceled: true };
+  // 用户选错文件（比如一个几 GB 的视频）时，原来的 readFile(file,'utf8')
+  // 会把整个文件读进主进程内存。订阅/备份都是文本，10MB 足够，超了直接拒绝。
+  const stat = await fs.stat(file);
+  if (stat.size > 10 * 1024 * 1024) {
+    return { ok: false as const, canceled: false, error: '文件超过 10MB，可能不是订阅或备份文件' };
+  }
   const content = await fs.readFile(file, 'utf8');
   return { ok: true as const, path: file, content };
 });

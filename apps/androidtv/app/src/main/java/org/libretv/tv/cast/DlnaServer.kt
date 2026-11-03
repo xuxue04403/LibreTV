@@ -239,22 +239,42 @@ class DlnaServer(
                 }
                 soapResponse(AVT_SERVICE, action, "")
             }
-            "SetNextAVTransportURI", "Stop", "Pause", "Next", "Previous" ->
+            // 这几个以前是空实现：手机端按暂停/停止/拖动进度条，电视毫无反应，
+            // 控制条也永远显示「播放中 00:00:00」。现在都落到 CastRuntime，
+            // 由 CastPlayerScreen 注册的 transport 真正作用到 ExoPlayer 上。
+            "Stop" -> {
+                CastRuntime.stop()
                 soapResponse(AVT_SERVICE, action, "")
-            "Play" -> soapResponse(AVT_SERVICE, action, "")
-            "Seek" -> soapResponse(AVT_SERVICE, action, "")
+            }
+            "Pause" -> {
+                CastRuntime.pause()
+                soapResponse(AVT_SERVICE, action, "")
+            }
+            "Play" -> {
+                CastRuntime.play()
+                soapResponse(AVT_SERVICE, action, "")
+            }
+            "Seek" -> {
+                DlnaTime.parse(extractTag(body, "Target")).let { if (it >= 0) CastRuntime.seek(it) }
+                soapResponse(AVT_SERVICE, action, "")
+            }
+            // 投屏只承载单个地址，没有播放列表，下一集/上一集无对应语义
+            "Next", "Previous", "SetNextAVTransportURI" ->
+                soapResponse(AVT_SERVICE, action, "")
             "GetTransportInfo" -> soapResponse(
                 AVT_SERVICE,
                 action,
-                "<InstanceID>0</InstanceID><CurrentTransportState>PLAYING</CurrentTransportState>" +
+                "<InstanceID>0</InstanceID><CurrentTransportState>${CastRuntime.playbackState}</CurrentTransportState>" +
                     "<CurrentTransportStatus>OK</CurrentTransportStatus><CurrentSpeed>1</CurrentSpeed>"
             )
             "GetPositionInfo" -> soapResponse(
                 AVT_SERVICE,
                 action,
-                "<Track>1</Track><TrackDuration>00:00:00</TrackDuration><TrackMetaData></TrackMetaData>" +
-                    "<TrackURI>${xmlEscape(lastCastUrl)}</TrackURI><RelTime>00:00:00</RelTime>" +
-                    "<AbsTime>00:00:00</AbsTime><RelCount>0</RelCount><AbsCount>0</AbsCount>"
+                "<Track>1</Track><TrackDuration>${DlnaTime.format(CastRuntime.durationMs)}</TrackDuration>" +
+                    "<TrackMetaData></TrackMetaData>" +
+                    "<TrackURI>${xmlEscape(lastCastUrl)}</TrackURI>" +
+                    "<RelTime>${DlnaTime.format(CastRuntime.positionMs)}</RelTime>" +
+                    "<AbsTime>${DlnaTime.format(CastRuntime.positionMs)}</AbsTime><RelCount>0</RelCount><AbsCount>0</AbsCount>"
             )
             "GetMediaInfo" -> soapResponse(
                 AVT_SERVICE,

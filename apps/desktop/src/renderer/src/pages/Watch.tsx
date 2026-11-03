@@ -386,7 +386,12 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
       video.removeEventListener('error', onVideoError);
       // 退出/切集前先把进度落盘：紧接着的 pause()/removeAttribute('src')/load()
       // 会把 currentTime 归零，等到别的 cleanup 再读就永远是 0（RPL-04）
-      if (video.currentTime > 0) persistProgress(video.currentTime, index, video.duration);
+      //
+      // 但**看完触发的那次 cleanup 必须跳过**：onEnded 已经写过「看完 → 下一集」，
+      // 这里再用旧 index 和片尾的 currentTime 写一遍同一条记录（按 id 覆盖），
+      // 会把「已完成」改回「第 N 集看到结尾」——首页进度条恒 100%，
+      // 点继续观看又从刚看完那集的开头重放。
+      if (!video.ended && video.currentTime > 0) persistProgress(video.currentTime, index, video.duration);
       hls?.destroy();
       hlsRef.current = null;
       video.pause();
@@ -664,7 +669,18 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
           void manualSwitch();
           break;
         case 'Escape':
-          // 先退全屏再退播放：全屏下按 Esc 的直觉是「退出全屏」，
+          // 顺序很重要：弹层先关，再退全屏，最后才退播放页。
+          // 以前只看全屏，投屏弹窗/选集抽屉开着时按 Esc 会把整个播放页卸掉，
+          // 视频直接中断，用户还得重新搜索再进来。
+          if (castOpen) {
+            setCastOpen(false);
+            break;
+          }
+          if (drawerOpen) {
+            setDrawerOpen(false);
+            break;
+          }
+          // 全屏下按 Esc 的直觉是「退出全屏」，
           // 原来直接关播放页会把窗口留在全屏里。
           if (fullscreenRef.current || document.fullscreenElement) void applyFullscreen(false);
           else onClose();
@@ -680,7 +696,7 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [applyFullscreen, changeEpisode, index, manualSwitch, onClose, revealControls, seekBy, toggleFullscreen, toggleMute, togglePlay]);
+  }, [applyFullscreen, castOpen, changeEpisode, drawerOpen, index, manualSwitch, onClose, revealControls, seekBy, toggleFullscreen, toggleMute, togglePlay]);
 
   const playedPercent = duration > 0 ? (current / duration) * 100 : 0;
   const bufferedPercent = duration > 0 ? (buffered / duration) * 100 : 0;

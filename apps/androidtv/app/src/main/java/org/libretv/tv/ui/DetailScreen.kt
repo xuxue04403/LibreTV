@@ -43,6 +43,7 @@ fun DetailScreen(vm: AppViewModel, target: Screen.Detail, data: AppData) {
     val state = vm.detail
     val item = target.item
     val vod = state?.detail
+    val loadFailed = state?.error != null
     val playFocus = remember { FocusRequester() }
     val favoriteId = "${item.sourceKey}:${item.vodId}"
     val favorite = data.favorites.any { it.id == favoriteId }
@@ -61,7 +62,11 @@ fun DetailScreen(vm: AppViewModel, target: Screen.Detail, data: AppData) {
     // 单次 requestFocus 在首帧可能落空（节点还没放置），所以重试几次。
     val focusKey = Parsers.normalizeTitle(item.name)
     val focusDoneFor = remember { mutableSetOf<String>() }
-    LaunchedEffect(focusKey) {
+    LaunchedEffect(focusKey, loadFailed) {
+        // 解析失败时没有分集列表，『立即播放』按下去什么都不会发生（playFromDetail 对
+        // detail == null 是静默 return），所以把焦点让给错误区的『返回换源』；
+        // 加载成功后本 effect 会因为 loadFailed 翻转再跑一次，那时再抢播放键。
+        if (loadFailed) return@LaunchedEffect
         if (!focusDoneFor.add(focusKey)) return@LaunchedEffect
         repeat(4) { attempt ->
             if (attempt > 0) kotlinx.coroutines.delay(80L)
@@ -112,12 +117,16 @@ fun DetailScreen(vm: AppViewModel, target: Screen.Detail, data: AppData) {
                         }
                         Spacer(Modifier.height(18.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            TvButton(
-                                text = if (resumeIndex != null) "继续播放 · 第 ${resumeIndex + 1} 集" else "立即播放",
-                                onClick = { vm.playFromDetail(resumeIndex ?: 0) },
-                                primary = true,
-                                focusRequester = playFocus,
-                            )
+                            // 解析失败时不画播放键：按下去 playFromDetail 会静默返回，
+                            // 用户只会觉得遥控器坏了。错误区的「返回换源」才是该走的路。
+                            if (!loadFailed) {
+                                TvButton(
+                                    text = if (resumeIndex != null) "继续播放 · 第 ${resumeIndex + 1} 集" else "立即播放",
+                                    onClick = { vm.playFromDetail(resumeIndex ?: 0) },
+                                    primary = true,
+                                    focusRequester = playFocus,
+                                )
+                            }
                             TvButton(
                                 text = if (favorite) "已收藏" else "收藏",
                                 onClick = { vm.toggleFavorite(item, vod?.title, vod?.cover) },
@@ -131,9 +140,13 @@ fun DetailScreen(vm: AppViewModel, target: Screen.Detail, data: AppData) {
                             Text("同片源（${target.group.items.size}）：", color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
                             target.group.items.forEach { other ->
                                 val selected = other.sourceKey == item.sourceKey && other.vodId == item.vodId
-                                Chip(other.sourceName, active = selected) {
-                                    if (!selected) vm.openDetail(target.group, other)
-                                }
+                                // 当前源那颗不可聚焦：以前它也能拿到焦点，按 OK 却什么都不发生，
+                                // 看着像按钮坏了。onClick = null 的 Chip 不参与焦点遍历。
+                                Chip(
+                                    other.sourceName,
+                                    active = selected,
+                                    onClick = if (selected) null else ({ vm.openDetail(target.group, other) }),
+                                )
                             }
                         }
                     }

@@ -15,6 +15,10 @@ import net from 'node:net';
 
 const SSDP_HOST = '239.255.255.250';
 const SSDP_PORT = 1900;
+/** 一次发现最多解析多少条设备描述（同网段有人刷包时 locations 会涨到几千） */
+const MAX_DESCRIBE_TARGETS = 32;
+/** 解析设备描述的并发上限（每条一次 fetch，全放开会瞬间打出几百个连接） */
+const DESCRIBE_CONCURRENCY = 6;
 const AVT_SERVICE = 'urn:schemas-upnp-org:service:AVTransport:1';
 
 /** 设备描述上限：正常几十 KB，给 1MB 足够，防止局域网恶意设备把我们打死 */
@@ -219,7 +223,14 @@ async function discoverOnce(options: DiscoverOptions = {}): Promise<DlnaDevice[]
     });
   });
 
-  const devices = await Promise.all([...locations].map(describe));
+  // 上限两道：条数（同网段里有人刷 SSDP 时 locations 会涨到几千）与并发
+  // （每条都要 fetch 一次描述，全放开会瞬间打出几百个连接）。
+  const targets = [...locations].slice(0, MAX_DESCRIBE_TARGETS);
+  const devices: (DlnaDevice | null)[] = [];
+  for (let i = 0; i < targets.length; i += DESCRIBE_CONCURRENCY) {
+    const batch = targets.slice(i, i + DESCRIBE_CONCURRENCY);
+    devices.push(...(await Promise.all(batch.map(describe))));
+  }
   const unique = new Map<string, DlnaDevice>();
   for (const device of devices) {
     if (device && !unique.has(device.controlUrl)) unique.set(device.controlUrl, device);

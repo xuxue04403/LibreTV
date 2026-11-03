@@ -1,6 +1,7 @@
 package org.libretv.tv.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -28,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import org.libretv.tv.AppViewModel
 import org.libretv.tv.data.AppData
 import org.libretv.tv.ui.theme.Line
@@ -44,6 +47,10 @@ fun SettingsScreen(vm: AppViewModel, data: AppData) {
     var liveUrl by remember { mutableStateOf("") }
     var liveEpg by remember { mutableStateOf("") }
     var subUrl by remember { mutableStateOf("") }
+    // 破坏性操作一律先问一句。电视遥控器上「删除」和「启用」只隔 10dp，
+    // 误触一下就不可恢复（还要连带清掉该源的观看历史与收藏）。
+    var confirmText by remember { mutableStateOf<String?>(null) }
+    var confirmAction by remember { mutableStateOf<(() -> Unit)?>(null) }
 
     Column(
         Modifier
@@ -106,7 +113,10 @@ fun SettingsScreen(vm: AppViewModel, data: AppData) {
                 subtitle = source.url + if (source.builtin) "  ·  内置" else "",
                 enabled = source.key in data.selected,
                 onToggle = { vm.toggleSource(source.key) },
-                onDelete = { vm.removeSource(source.key) },
+                onDelete = {
+                    confirmText = "删除点播源「${source.name}」？\n该源的观看历史与收藏也会一并清除。"
+                    confirmAction = { vm.removeSource(source.key) }
+                },
             )
         }
         if (data.sources.isEmpty()) {
@@ -160,7 +170,10 @@ fun SettingsScreen(vm: AppViewModel, data: AppData) {
                     (source.note?.let { "\n$it" } ?: ""),
                 enabled = source.key in data.liveSelected,
                 onToggle = { vm.toggleLiveSource(source.key) },
-                onDelete = { vm.removeLiveSource(source.key) },
+                onDelete = {
+                    confirmText = "删除直播源「${source.name}」？"
+                    confirmAction = { vm.removeLiveSource(source.key) }
+                },
             )
         }
 
@@ -215,7 +228,13 @@ fun SettingsScreen(vm: AppViewModel, data: AppData) {
         SectionHeader("本地数据")
         PanelBox {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                TvButton("清空观看历史（${data.history.size} 条）", onClick = { vm.clearHistory() })
+                TvButton(
+                "清空观看历史（${data.history.size} 条）",
+                onClick = {
+                    confirmText = "清空全部观看历史？\n共 ${data.history.size} 条，清空后无法恢复。"
+                    confirmAction = { vm.clearHistory() }
+                },
+            )
                 Text(
                     "收藏 ${data.favorites.size} 部 · 直播收藏 ${data.liveFavorites.size} 个",
                     color = TextMuted,
@@ -254,6 +273,49 @@ fun SettingsScreen(vm: AppViewModel, data: AppData) {
         }
 
         Spacer(Modifier.height(40.dp))
+    }
+
+    val text = confirmText
+    val action = confirmAction
+    if (text != null && action != null) {
+        ConfirmDialog(
+            text = text,
+            onConfirm = {
+                confirmText = null
+                confirmAction = null
+                action()
+            },
+            onDismiss = {
+                confirmText = null
+                confirmAction = null
+            },
+        )
+    }
+}
+
+/**
+ * 遥控器上的二次确认。默认焦点放在「取消」——误触的代价比多点一下大得多。
+ */
+@Composable
+private fun ConfirmDialog(text: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    val cancelFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .width(560.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(Panel)
+                .border(1.dp, Line, RoundedCornerShape(16.dp))
+                .padding(28.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            Text(text, color = TextPrimary, fontSize = MaterialTheme.typography.titleMedium.fontSize)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                TvButton("取消", onClick = onDismiss, focusRequester = cancelFocus)
+                TvButton("确认", onClick = onConfirm, primary = true)
+            }
+            LaunchedEffect(Unit) { runCatching { cancelFocus.requestFocus() } }
+        }
     }
 }
 
