@@ -28,7 +28,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import org.libretv.tv.AppViewModel
 import org.libretv.tv.data.Pinyin
@@ -43,7 +45,11 @@ import org.libretv.tv.ui.theme.WarnAmber
 @Composable
 fun SearchScreen(vm: AppViewModel, data: AppData) {
     val search = vm.search
-    var input by remember { mutableStateOf(search.keyword) }
+    // 每次进搜索页都是「想搜新的」：输入框从空开始，不沿用上一次的关键词。
+    // 用 TextFieldValue 而不是 String，是为了能显式指定光标位置 ——
+    // 只给 String 时 Compose 会把光标停在 0（首字母之前），接着输入就往回插字。
+    var input by remember { mutableStateOf(TextFieldValue("")) }
+    val word = input.text.trim()
     val searchButtonFocus = remember { FocusRequester() }
     val suggestions = remember(data.history, search.keyword) {
         (search.keyword.takeIf { it.isNotBlank() }?.let { listOf(it) } ?: emptyList()) +
@@ -76,10 +82,10 @@ fun SearchScreen(vm: AppViewModel, data: AppData) {
                 singleLine = true,
                 placeholder = { Text("输入片名、剧名、演员或拼音首字母", color = TextMuted) },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { vm.startSearch(input) }),
+                keyboardActions = KeyboardActions(onSearch = { vm.startSearch(word) }),
             )
             Spacer(Modifier.width(12.dp))
-            TvButton("搜索", onClick = { vm.startSearch(input) }, primary = true, focusRequester = searchButtonFocus)
+            TvButton("搜索", onClick = { vm.startSearch(word) }, primary = true, focusRequester = searchButtonFocus)
             Spacer(Modifier.width(16.dp))
             Text(
                 if (search.loading) "搜索中… ${search.outcomes.size}/${data.activeSources().size} 个源"
@@ -90,10 +96,10 @@ fun SearchScreen(vm: AppViewModel, data: AppData) {
             )
         }
 
-        if (Pinyin.isQuery(input.trim())) {
+        if (Pinyin.isQuery(word)) {
             Spacer(Modifier.height(10.dp))
             Text(
-                "按拼音首字母检索：${input.trim()} → 「奇妙萌可」这类片名（只匹配本地已见过的条目和各源最新列表）",
+                "按拼音首字母检索：$word → 「奇妙萌可」这类片名（只匹配本地已见过的条目和各源最新列表）",
                 color = Accent,
                 fontSize = MaterialTheme.typography.bodySmall.fontSize,
             )
@@ -104,7 +110,7 @@ fun SearchScreen(vm: AppViewModel, data: AppData) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("试试：", color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
                 suggestions.take(8).forEach { kw ->
-                    Chip(kw) { input = kw; vm.startSearch(kw) }
+                    Chip(kw) { input = TextFieldValue(kw, TextRange(kw.length)); vm.startSearch(kw) }
                 }
             }
         }

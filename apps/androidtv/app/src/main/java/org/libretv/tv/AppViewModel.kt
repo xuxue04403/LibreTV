@@ -645,8 +645,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (keys.isNotEmpty()) availableCategories = keys
     }
 
-    /** 记录进入播放页之前的页面，返回时原路退回而不是一律回搜索页 */
-    private var backTarget: Screen = Screen.Home
+    /**
+     * 返回栈：播放页 / 详情页各自该退回哪里。
+     *
+     * 播放页和详情页的来源要分开记：共用一份会出现「播放页按返回连退两级」，
+     * 拆错了会出现「详情页按返回原地不动」，两个 bug 都真实发生过，
+     * 所以判定逻辑抽成了带单元测试的纯状态机 [NavStack]。
+     */
+    private val nav = NavStack()
 
     /** 分类加载任务：切分类时取消上一轮，避免旧结果覆盖新结果 */
     private var categoryJob: Job? = null
@@ -670,7 +676,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** 按分类拉取各源内容（分类页与首页分类入口共用） */
     fun loadCategory(key: CategoryKey) {
         val sources = _data.value.activeSources()
-        backTarget = Screen.Home
+        nav.playFrom(Screen.Home)
         if (sources.isEmpty()) {
             category = CategoryUi(key = key)
             showToast("还没有启用任何点播源")
@@ -777,24 +783,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun back() {
-        screen = when (val current = screen) {
-            is Screen.Player -> {
-                saveProgressNow(current)
-                // 从分类页/首页/详情进的播放器，应退回原页面而不是搜索页
-                when (val origin = backTarget) {
-                    is Screen.Detail -> origin
-                    is Screen.Category -> origin
-                    is Screen.Player, is Screen.CastPlayer, is Screen.LivePlayer -> Screen.Home
-                    else -> origin
-                }
-            }
-            is Screen.LivePlayer -> Screen.Live
-            is Screen.Detail -> backTarget.takeIf { it is Screen.Category || it is Screen.Search } ?: Screen.Search
-            is Screen.Category -> Screen.Home
-            is Screen.Cast -> Screen.Home
-            is Screen.CastPlayer -> Screen.Home
-            else -> Screen.Home
-        }
+        val current = screen
+        if (current is Screen.Player) saveProgressNow(current)
+        screen = nav.target(current)
     }
 
     /** 手机通过 DLNA 投屏过来：直接进入播放页 */
@@ -958,7 +949,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun openDetail(group: SearchGroup, item: SearchItem) {
         // 记住来源页：详情页与播放页返回时按原路径退回
-        if (screen !is Screen.Detail) backTarget = screen
+        if (screen !is Screen.Detail) nav.enterDetail(screen)
         screen = Screen.Detail(group, item)
         detail = DetailUi(loading = true)
         // 换片源最多试 8 个、每个 9 秒，慢的时候能跑一分多钟。
@@ -1015,6 +1006,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val vod = detail?.detail ?: return
         val source = _data.value.sources.firstOrNull { it.key == current.item.sourceKey }
             ?: VodSource(current.item.sourceKey, current.item.sourceName, current.item.sourceUrl ?: "")
+        // 从详情页起播：返回键退回这个详情页，而不是退回详情页的来源页。
+        // 这里曾经什么都不做，backTarget 还是「进详情之前」的分类页，
+        // 于是播放页按一次返回连退两级（播放 → 分类）。
+        nav.playFromDetail(current)
         screen = Screen.Player(
             source = source,
             vodId = current.item.vodId,
@@ -1046,6 +1041,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     showToast("该片源暂无可用播放地址")
                     return@launch
                 }
+                // 从首页「继续观看」起播：返回直接回首页
+                nav.playFrom(Screen.Home)
                 screen = Screen.Player(
                     source = source,
                     vodId = entry.vodId,
@@ -1083,6 +1080,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         showToast("该片源暂无可用播放地址")
                         return@launch
                     }
+                    // 从首页「我的收藏」起播：返回直接回首页
+                    nav.playFrom(Screen.Home)
                     screen = Screen.Player(
                         source = source,
                         vodId = fav.vodId,
