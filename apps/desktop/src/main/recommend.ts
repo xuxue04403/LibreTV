@@ -89,7 +89,7 @@ async function fetchJson(url: string, headers: Record<string, string>): Promise<
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch (err) {
-    throw new Error(describeNetworkError(err));
+    throw new Error(describeNetworkError(err), { cause: err });
   }
   if (!res.ok) throw new Error(`上游返回 HTTP ${res.status}`);
   const buf = await readLimited(res, MAX_RESPONSE_BYTES);

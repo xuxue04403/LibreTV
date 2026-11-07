@@ -67,7 +67,7 @@ $env:LTV_ALLOW_PRIVATE_MEDIA='1'                    # 联调本机媒体源时�
 apps\desktop\node_modules\electron\dist\electron.exe apps\desktop --user-data-dir=D:\tmp\profile
 ```
 
-> 如果当前 shell 设置了 `ELECTRON_RUN_AS_NODE=1`（某些 Electron 宿主环境会设置），必须先清掉，否则 `electron.exe` 会以 Node 模式运行并报 `ipcMain undefined`。
+> 如果当前 shell 设置了 `ELECTRON_RUN_AS_NODE=1`（某些 Electron 宿主环境会设置），必须先清掉，否则 `electron.exe` 会以 Node 模式运行并报 `ipcMain undefined`。打包后的 `LibreTV.exe` 同样会继承这个变量，症状是 `bad option: --user-data-dir=...` 并直接退出（exit code 9）。
 
 ## Android TV
 
@@ -100,7 +100,7 @@ cd apps/androidtv
 ./gradlew testDebugUnitTest
 ```
 
-覆盖 146 项：搜索列表解析、分集提取、详情兜底、M3U 属性与分组、相关性/成人过滤、同名聚合、订阅宽容解析、DLNA 请求解析（按字节读 + 上限）、拼音、观看记录去重、分片缓存、默认源选择，以及用 Robolectric 在 JVM 上跑真实 Compose 组合的首焦点/遥控器按键（`ui/AutoFocusUiTest.kt`）。
+覆盖 168 项：搜索列表解析、分集提取、详情兜底、M3U 属性与分组、相关性/成人过滤、同名聚合、订阅宽容解析、DLNA 请求解析（按字节读 + 上限）、拼音（含多音字备选与相关度）、观看记录去重、分片缓存、默认源选择，以及用 Robolectric 在 JVM 上跑真实 Compose 组合的首焦点/遥控器按键（`ui/AutoFocusUiTest.kt`）。
 
 ### 常见问题
 
