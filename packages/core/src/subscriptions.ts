@@ -15,6 +15,72 @@ import type { LiveSourceConfig, SourceConfig } from './types';
 export const MAX_VOD_SOURCES = 100;
 export const MAX_LIVE_SOURCES = 50;
 
+/** 连续失败多少次自动暂停订阅刷新 */
+export const SUBSCRIPTION_FAIL_THRESHOLD = 3;
+/** 刷新周期可选项（天）；0 表示只在手动导入时刷新 */
+export const SUBSCRIPTION_REFRESH_OPTIONS = [0, 1, 3, 7, 14, 30] as const;
+export const SUBSCRIPTION_MAX_REFRESH_DAYS = 365;
+
+export interface SubscriptionEntry {
+  /** stableKey(url)，同一地址只保留一条 */
+  key: string;
+  url: string;
+  name: string;
+  /** 刷新周期（天）；0 = 关闭自动刷新 */
+  refreshDays: number;
+  /** 上次成功同步时间（epoch ms）；0 = 从未成功 */
+  lastSyncedAt: number;
+  /** 连续失败次数 */
+  failStreak: number;
+  /** 连续失败达到阈值后暂停自动刷新，手动同步成功或改周期恢复 */
+  paused: boolean;
+  addedAt: number;
+}
+
+export function subscriptionRefreshLabel(days: number): string {
+  if (days <= 0) return '关闭';
+  return `每 ${days} 天`;
+}
+
+/** 是否到期需要后台刷新（关闭/暂停/未到期都不算） */
+export function isSubscriptionDue(entry: SubscriptionEntry, now: number): boolean {
+  if (entry.paused) return false;
+  if (!Number.isFinite(entry.refreshDays) || entry.refreshDays <= 0) return false;
+  if (entry.lastSyncedAt <= 0) return true;
+  return now - entry.lastSyncedAt >= entry.refreshDays * 24 * 60 * 60 * 1000;
+}
+
+/** 清洗订阅条目：坏数据丢弃、周期夹到合法范围 */
+export function normalizeSubscriptions(raw: unknown): SubscriptionEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const result: SubscriptionEntry[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const obj = item as Partial<SubscriptionEntry>;
+    if (typeof obj.url !== 'string' || !isValidSourceUrl(trimSlash(obj.url))) continue;
+    const url = trimSlash(obj.url);
+    const key = typeof obj.key === 'string' && obj.key ? obj.key : `sub_${stableKey(url)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const days = typeof obj.refreshDays === 'number' && Number.isFinite(obj.refreshDays)
+      ? Math.max(0, Math.min(SUBSCRIPTION_MAX_REFRESH_DAYS, Math.round(obj.refreshDays)))
+      : 0;
+    result.push({
+      key,
+      url,
+      name: typeof obj.name === 'string' && obj.name.trim() ? obj.name.trim() : hostnameOf(url),
+      refreshDays: days,
+      lastSyncedAt: typeof obj.lastSyncedAt === 'number' && Number.isFinite(obj.lastSyncedAt) ? obj.lastSyncedAt : 0,
+      failStreak: typeof obj.failStreak === 'number' && Number.isFinite(obj.failStreak) ? Math.max(0, obj.failStreak) : 0,
+      paused: obj.paused === true,
+      addedAt: typeof obj.addedAt === 'number' && Number.isFinite(obj.addedAt) ? obj.addedAt : 0,
+    });
+  }
+  return result;
+}
+
+
 export type SubscriptionSkipReason = 'spider' | 'xml' | 'unsearchable' | 'nonM3uLive' | 'invalidUrl';
 
 export interface SubscriptionParseStats {

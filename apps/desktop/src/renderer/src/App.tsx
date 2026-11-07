@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { initBridge, resetBridge } from './lib/bridge';
 import { startCatalogWarmup, stopCatalogWarmup } from './lib/catalog-warmer';
+import { syncDueSubscriptions } from './lib/subscription-sync';
 import { useAppStore } from './lib/store';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ToastProvider } from './components/Toast';
@@ -41,6 +42,7 @@ export function App() {
 
   useEffect(() => {
     let alive = true;
+    let bootSyncTimer: number | undefined;
     setFatal(null);
     // `void initBridge().then(...)` 没有 catch 的后果：preload 没注入（打包漏文件、
     // 被安全软件拦掉）或 IPC 握手抛错时，ready 永远是 false，界面上只有一个
@@ -59,6 +61,12 @@ export function App() {
         useAppStore.getState().dedupeHistory();
         // 启动预热分类目录，并在后台每小时刷新一次
         startCatalogWarmup();
+        // 到期的订阅在后台静默同步；每半小时再看一眼，长时间挂机也能刷新
+        void syncDueSubscriptions().catch(() => undefined);
+        const syncTimer = window.setInterval(() => {
+          void syncDueSubscriptions().catch(() => undefined);
+        }, 30 * 60 * 1000);
+        bootSyncTimer = syncTimer;
       })
       .catch((err: unknown) => {
         if (!alive) return;
@@ -67,6 +75,7 @@ export function App() {
       });
     return () => {
       alive = false;
+      if (bootSyncTimer !== undefined) window.clearInterval(bootSyncTimer);
       stopCatalogWarmup();
     };
   }, [bootAttempt]);

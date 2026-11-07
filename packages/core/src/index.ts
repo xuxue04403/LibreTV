@@ -19,6 +19,7 @@ export * from './http';
 export * from './recommend';
 export * from './health';
 export * from './quality';
+export * from './skip-marks';
 export * from './search';
 export * from './detail';
 export * from './failover';

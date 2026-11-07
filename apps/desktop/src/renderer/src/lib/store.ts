@@ -13,10 +13,13 @@ import {
   clearSourceHealth,
   dedupeHistory as dedupeHistoryList,
   normalizeSettings,
+  normalizeSkipMarks,
+  normalizeSubscriptions,
   pruneSourceHealth,
   recordSourceFailure,
   recordSourceSuccess,
   stableKey,
+  SUBSCRIPTION_FAIL_THRESHOLD,
   toggleFavorite as toggleFavoriteList,
   toggleLiveFavorite as toggleLiveFavoriteList,
   upsertHistory,
@@ -25,9 +28,12 @@ import {
   type HistoryEntry,
   type LiveFavoriteEntry,
   type LiveSourceConfig,
+  type SkipMarks,
+  type SkipMarkMap,
   type SourceConfig,
   type SourceDisableEvent,
   type SourceHealthMap,
+  type SubscriptionEntry,
 } from '@libretv/core';
 import { liveCacheKey, readLiveCache } from './live-cache';
 
@@ -63,6 +69,10 @@ export interface AppState {
   removedDefaultUrls: string[];
   /** 源健康度（连续失败自动暂停），只影响搜索是否发起请求，不改勾选 */
   sourceHealth: SourceHealthMap;
+  /** 跳过标记：按 skipMarkKey(剧名, 年份) 聚合，跨集/跨同名源共享 */
+  skipMarks: SkipMarkMap;
+  /** 导入过的订阅地址与刷新状态（同一 URL 只保留一条） */
+  subscriptions: SubscriptionEntry[];
 
   /** 首次导入 + 版本升级时补齐新增的内置源（幂等） */
   seedDefaults: () => void;
@@ -88,6 +98,14 @@ export interface AppState {
   recordSourceOutcome: (key: string, ok: boolean) => SourceDisableEvent | null;
   /** 用户手动恢复被暂停的源 */
   restoreSourceHealth: (key: string) => void;
+  /** 合并写入一部剧的跳过标记；传 null 清空该剧 */
+  updateSkipMarks: (key: string, patch: Partial<SkipMarks> | null) => void;
+  /** 记录/更新一个订阅（按 URL 去重，保留已有刷新设置） */
+  upsertSubscription: (url: string, name?: string) => string;
+  updateSubscription: (key: string, patch: Partial<Pick<SubscriptionEntry, 'refreshDays' | 'paused' | 'name'>>) => void;
+  removeSubscription: (key: string) => void;
+  /** 一次后台同步的结果：成功清零失败计数，失败累计到阈值自动暂停 */
+  recordSubscriptionSync: (key: string, ok: boolean) => void;
   importSources: (sources: SourceConfig[], liveSources: LiveSourceConfig[]) => { addedVod: number; addedLive: number };
   clearHistory: () => void;
   removeHistory: (id: string) => void;
@@ -209,6 +227,8 @@ export const useAppStore = create<AppState>()(
       defaultsVersion: 0,
       removedDefaultUrls: [],
       sourceHealth: {},
+      skipMarks: {},
+      subscriptions: [],
 
       seedDefaults: () =>
         set((s) => {
@@ -463,6 +483,83 @@ export const useAppStore = create<AppState>()(
           return next === s.sourceHealth ? s : { sourceHealth: next };
         }),
 
+      updateSkipMarks: (key, patch) =>
+        set((s) => {
+          if (!key) return s;
+          if (patch === null) {
+            if (!s.skipMarks[key]) return s;
+            const next = { ...s.skipMarks };
+            delete next[key];
+            return { skipMarks: next };
+          }
+          const prev = s.skipMarks[key];
+          const merged: SkipMarks = {
+            introEnd: patch.introEnd ?? prev?.introEnd,
+            outroStart: patch.outroStart ?? prev?.outroStart,
+            segments: patch.segments ?? prev?.segments ?? [],
+            enabled: patch.enabled ?? prev?.enabled,
+          };
+          const next = normalizeSkipMarks({ ...s.skipMarks, [key]: merged });
+          return { skipMarks: next };
+        }),
+
+      upsertSubscription: (url, name) => {
+        const trimmed = url.trim();
+        const key = `sub_${stableKey(trimmed)}`;
+        let host = trimmed;
+        try {
+          host = new URL(trimmed).host;
+        } catch {
+          return '';
+        }
+        set((s) => {
+          if (s.subscriptions.some((x) => x.key === key)) return s;
+          const entry: SubscriptionEntry = {
+            key,
+            url: trimmed,
+            name: name?.trim() || host,
+            refreshDays: 0,
+            lastSyncedAt: 0,
+            failStreak: 0,
+            paused: false,
+            addedAt: Date.now(),
+          };
+          return { subscriptions: [...s.subscriptions, entry] };
+        });
+        return key;
+      },
+
+      updateSubscription: (key, patch) =>
+        set((s) => ({
+          subscriptions: s.subscriptions.map((x) => {
+            if (x.key !== key) return x;
+            const refreshDays =
+              patch.refreshDays === undefined
+                ? x.refreshDays
+                : Math.max(0, Math.min(365, Math.round(patch.refreshDays)));
+            return {
+              ...x,
+              ...(patch.name === undefined ? {} : { name: patch.name }),
+              refreshDays,
+              // 用户手动改周期视为一次「我还在意它」的信号：解除暂停
+              paused: patch.refreshDays === undefined ? (patch.paused ?? x.paused) : false,
+            };
+          }),
+        })),
+
+      removeSubscription: (key) =>
+        set((s) => ({ subscriptions: s.subscriptions.filter((x) => x.key !== key) })),
+
+      recordSubscriptionSync: (key, ok) =>
+        set((s) => ({
+          subscriptions: s.subscriptions.map((x) => {
+            if (x.key !== key) return x;
+            if (ok) return { ...x, lastSyncedAt: Date.now(), failStreak: 0, paused: false };
+            const failStreak = x.failStreak + 1;
+            return { ...x, failStreak, paused: failStreak >= SUBSCRIPTION_FAIL_THRESHOLD };
+          }),
+        })),
+
       importSources: (incomingVod, incomingLive) => {
         const state = get();
         const existingVodUrls = new Set(state.sources.map((s) => s.url));
@@ -512,7 +609,14 @@ export const useAppStore = create<AppState>()(
           saved.sourceHealth && typeof saved.sourceHealth === 'object'
             ? pruneSourceHealth(saved.sourceHealth, Date.now())
             : {};
-        return { ...current, ...saved, settings: normalizeSettings(saved.settings), sourceHealth };
+        return {
+          ...current,
+          ...saved,
+          settings: normalizeSettings(saved.settings),
+          sourceHealth,
+          skipMarks: normalizeSkipMarks(saved.skipMarks),
+          subscriptions: normalizeSubscriptions(saved.subscriptions),
+        };
       },
       partialize: (s) => ({
         settings: s.settings,
@@ -530,6 +634,8 @@ export const useAppStore = create<AppState>()(
         defaultsVersion: s.defaultsVersion,
         removedDefaultUrls: s.removedDefaultUrls,
         sourceHealth: s.sourceHealth,
+        skipMarks: s.skipMarks,
+        subscriptions: s.subscriptions,
       }),
     }
   )

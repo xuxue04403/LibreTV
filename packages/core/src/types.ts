@@ -144,6 +144,10 @@ export interface AppSettings {
   theme: 'dark' | 'light' | 'system';
   /** 记住播放进度 */
   resumePlayback: boolean;
+  /** 音量增强（Web Audio 1.8× + 限幅，默认关闭） */
+  volumeBoost: boolean;
+  /** 自动跳过片头/片尾/中段标记 */
+  autoSkip: boolean;
   /** 首页推荐（外部内容发现，不依赖已配置的片源） */
   homeRecommend: boolean;
   /** 首页推荐数据源；同一时间只展示一个来源 */

@@ -7,12 +7,15 @@ import {
   discoverCandidates,
   episodeLabel,
   fetchDetail,
+  findSkipTarget,
   formatTime,
   historyId,
   pickEpisodeIndex,
+  skipMarkKey,
   type PlaybackCandidate,
 } from '@libretv/core';
 import { http, prefetchSegments, proxify } from '../lib/bridge';
+import { attachVolumeBoost, type VolumeBoostHandle } from '../lib/volume-boost';
 import { useAppStore } from '../lib/store';
 import { useToast } from '../components/toast-context';
 import { CastDialog } from '../components/CastDialog';
@@ -49,6 +52,8 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
+  /** 音量增强的 Web Audio 句柄；只随设置开关变化，不参与 hls 重建 */
+  const boostRef = useRef<VolumeBoostHandle | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stallTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedRef = useRef(0);
@@ -84,6 +89,9 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
    */
   const abortRef = useRef<AbortController | null>(null);
   const sources = useAppStore((s) => s.sources);
+  const updateSkipMarks = useAppStore((s) => s.updateSkipMarks);
+  /** 跳过标记按「剧名 + 年份」聚合：换集、换同名片源都复用同一份 */
+  const skipKey = skipMarkKey(target.title, target.year);
 
   /** 当前播放的候选（换源后指向新源） */
   const [active, setActive] = useState<PlaybackCandidate | null>(null);
@@ -113,6 +121,11 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
   const [failoverNote, setFailoverNote] = useState<string | null>(null);
   // 递增即重载当前集：本集恢复失败后重来一次，而不是干等
   const [reloadToken, setReloadToken] = useState(0);
+  /** 自动跳过后给 8 秒撤销窗口 */
+  const [skipHint, setSkipHint] = useState<{ label: string; from: number } | null>(null);
+  const skipHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Shift+S 记下的中段起点，等 Shift+E 收尾 */
+  const midStartRef = useRef<number | null>(null);
 
   /** 候选链：换源时可能按片名反查追加，所以放 state；ref 供回调读取最新值 */
   const [candidates, setCandidates] = useState<PlaybackCandidate[]>(target.candidates ?? []);
@@ -411,16 +424,67 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [episodeUrl, index, settings.adFilter, active, reloadToken]);
 
+  // —— 音量增强 ——
+  // 独立于 hls 媒体加载链路：只接管音频，不因开关切换重建播放器。
+  // 切集后 currentSrc 会变，等 loadedmetadata 再挂一次（MSE 的 blob 源此时才可用）。
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const attach = () => {
+      if (!settings.volumeBoost) return;
+      const handle = attachVolumeBoost(video);
+      if (!handle) return;
+      boostRef.current = handle;
+      handle.setBoost(true);
+    };
+    attach();
+    video.addEventListener('loadedmetadata', attach);
+    if (!settings.volumeBoost) boostRef.current?.setBoost(false);
+    return () => video.removeEventListener('loadedmetadata', attach);
+  }, [settings.volumeBoost, episodeUrl, reloadToken]);
+
+  useEffect(
+    () => () => {
+      boostRef.current?.dispose();
+      boostRef.current = null;
+      if (skipHintTimer.current) clearTimeout(skipHintTimer.current);
+    },
+    [],
+  );
+
   // —— 视频事件 ——
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
+    const showSkipHint = (label: string, from: number) => {
+      if (skipHintTimer.current) clearTimeout(skipHintTimer.current);
+      setSkipHint({ label, from });
+      skipHintTimer.current = setTimeout(() => setSkipHint(null), 8000);
+    };
     const onTime = () => {
       setCurrent(video.currentTime);
       if (video.buffered.length > 0) setBuffered(video.buffered.end(video.buffered.length - 1));
       // 15 秒一次：太久会丢进度，太密会让 zustand persist 反复全量序列化写盘。
       // 暂停/切集/结束/退出都有独立落盘点，这里只是「播放中」的兜底。
       if (Math.abs(video.currentTime - savedRef.current) >= 15) persistProgress(video.currentTime, index, video.duration);
+      // 跳过标记：命中片头/中段就 seek 到区间末尾；片尾直接按「看完本集」处理，
+      // 这样自动连播与进度落盘的语义和自然播完完全一致。
+      if (settings.autoSkip && !video.paused) {
+        const marks = useAppStore.getState().skipMarks[skipKey];
+        const target = findSkipTarget(marks, video.currentTime, video.duration);
+        if (target) {
+          const from = video.currentTime;
+          if (target.kind === 'outro') {
+            video.pause();
+            showSkipHint('已跳过片尾', from);
+            onEnded();
+            return;
+          }
+          video.currentTime = target.end;
+          showSkipHint(target.kind === 'intro' ? '已跳过片头' : '已跳过中段', from);
+          return;
+        }
+      }
     };
     const onPlay = () => setPlaying(true);
     const clearStall = () => {
@@ -480,7 +544,7 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
       video.removeEventListener('waiting', onWaiting);
       video.removeEventListener('playing', onPlaying);
     };
-  }, [episodes.length, failover, index, persistProgress, settings.autoplayNext]);
+  }, [episodes.length, failover, index, persistProgress, settings.autoSkip, settings.autoplayNext, skipKey]);
 
   // —— 退出时兜底保存进度 ——
   // 正常路径已在上面的播放 effect cleanup 里落盘；这里只兜「组件被卸载但播放
@@ -635,6 +699,44 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
       // 拖完音量滑块焦点会留在 input 上，那时按 Esc 用户就是想退出播放。
       const inField = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
       if (inField && e.key !== 'Escape') return;
+      // Shift + I/O/S/E 给当前剧打点；带 Shift 时先截走，避免 S 与「手动换源」冲突
+      if (e.shiftKey && !e.repeat) {
+        const video = videoRef.current;
+        if (video) {
+          const at = video.currentTime;
+          const marks = useAppStore.getState().skipMarks[skipKey];
+          if (e.key === 'I' || e.key === 'i') {
+            e.preventDefault();
+            updateSkipMarks(skipKey, { introEnd: at });
+            toast.ok(`片头结束点：${formatTime(at)}`);
+            return;
+          }
+          if (e.key === 'O' || e.key === 'o') {
+            e.preventDefault();
+            updateSkipMarks(skipKey, { outroStart: at });
+            toast.ok(`片尾开始点：${formatTime(at)}`);
+            return;
+          }
+          if (e.key === 'S' || e.key === 's') {
+            e.preventDefault();
+            midStartRef.current = at;
+            toast.push(`中段起点：${formatTime(at)}，再按 Shift+E 收尾`);
+            return;
+          }
+          if (e.key === 'E' || e.key === 'e') {
+            e.preventDefault();
+            const start = midStartRef.current;
+            if (start === null || at - start < 1) {
+              toast.err('先按 Shift+S 标记起点（间隔至少 1 秒）');
+              return;
+            }
+            updateSkipMarks(skipKey, { segments: [...(marks?.segments ?? []), { start, end: at }] });
+            midStartRef.current = null;
+            toast.ok(`中段区间：${formatTime(start)} – ${formatTime(at)}`);
+            return;
+          }
+        }
+      }
       switch (e.key) {
         case ' ':
           e.preventDefault();
@@ -710,7 +812,7 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [applyFullscreen, castOpen, changeEpisode, drawerOpen, index, manualSwitch, onClose, revealControls, seekBy, toggleFullscreen, toggleMute, togglePlay]);
+  }, [applyFullscreen, castOpen, changeEpisode, drawerOpen, index, manualSwitch, onClose, revealControls, seekBy, skipKey, toast, toggleFullscreen, toggleMute, togglePlay, updateSkipMarks]);
 
   const playedPercent = duration > 0 ? (current / duration) * 100 : 0;
   const bufferedPercent = duration > 0 ? (buffered / duration) * 100 : 0;
@@ -733,6 +835,7 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
         <video
           ref={videoRef}
           playsInline
+          crossOrigin="anonymous"
           onClick={togglePlay}
           onVolumeChange={(e) => {
             const v = e.currentTarget;
@@ -790,6 +893,23 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
                 </button>
               </div>
             </div>
+          </div>
+        )}
+
+        {skipHint && (
+          <div className="skip-hint">
+            <span>{skipHint.label}</span>
+            <button
+              className="chip on"
+              onClick={() => {
+                const video = videoRef.current;
+                if (video) video.currentTime = skipHint.from;
+                setSkipHint(null);
+                toast.push('已回到跳过前的位置');
+              }}
+            >
+              撤销
+            </button>
           </div>
         )}
 

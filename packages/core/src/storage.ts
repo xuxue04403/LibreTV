@@ -23,6 +23,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoplayNext: true,
   theme: 'dark',
   resumePlayback: true,
+  // 与上游一致：默认关闭，用户明确开启才放大
+  volumeBoost: false,
+  autoSkip: true,
   homeRecommend: true,
   // 默认影视榜单：豆瓣接口偶发限流、封面防盗链也最重；榜单数据最完整
   recommendSource: 'hot-list',
@@ -188,6 +191,8 @@ export function normalizeSettings(raw: unknown): AppSettings {
     theme: obj.theme === 'light' || obj.theme === 'system' || obj.theme === 'dark' ? obj.theme : DEFAULT_SETTINGS.theme,
     resumePlayback:
       typeof obj.resumePlayback === 'boolean' ? obj.resumePlayback : DEFAULT_SETTINGS.resumePlayback,
+    volumeBoost: typeof obj.volumeBoost === 'boolean' ? obj.volumeBoost : DEFAULT_SETTINGS.volumeBoost,
+    autoSkip: typeof obj.autoSkip === 'boolean' ? obj.autoSkip : DEFAULT_SETTINGS.autoSkip,
     homeRecommend: typeof obj.homeRecommend === 'boolean' ? obj.homeRecommend : DEFAULT_SETTINGS.homeRecommend,
     recommendSource:
       obj.recommendSource === 'bangumi' || obj.recommendSource === 'hot-list' || obj.recommendSource === 'douban'

@@ -6,12 +6,15 @@ import {
   searchSources,
   serializeSnapshot,
   buildSnapshot,
+  SUBSCRIPTION_REFRESH_OPTIONS,
+  subscriptionRefreshLabel,
   type AppSettings,
   type SourceConfig,
 } from '@libretv/core';
 import { appInfo, http } from '../lib/bridge';
 import { DEFAULT_LIVE_NOTES } from '../lib/defaults';
 import { useAppStore } from '../lib/store';
+import { syncSubscription } from '../lib/subscription-sync';
 import { Icon } from '../components/Icons';
 import { useToast } from '../components/toast-context';
 
@@ -312,15 +315,22 @@ function SubscriptionPanel() {
   const restoreDefaults = useAppStore((s) => s.restoreDefaults);
   const sources = useAppStore((s) => s.sources);
   const liveSources = useAppStore((s) => s.liveSources);
+  const subscriptions = useAppStore((s) => s.subscriptions);
+  const upsertSubscription = useAppStore((s) => s.upsertSubscription);
+  const updateSubscription = useAppStore((s) => s.updateSubscription);
+  const removeSubscription = useAppStore((s) => s.removeSubscription);
   const toast = useToast();
 
   const [subUrl, setSubUrl] = useState('');
   const [json, setJson] = useState('');
   const [busy, setBusy] = useState(false);
+  const [syncingKey, setSyncingKey] = useState('');
 
   const apply = (text: string, from?: string) => {
     const parsed = parseSubscription(text, from);
     const { addedVod, addedLive } = importSources(parsed.sources, parsed.liveSources);
+    // 订阅成功的地址记下来，之后才能按周期自动刷新；手动粘贴的 JSON 没有来源地址，不记
+    if (from) upsertSubscription(from, parsed.name);
     const skipped = parsed.stats.skipped ? `，跳过 ${parsed.stats.skipped} 条` : '';
     // 0 条新增时不能弹绿色的「已导入 0 个」：那和「确实导入成功」长得一样，
     // 用户没法判断是「全都重复了」还是「真的加进来了东西」。
@@ -347,6 +357,27 @@ function SubscriptionPanel() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const syncNow = async (key: string) => {
+    setSyncingKey(key);
+    try {
+      const ok = await syncSubscription(key);
+      const entry = useAppStore.getState().subscriptions.find((x) => x.key === key);
+      if (ok) toast.ok(`已同步 ${entry?.name ?? '订阅'}`);
+      else toast.err(entry?.paused ? '同步失败，已连续失败 3 次，自动暂停' : '同步失败，可稍后重试');
+    } finally {
+      setSyncingKey('');
+    }
+  };
+
+  const timeAgo = (ts: number) => {
+    if (!ts) return '从未同步';
+    const minutes = Math.max(1, Math.round((Date.now() - ts) / 60_000));
+    if (minutes < 60) return `${minutes} 分钟前`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${hours} 小时前`;
+    return `${Math.round(hours / 24)} 天前`;
   };
 
   const exportAll = async () => {
@@ -393,6 +424,66 @@ function SubscriptionPanel() {
           </button>
         </div>
       </div>
+
+      {subscriptions.length > 0 && (
+        <div className="panel">
+          <div className="section-title" style={{ marginTop: 0 }}>
+            <span>订阅刷新</span>
+            <span className="hint">到期后后台静默同步；连续失败 3 次自动暂停</span>
+          </div>
+          {subscriptions.map((s) => (
+            <div key={s.key} className="list-item">
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="name">
+                  {s.name}
+                  {s.paused && (
+                    <span className="badge" style={{ marginLeft: 8 }}>
+                      已暂停
+                    </span>
+                  )}
+                </div>
+                <div className="url" style={{ maxWidth: 'none' }}>
+                  {s.url}
+                </div>
+                <div className="url">
+                  上次同步：{timeAgo(s.lastSyncedAt)}
+                  {s.failStreak > 0 ? ` · 连续失败 ${s.failStreak} 次` : ''}
+                </div>
+              </div>
+              <select
+                className="input"
+                style={{ width: 116 }}
+                value={s.refreshDays}
+                onChange={(e) => updateSubscription(s.key, { refreshDays: Number(e.target.value) })}
+                aria-label={`${s.name} 刷新周期`}
+              >
+                {SUBSCRIPTION_REFRESH_OPTIONS.map((d) => (
+                  <option key={d} value={d}>
+                    {d === 0 ? '关闭自动刷新' : subscriptionRefreshLabel(d)}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="btn ghost"
+                disabled={syncingKey === s.key}
+                onClick={() => void syncNow(s.key)}
+              >
+                {syncingKey === s.key ? '同步中…' : '立即同步'}
+              </button>
+              <button
+                className="btn ghost"
+                aria-label={`删除订阅 ${s.name}`}
+                onClick={() => {
+                  removeSubscription(s.key);
+                  toast.push('已移除订阅记录，已导入的源不受影响');
+                }}
+              >
+                <Icon name="trash" size={15} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="panel">
         <div className="section-title" style={{ marginTop: 0 }}>
@@ -449,6 +540,8 @@ function PlaybackSettings() {
     { key: 'adFilter', title: '播放列表广告过滤', desc: '剔除 m3u8 中带广告特征的 DISCONTINUITY 分段' },
     { key: 'autoplayNext', title: '自动连播下一集', desc: '当前集播放结束后自动播放下一集' },
     { key: 'resumePlayback', title: '记住播放进度', desc: '下次打开同一影片时从上次位置继续播放' },
+    { key: 'volumeBoost', title: '音量增强', desc: '响度提升约 1.8 倍并限幅；外放时请谨慎（默认关闭）' },
+    { key: 'autoSkip', title: '自动跳过片头片尾', desc: '播放到标记区间时自动跳过；按 Shift+I / O / S / E 打点' },
   ];
 
   return (
