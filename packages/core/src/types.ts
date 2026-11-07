@@ -125,6 +125,14 @@ export interface LiveEpg {
 
 // —— 本地存储模型（客户端专有） ——
 
+/**
+ * 首页推荐数据源。
+ *
+ * 与片源完全解耦：推荐只负责「发现」，点击后仍按标题走本地多源搜索，
+ * 所以没配源、源里没内容时首页也不会是一片空白。
+ */
+export type RecommendSource = 'bangumi' | 'hot-list' | 'douban';
+
 export interface AppSettings {
   /** 成人内容过滤 */
   adultFilter: boolean;
@@ -136,6 +144,10 @@ export interface AppSettings {
   theme: 'dark' | 'light' | 'system';
   /** 记住播放进度 */
   resumePlayback: boolean;
+  /** 首页推荐（外部内容发现，不依赖已配置的片源） */
+  homeRecommend: boolean;
+  /** 首页推荐数据源；同一时间只展示一个来源 */
+  recommendSource: RecommendSource;
 }
 
 export interface HistoryEntry {

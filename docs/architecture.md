@@ -35,6 +35,7 @@
 | `subscriptions.ts` | LibreTV-SourceList / TVBOX 配置解析（宽容 JSON） | `src/lib/source-list.ts`、`tvbox-parser.ts` |
 | `group.ts` | 同名影片跨源聚合、结果去重 | 上游页面层逻辑 |
 | `categories.ts` | 分类表解析、分类桶归并、按分类聚合浏览 | 上游无此能力（新增） |
+| `recommend.ts` | 首页推荐条目解析（Bangumi / 豆瓣 / 榜单）与成人过滤 | `src/lib/bangumi.ts`、`src/lib/douban.ts`、`src/lib/douban-weekly.ts` |
 | `storage.ts` | 历史/收藏的纯函数式更新、快照导入导出 | `src/lib/store.ts` 部分 |
 | `http.ts` | `HttpClient` 接口 + fetch 实现 + gzip 解码 | 新增（替代服务端抓取） |
 
@@ -187,6 +188,39 @@ renderer 选设备 ──▶ main: dlna:cast
 ### 内置默认源
 
 `defaults/sources.json` 是唯一事实来源：桌面端通过 Vite alias `@defaults` 在构建期内联，Android TV 在 `preBuild` 阶段复制到 `assets/default-sources.json`。首次启动写入本地状态并置 `defaultsSeeded=true`；之后即使用户删光也不会自动加回，直到手动「恢复默认源」。
+
+### 首页推荐（推荐流与片源解耦）
+
+首页在「继续观看」之前（冷启动、没有历史）或之后（有历史）插入外部推荐，解决「没配源、或源里没有分类内容时首页只剩空按钮」。内容来自三个来源，同一时间只展示一个：
+
+| 来源 | 上游 | 缓存 | 说明 |
+| --- | --- | --- | --- |
+| Bangumi 每日放送 | `api.bgm.tv/calendar` | 30 分钟 | 免 key；UA 必须带可识别标识；中文名优先、评分保留一位小数 |
+| 影视榜单 | 60s API 聚合六榜 | 1 小时 | 豆瓣电影/国产剧/海外剧/国内综艺/海外综艺周榜 + 百度热播剧；缺封面条目丢弃 |
+| 豆瓣标签 | `movie.douban.com/j/search_subjects` | 10 分钟 | 直连被拒才降级 `FALLBACK_CORS_PROXY`；限流风险最高 |
+
+数据流：
+
+```
+renderer RecommendSection
+  ──▶ bridge.fetchRecommend(query)
+  ──▶ IPC 'recommend:fetch'
+  ──▶ main recommend.ts（固定 URL、UA/Referer、TTL 缓存、同键 in-flight 合并）
+  ──▶ core recommend.ts 解析成 RecommendItem
+```
+
+点击卡片只把标题交给现有多源搜索（`onSearch(title)`），不引入新的播放链路，因此推荐内容与片源、播放器完全解耦。
+
+约束与理由：
+
+- **渲染层不直连第三方**：页面只调白名单 IPC；IPC 只接受枚举（kind / 榜单 id / 标签），不接受任意 URL，避免把主进程变成开放代理。
+- **按数据变化频率分层缓存**（10 / 30 / 60 分钟），失败不写缓存：限流或断网恢复后点「重试」就能拿到新数据。缓存只在本进程内存，重启失效。
+- **首页只预览 24 条**，不做「加载更多」假分页：推荐是发现入口，不能把续播/收藏挤出首屏。
+- **推荐标题同样过成人过滤**（`filterAdultRecommendItems`），与搜索结果保持一致。
+- **图床 Referer 按域名映射**：豆瓣图床只认 `https://movie.douban.com/`，代理对 `*.doubanio.com` / `*.douban.com` 特殊处理，否则海报 403；Bangumi 图床仍按自身 origin。
+- **默认榜单而非豆瓣**：豆瓣偶发限流 + 封面防盗链，榜单数据最全且最贴「找片看」；老存档经 persist `merge` + `normalizeSettings` 补字段，不会把用户已选的数据源冲掉。
+- **可配置**：`60S_API_BASE` 可指向自部署的 60s 实例（主实例失败回退官方公共实例）；`FALLBACK_CORS_PROXY` 仅用于豆瓣直连失败兜底。
+- 最近搜索从首页常驻 chips 收进搜索框下拉：聚焦展开、输入过滤、点击直接搜，把首屏留给推荐与个人数据。
 
 ## Android TV 端
 

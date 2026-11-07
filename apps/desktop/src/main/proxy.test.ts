@@ -4,6 +4,7 @@ import { gzipSync } from 'node:zlib';
 import {
   assertAllowedTarget,
   fetchChecked,
+  mediaRequestHeaders,
   redactUrl,
   rewritePlaylistForTest,
   isPlaylistForTest,
@@ -730,5 +731,24 @@ describe('媒体代理 HTTP 行为', () => {
       .then((r) => r.arrayBuffer())
       .catch(() => undefined);
     expect(segmentHits.get('/truncated.ts')).toBe(hitsBefore + 2);
+  });
+});
+
+describe('mediaRequestHeaders：图床 Referer 映射', () => {
+  it('豆瓣图床带 movie.douban.com 的 Referer（否则海报 403）', () => {
+    const headers = mediaRequestHeaders(
+      new URL('https://img9.doubanio.com/view/photo/s_ratio_poster/public/p2912345678.jpg')
+    );
+    expect(headers.Referer).toBe('https://movie.douban.com/');
+  });
+
+  it('普通采集站/CDN 仍用自身 origin', () => {
+    const headers = mediaRequestHeaders(new URL('https://cdn.example.com/hls/seg-1.ts'));
+    expect(headers.Referer).toBe('https://cdn.example.com/');
+  });
+
+  it('Bangumi 图床按 origin 走', () => {
+    const headers = mediaRequestHeaders(new URL('https://lain.bgm.tv/pic/cover/l/ab/cd/123.jpg'));
+    expect(headers.Referer).toBe('https://lain.bgm.tv/');
   });
 });

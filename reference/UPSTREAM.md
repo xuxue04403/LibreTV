@@ -20,6 +20,7 @@
 | `src/app/api/detail/route.ts` | `packages/core/src/detail.ts`、`apps/androidtv/.../data/Repository.kt` |
 | `src/app/api/live/*`、`src/lib/xmltv.ts` | `packages/core/src/live.ts` |
 | `src/lib/source-list.ts`、`tvbox-parser.ts` | `packages/core/src/subscriptions.ts`、`apps/androidtv/.../data/Subscriptions.kt` |
+| `src/lib/bangumi.ts`、`douban.ts`、`douban-weekly.ts` | `packages/core/src/recommend.ts`（解析）+ `apps/desktop/src/main/recommend.ts`（抓取/缓存） |
 | `src/lib/db.ts`、`store.ts` | `packages/core/src/storage.ts`、桌面端 zustand / TV 端 DataStore |
 | `src/app/api/proxy`、`live/stream` | 桌面端回环媒体代理 `apps/desktop/src/main/proxy.ts`（Android 端不需要） |
 | `src/app/api/auth`、`status` | 不再需要（本地客户端无服务端） |

@@ -10,6 +10,7 @@ import {
 import { http } from '../lib/bridge';
 import { useAppStore } from '../lib/store';
 import { Poster } from '../components/Poster';
+import { RecommendSection } from '../components/RecommendSection';
 import { useToast } from '../components/toast-context';
 import { CategoryButtons, type CategoryKey } from './Category';
 import type { WatchTarget } from './Watch';
@@ -37,7 +38,7 @@ export function HomePage({
   const sources = useAppStore((s) => s.sources);
   const history = useAppStore((s) => s.history);
   const favorites = useAppStore((s) => s.favorites);
-  const recentSearches = useAppStore((s) => s.recentSearches);
+  const settings = useAppStore((s) => s.settings);
   const toast = useToast();
   // 用 Set 而不是单个 id：连着点两张卡时，两张都该有转圈，
   // 先完成的那张也不能把后一张的状态抹掉
@@ -163,18 +164,11 @@ export function HomePage({
     [onPlay, sources, toast]
   );
 
-
   return (
     <>
-      {recentSearches.length > 0 ? (
-        <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
-          <span style={{ color: '#8d97a8', fontSize: 12 }}>最近搜索</span>
-          {recentSearches.slice(0, 8).map((kw) => (
-            <button key={kw} className="chip" style={{ cursor: 'pointer' }} onClick={() => onSearch(kw)}>
-              {kw}
-            </button>
-          ))}
-        </div>
+      {/* 冷启动（没有续播记录）时推荐流置顶：内容发现不该依赖「配了几个源」 */}
+      {settings.homeRecommend && history.length === 0 ? (
+        <RecommendSection source={settings.recommendSource} onSearch={onSearch} />
       ) : null}
 
       <div className="section-title">
@@ -231,6 +225,11 @@ export function HomePage({
           })}
         </div>
       )}
+
+      {/* 有续播记录时推荐位放在「继续观看」之后：先看自己的进度，再看发现 */}
+      {settings.homeRecommend && history.length > 0 ? (
+        <RecommendSection source={settings.recommendSource} onSearch={onSearch} />
+      ) : null}
 
       <div className="section-title">
         <span>我的收藏</span>

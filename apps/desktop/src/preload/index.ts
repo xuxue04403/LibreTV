@@ -34,6 +34,23 @@ export interface BridgeStreamResponse {
   error?: string;
 }
 
+export type BridgeRecommendQuery =
+  | { kind: 'bangumi' }
+  | { kind: 'hot-list'; id: string }
+  | { kind: 'douban'; type: 'movie' | 'tv'; tag: string };
+
+export interface BridgeRecommendItem {
+  id: string;
+  title: string;
+  cover: string;
+  rating?: string;
+  year?: string;
+  isTv: boolean;
+  source: 'bangumi' | 'hot-list' | 'douban';
+  weekday?: number;
+  listId?: string;
+}
+
 const bridge = {
   info: (): Promise<{ version: string; platform: string; proxyBase: string; isDev: boolean }> =>
     ipcRenderer.invoke('app:info'),
@@ -71,6 +88,11 @@ const bridge = {
     return ipcRenderer.invoke('http:stream', url, options).finally(cleanup) as Promise<BridgeStreamResponse>;
   },
   streamCancel: (streamId: number): Promise<void> => ipcRenderer.invoke('http:stream:cancel', streamId),
+  /** 首页推荐：主进程固定第三方地址并做缓存，页面只传枚举参数 */
+  recommend: (
+    query: BridgeRecommendQuery
+  ): Promise<{ ok: boolean; items: BridgeRecommendItem[]; error?: string; fetchedAt?: number }> =>
+    ipcRenderer.invoke('recommend:fetch', query),
   toggleFullscreen: (): Promise<boolean> => ipcRenderer.invoke('window:toggle-fullscreen'),
   setFullscreen: (value: boolean): Promise<boolean> => ipcRenderer.invoke('window:set-fullscreen', value),
   isFullscreen: (): Promise<boolean> => ipcRenderer.invoke('window:is-fullscreen'),

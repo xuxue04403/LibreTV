@@ -452,39 +452,82 @@ function PlaybackSettings() {
   ];
 
   return (
-    <div className="panel">
-      {toggles.map((t) => (
-        <div key={t.key} className="list-item" style={{ background: 'transparent' }}>
+    <>
+      <div className="panel">
+        {toggles.map((t) => (
+          <div key={t.key} className="list-item" style={{ background: 'transparent' }}>
+            <div style={{ flex: 1 }}>
+              <div className="name">{t.title}</div>
+              <div className="url" style={{ maxWidth: 'none' }}>
+                {t.desc}
+              </div>
+            </div>
+            <button
+              className={`switch${settings[t.key] ? ' on' : ''}`}
+              onClick={() => updateSettings({ [t.key]: !settings[t.key] } as Partial<AppSettings>)}
+              aria-label={t.title}
+            />
+          </div>
+        ))}
+        <div className="list-item" style={{ background: 'transparent', border: 'none', paddingLeft: 14 }}>
           <div style={{ flex: 1 }}>
-            <div className="name">{t.title}</div>
+            <div className="name">主题</div>
+            <div className="url">桌面端默认深色；浅色主题用于明亮环境</div>
+          </div>
+          <select
+            className="input"
+            style={{ width: 140 }}
+            value={settings.theme}
+            onChange={(e) => updateSettings({ theme: e.target.value as AppSettings['theme'] })}
+          >
+            <option value="dark">深色</option>
+            <option value="light">浅色</option>
+            <option value="system">跟随系统</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="section-title" style={{ marginTop: 0 }}>
+          <span>首页推荐</span>
+          <span className="hint">与片源无关的内容发现</span>
+        </div>
+        <div className="list-item" style={{ background: 'transparent' }}>
+          <div style={{ flex: 1 }}>
+            <div className="name">显示首页推荐</div>
             <div className="url" style={{ maxWidth: 'none' }}>
-              {t.desc}
+              没配置片源、或片源里没有分类内容时，首页也能发现影片；点击卡片按标题在多源里搜索
             </div>
           </div>
           <button
-            className={`switch${settings[t.key] ? ' on' : ''}`}
-            onClick={() => updateSettings({ [t.key]: !settings[t.key] } as Partial<AppSettings>)}
-            aria-label={t.title}
+            className={`switch${settings.homeRecommend ? ' on' : ''}`}
+            onClick={() => updateSettings({ homeRecommend: !settings.homeRecommend })}
+            aria-label="显示首页推荐"
           />
         </div>
-      ))}
-      <div className="list-item" style={{ background: 'transparent', border: 'none', paddingLeft: 14 }}>
-        <div style={{ flex: 1 }}>
-          <div className="name">主题</div>
-          <div className="url">桌面端默认深色；浅色主题用于明亮环境</div>
+        <div className="list-item" style={{ background: 'transparent', border: 'none', paddingLeft: 14 }}>
+          <div style={{ flex: 1 }}>
+            <div className="name">推荐数据源</div>
+            <div className="url">同一时间只展示一个来源；选择会保存在本机</div>
+          </div>
+          <select
+            className="input"
+            style={{ width: 220 }}
+            disabled={!settings.homeRecommend}
+            value={settings.recommendSource}
+            onChange={(e) => updateSettings({ recommendSource: e.target.value as AppSettings['recommendSource'] })}
+          >
+            <option value="hot-list">影视榜单（豆瓣周榜 + 百度热播）</option>
+            <option value="bangumi">Bangumi 每日放送（新番）</option>
+            <option value="douban">豆瓣标签推荐（可能限流）</option>
+          </select>
         </div>
-        <select
-          className="input"
-          style={{ width: 140 }}
-          value={settings.theme}
-          onChange={(e) => updateSettings({ theme: e.target.value as AppSettings['theme'] })}
-        >
-          <option value="dark">深色</option>
-          <option value="light">浅色</option>
-          <option value="system">跟随系统</option>
-        </select>
+        <div style={{ padding: '6px 14px 0', fontSize: 11.5, color: '#6b7688', lineHeight: 1.7 }}>
+          推荐内容经主进程抓取并缓存（豆瓣 10 分钟、Bangumi 30 分钟、榜单 1 小时）。
+          榜单可用环境变量 60S_API_BASE 指向自部署的 60s 实例；豆瓣直连被拒时可设 FALLBACK_CORS_PROXY。
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 

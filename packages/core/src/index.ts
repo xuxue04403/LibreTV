@@ -16,6 +16,7 @@ export * from './ad-filter';
 export * from './format';
 export * from './group';
 export * from './http';
+export * from './recommend';
 export * from './search';
 export * from './detail';
 export * from './failover';

@@ -101,12 +101,23 @@ const DNS_CACHE_MAX = 512;
  * 正常播放路径与预取路径必须用同一份逻辑，否则会出现「能播但预取永远 0 命中」
  * 这种无声失效。
  */
-function mediaRequestHeaders(target: URL): Record<string, string> {
+export function mediaRequestHeaders(target: URL): Record<string, string> {
   return {
     'User-Agent': DEFAULT_UA,
     Accept: '*/*',
-    Referer: `${target.origin}/`,
+    Referer: refererFor(target),
   };
+}
+
+/**
+ * 防盗链的 Referer 不总是「自己的 origin」。
+ *
+ * 豆瓣图床（img*.doubanio.com）只认 `https://movie.douban.com/`，用图床自身的
+ * origin 会被 403；首页推荐里的豆瓣海报就靠这一条。其余图床/采集站仍按 origin 走。
+ */
+function refererFor(target: URL): string {
+  if (/(^|\.)(doubanio|douban)\.com$/i.test(target.hostname)) return 'https://movie.douban.com/';
+  return `${target.origin}/`;
 }
 
 /**

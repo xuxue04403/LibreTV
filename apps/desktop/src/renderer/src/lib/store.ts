@@ -11,6 +11,7 @@ import {
 import {
   DEFAULT_SETTINGS,
   dedupeHistory as dedupeHistoryList,
+  normalizeSettings,
   stableKey,
   toggleFavorite as toggleFavoriteList,
   toggleLiveFavorite as toggleLiveFavoriteList,
@@ -464,6 +465,15 @@ export const useAppStore = create<AppState>()(
       name: 'libretv-desktop-v1',
       version: 1,
       storage: createJSONStorage(() => quotaSafeStorage),
+      /**
+       * 老版本持久化的 settings 没有 homeRecommend / recommendSource；
+       * zustand 默认的浅合并会留下 undefined，开关与下拉都显示成空值。
+       * 这里统一过一遍 normalizeSettings：缺字段补默认值，非法值回退。
+       */
+      merge: (persisted, current) => {
+        const saved = (persisted && typeof persisted === 'object' ? persisted : {}) as Partial<AppState>;
+        return { ...current, ...saved, settings: normalizeSettings(saved.settings) };
+      },
       partialize: (s) => ({
         settings: s.settings,
         sources: s.sources,

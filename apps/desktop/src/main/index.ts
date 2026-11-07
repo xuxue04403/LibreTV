@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { startMediaProxy, assertAllowedTarget, fetchChecked, readLimited, type MediaProxy } from './proxy';
 import { castToDevice, discoverDevices, parseDeviceDescription, stopCast, type DlnaDevice } from './dlna';
+import { fetchRecommend } from './recommend';
 
 const DEFAULT_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
@@ -196,6 +197,23 @@ ipcMain.handle('app:info', () => ({
   proxyBase: proxy?.base ?? '',
   isDev,
 }));
+
+/**
+ * 首页推荐：渲染层只传枚举参数（kind / 榜单 id / 推荐类型 / 内置标签），
+ * 第三方地址与 UA/Referer 全在主进程固定，避免把任意 URL 抓取面暴露给页面。
+ */
+ipcMain.handle('recommend:fetch', async (_event, input: unknown) => {
+  try {
+    const items = await fetchRecommend(input);
+    return { ok: true as const, items, fetchedAt: Date.now() };
+  } catch (err) {
+    return {
+      ok: false as const,
+      items: [],
+      error: err instanceof Error ? err.message : '推荐内容加载失败',
+    };
+  }
+});
 
 ipcMain.handle(
   'http:fetch',

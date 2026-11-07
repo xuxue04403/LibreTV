@@ -33,9 +33,11 @@ export function App() {
   // 每提交一次搜索 +1，让「同一个词再搜一遍」也能触发重新请求
   const [searchNonce, setSearchNonce] = useState(0);
   const [input, setInput] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
   const [watch, setWatch] = useState<WatchTarget | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const theme = useAppStore((s) => s.settings.theme);
+  const recentSearches = useAppStore((s) => s.recentSearches);
 
   useEffect(() => {
     let alive = true;
@@ -116,7 +118,14 @@ export function App() {
     setSearchNonce((n) => n + 1);
     setKeyword(kw);
     setView('search');
+    setSearchOpen(false);
   };
+
+  // 最近搜索收进搜索框下拉：输入时先按关键词过滤，聚焦即展开
+  const lowered = input.trim().toLowerCase();
+  const searchSuggestions = recentSearches
+    .filter((kw) => !lowered || kw.toLowerCase().includes(lowered))
+    .slice(0, 8);
 
   if (fatal !== null) {
     return (
@@ -183,28 +192,64 @@ export function App() {
 
         <main className="main">
           <div className="topbar">
-            <form className="search-box" onSubmit={submit}>
-              <Icon name="search" size={17} />
-              <input
-                ref={inputRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder="搜索影片、剧集、综艺…（Ctrl+F）"
-                spellCheck={false}
-              />
-              {input ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setInput('');
-                    inputRef.current?.focus();
+            <div className="search-wrap">
+              <form className="search-box" onSubmit={submit}>
+                <Icon name="search" size={17} />
+                <input
+                  ref={inputRef}
+                  value={input}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    setSearchOpen(true);
                   }}
-                  style={{ color: '#5f6a7c', display: 'grid', placeItems: 'center' }}
-                >
-                  <Icon name="x" size={15} />
-                </button>
+                  onFocus={() => setSearchOpen(true)}
+                  // 点击下拉项会先触发 blur；延迟关闭让 onClick 有机会执行
+                  onBlur={() => window.setTimeout(() => setSearchOpen(false), 120)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      setSearchOpen(false);
+                      inputRef.current?.blur();
+                    }
+                  }}
+                  placeholder="搜索影片、剧集、综艺…（Ctrl+F）"
+                  spellCheck={false}
+                />
+                {input ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInput('');
+                      inputRef.current?.focus();
+                    }}
+                    style={{ color: '#5f6a7c', display: 'grid', placeItems: 'center' }}
+                  >
+                    <Icon name="x" size={15} />
+                  </button>
+                ) : null}
+              </form>
+              {searchOpen && searchSuggestions.length > 0 ? (
+                <div className="search-suggest" role="listbox" aria-label="最近搜索">
+                  <div className="search-suggest-head">最近搜索</div>
+                  {searchSuggestions.map((kw) => (
+                    <button
+                      key={kw}
+                      type="button"
+                      role="option"
+                      className="search-suggest-item"
+                      // 阻止默认的焦点转移：否则 blur 先发生，点击还没到就收了下拉
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        setSearchOpen(false);
+                        startSearch(kw);
+                      }}
+                    >
+                      <Icon name="search" size={13} />
+                      <span>{kw}</span>
+                    </button>
+                  ))}
+                </div>
               ) : null}
-            </form>
+            </div>
             <button className="btn ghost" onClick={() => setView('settings')} title="设置">
               <Icon name="sliders" size={17} />
               设置

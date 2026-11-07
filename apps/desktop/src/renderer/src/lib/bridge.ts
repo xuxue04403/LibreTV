@@ -1,4 +1,10 @@
-import { createFetchHttp, type HttpClient, type HttpResponse } from '@libretv/core';
+import {
+  createFetchHttp,
+  type HotListId,
+  type HttpClient,
+  type RecommendItem,
+  type HttpResponse,
+} from '@libretv/core';
 
 export interface AppInfo {
   version: string;
@@ -147,6 +153,30 @@ export function posterUrl(url: string | undefined): string | undefined {
   if (!url) return undefined;
   if (!/^https?:\/\//i.test(url)) return undefined;
   return proxify(url, { image: true });
+}
+
+// —— 首页推荐 ——
+
+export type RecommendQuery =
+  | { kind: 'bangumi' }
+  | { kind: 'hot-list'; id: HotListId }
+  | { kind: 'douban'; type: 'movie' | 'tv'; tag: string };
+
+/**
+ * 拉取首页推荐。
+ *
+ * 没有主进程（浏览器预览）时直接报错而不是降级成直连：
+ * 豆瓣/60s 都不给跨域，静默失败只会让首页出现一块「加载失败」，
+ * 不如明确告诉用户这是桌面端能力。
+ */
+export async function fetchRecommend(query: RecommendQuery): Promise<RecommendItem[]> {
+  if (!window.libretv) throw new Error('推荐内容仅在桌面端可用');
+  const result = await window.libretv.recommend(query);
+  if (!result.ok) throw new Error(result.error || '推荐内容加载失败');
+  return result.items.map((item) => ({
+    ...item,
+    listId: item.listId as HotListId | undefined,
+  }));
 }
 
 /**
