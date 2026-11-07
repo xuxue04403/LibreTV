@@ -20,6 +20,18 @@ class RealPinyinTableTest {
         java.io.File("apps/androidtv/app/src/main/assets/pinyin-table.txt"),
     )
 
+    private val altCandidates = listOf(
+        java.io.File("src/main/assets/pinyin-alts.txt"),
+        java.io.File("app/src/main/assets/pinyin-alts.txt"),
+        java.io.File("apps/androidtv/app/src/main/assets/pinyin-alts.txt"),
+    )
+
+    private fun find(candidates: List<File>, name: String): File =
+        candidates.firstOrNull { it.isFile }
+            ?: org.junit.Assert.fail(
+                "找不到 $name，已尝试：" + candidates.joinToString("、") { it.absolutePath }
+            ) as File
+
     @After
     fun tearDown() {
         // Pinyin 是进程级单例，别把真实表留给后面的测试类
@@ -28,10 +40,7 @@ class RealPinyinTableTest {
 
     @Test
     fun `真实拼音表能给出正确首字母`() {
-        val file = candidates.firstOrNull { it.isFile }
-            ?: org.junit.Assert.fail(
-                "找不到 pinyin-table.txt，已尝试：" + candidates.joinToString("、") { it.absolutePath }
-            ) as File
+        val file = find(candidates, "pinyin-table.txt")
         val raw = file.readText()
         // 表覆盖 0x4E00..0x9FFF，正好 20992 个字符；少一个都会让码位整体错位
         assertEquals(20992, raw.length)
@@ -48,5 +57,23 @@ class RealPinyinTableTest {
         assertTrue(Pinyin.matches("奇妙萌可 第二季", "qmmk"))
         assertTrue(Pinyin.matches("亮剑", "lj"))
         assertTrue(Pinyin.matches("狂飙", "kb"))
+    }
+
+    @Test
+    fun `真实多音字备选表让重庆能被 cq 命中`() {
+        Pinyin.install(find(candidates, "pinyin-table.txt").readText())
+        val alts = find(altCandidates, "pinyin-alts.txt").readText()
+        // 备选表每行 `字:字母`，至少得有一千多个多音字，否则生成脚本多半只跑了一半
+        assertTrue("备选表太小：${alts.length} 字节", alts.length > 5_000)
+        Pinyin.installAlts(alts)
+
+        assertEquals("zq", Pinyin.initials("重庆"))
+        assertTrue(Pinyin.matches("重庆", "cq"))
+        assertTrue(Pinyin.matches("重庆", "zq"))
+        // 备选命中排在主读音之后
+        assertEquals(40, Pinyin.score("重庆", "cq"))
+        // 音乐：乐 主读音 l，备选 y，yy 只能靠备选命中
+        assertTrue(Pinyin.matches("音乐", "yy"))
+        assertEquals(40, Pinyin.score("音乐", "yy"))
     }
 }

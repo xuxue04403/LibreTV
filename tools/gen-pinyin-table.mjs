@@ -55,6 +55,22 @@ const assetPath = resolve(ROOT, 'apps/androidtv/app/src/main/assets/pinyin-table
 mkdirSync(dirname(assetPath), { recursive: true });
 writeFileSync(assetPath, table, 'utf8');
 
-console.log(`表格长度 ${table.length}，已写入：`);
+// 多音字备选首字母：`重` 主表只给 z（zhòng），但片名里「重庆」读 chóng，
+// 只认主表时用户输 cq 永远搜不到。pinyin-pro 的 multiple 能给出全部读音，
+// 这里只保留与主表不同的首字母，做成 `字:字母` 一行一个的小表（约 2000 行）。
+const alts = [];
+for (const ch of chars) {
+  const readings = pinyin(ch, { multiple: true, toneType: 'none', type: 'array' });
+  const letters = [...new Set(readings.map((r) => (r || '')[0]).filter((c) => c >= 'a' && c <= 'z'))];
+  if (letters.length <= 1) continue;
+  const primary = table[ch.codePointAt(0) - START];
+  const extra = letters.filter((c) => c !== primary);
+  if (extra.length > 0) alts.push(`${ch}:${extra.join('')}`);
+}
+const altPath = resolve(ROOT, 'apps/androidtv/app/src/main/assets/pinyin-alts.txt');
+writeFileSync(altPath, alts.join('\n') + '\n', 'utf8');
+
+console.log(`表格长度 ${table.length}，多音字 ${alts.length} 个，已写入：`);
 console.log(`  ${tsPath}`);
 console.log(`  ${assetPath}`);
+console.log(`  ${altPath}`);

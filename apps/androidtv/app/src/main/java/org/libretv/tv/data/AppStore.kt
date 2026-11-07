@@ -211,7 +211,13 @@ class AppStore(private val context: Context) {
     }
 }
 
-private const val PINYIN_INDEX_LIMIT = 6000
+/**
+ * 拼音索引上限。
+ *
+ * 索引越大，首字母检索能命中的老片越多；每条压缩后约 60-80 字节，
+ * 12000 条落盘约 1MB，DataStore 读一次几十毫秒，可以接受。
+ */
+private const val PINYIN_INDEX_LIMIT = 12000
 
 /** 拼音索引里的一行：字段都取短名，一万条也就几百 KB */
 @Serializable

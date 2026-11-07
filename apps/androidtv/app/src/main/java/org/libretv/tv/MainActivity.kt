@@ -32,14 +32,18 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 载入拼音首字母表（21KB 文本）。
+     * 载入拼音首字母表（21KB 文本）与多音字备选表（约 2KB）。
      *
      * 遥控器输中文很痛苦，有了它用户敲 `qmmk` 就能搜「奇妙萌可」。
+     * 备选表让「重庆」也能被 `cq` 命中（主表只有 z）。
      * 读失败只影响拼音检索，普通搜索照常可用，所以整段吞掉异常。
      */
     private fun installPinyinTable() {
         runCatching {
             assets.open("pinyin-table.txt").bufferedReader().use { Pinyin.install(it.readText()) }
+        }
+        runCatching {
+            assets.open("pinyin-alts.txt").bufferedReader().use { Pinyin.installAlts(it.readText()) }
         }
     }
 

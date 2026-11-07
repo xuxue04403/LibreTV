@@ -635,22 +635,24 @@ interface AppData {
 
 采集站的 wd 只支持中文 LIKE，所以拼音只能在本地做，前提是有一张「汉字 → 首字母」表：
 
-- 表由 	ools/gen-pinyin-table.mjs 用 pinyin-pro 离线生成，覆盖 U+4E00..U+9FFF 共 20992 个码位，生僻字记 ?；
-- 两端共用同一份数据，形状不同：TS 侧是 packages/core/src/pinyin-table.ts，Kotlin 侧是 pps/androidtv/app/src/main/assets/pinyin-table.txt（启动时 Pinyin.install 读入）；
-- 匹配只认**连续命中**（initials.includes(query)），不做跳字母匹配——qmx 在 qmmkzsyxl 里出现过，放行它噪声太大。
+- 表由 tools/gen-pinyin-table.mjs 用 pinyin-pro 离线生成，覆盖 U+4E00..U+9FFF 共 20992 个码位，生僻字记 ?；
+- 两端共用同一份数据，形状不同：TS 侧是 packages/core/src/pinyin-table.ts，Kotlin 侧是 apps/androidtv/app/src/main/assets/pinyin-table.txt（启动时 Pinyin.install 读入）；
+- 多音字另有一张 apps/androidtv/app/src/main/assets/pinyin-alts.txt（`字:备选首字母`，1953 条），Pinyin.installAlts 读入：主表只给主读音（重 → z），但「重庆」读 chóng，没有备选表时 `cq` 永远搜不到；
+- 匹配用非确定性自动机做**连续命中**：每个汉字可以贡献「主字母 + 备选字母」，任一读音组合能连续拼出 query 就算命中；仍然不允许跳字母（qmx 在 qmmkzsyxl 里不相邻，放行噪声太大）；
+- 结果按相关度排序：精确 100 → 前缀 80 → 包含 50 → 仅备选命中 40，同分按片名短、再字典序；流式回调和最终结果都走同一个排序。
 
 **索引从哪来**：采集站无法按拼音查询，只能拿「已经见过的片名」反查。
 
 1. 本次会话搜索 / 分类浏览过的条目（Repository.seenItems）；
-2. 落盘的索引（AppStore 的 pinyin-index，上限 6000 条，攒够 80 条增量写一次）——这是第二次开机仍能命中的原因；
-3. 各源「最新列表」（?ac=videolist&pg=n，不带 wd/），1.3.2 起最多翻 24 页，30 秒预算；
+2. 落盘的索引（AppStore 的 pinyin-index，上限 12000 条，攒够 80 条增量写一次）——这是第二次开机仍能命中的原因；
+3. 各源「最新列表」（?ac=videolist&pg=n，不带 wd/），1.3.2 起最多翻 24 页，30 秒预算；本地索引命中但不足 8 条时，先立即回显，再用 12 秒短预算补扫网络；
 4. 启动后台**预热**：索引不足 3000 条时，每源抓 20 页（60 秒预算）补进索引并持久化，每页都进索引（取消也不丢进度）；用户一开始检索就 `warmJob?.cancel()` 让路。
 
 **在线扫描的并发策略（1.3.2，两次踩坑换来的）**：
 
 - 别按「页码」推进（先扫所有源第 1 页，再一起扫第 2 页）：每轮都要等最慢的那个源，而列表里有源会挂到超时。实测 AVD 上**一轮恰好 8 秒**，40 秒预算只够翻 4 页。
 - 也别「每源串行往下翻」：串行时每页都要付一次完整 TTFB（ffzyapi 实测 2.3 s/页），「师兄啊师兄」在第 11 页 → 26 秒，超预算。
-- 现在用**源内滑动窗口并发**（`PINYIN_WINDOW = 5` 页一起抓，命中即停）+ **扫描专用限流**（`PINYIN_CONCURRENCY = 12` 的 `Semaphore`），**不走 `Net.gated`**：那个全局 `Semaphore(6)` 是 FIFO 公平的，启动时目录刷新先排上几十个请求，用户的检索排在队尾，实测 45 秒连第一页都翻不完。
+- 现在用**源内滑动窗口并发**（`PINYIN_WINDOW = 5` 页一起抓，找到 8 条才收手；命中单条不终止本源的翻页，避免同名续集被截断）+ **扫描专用限流**（`PINYIN_CONCURRENCY = 12` 的 `Semaphore`），**不走 `Net.gated`**：那个全局 `Semaphore(6)` 是 FIFO 公平的，启动时目录刷新先排上几十个请求，用户的检索排在队尾，实测 45 秒连第一页都翻不完。
 - 窗口并发后宿主实测：翻到第 11 页命中「师兄啊师兄」用时 **14 秒**（串行 26 秒）。
 - 扫描期间 `onProgress` 每翻完一个窗口回调一次，界面显示「拼音「sxa」· 已翻到第 N 页」，不让用户对着 0 条干等。
 

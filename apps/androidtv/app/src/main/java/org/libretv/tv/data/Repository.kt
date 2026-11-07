@@ -31,6 +31,9 @@ private const val PINYIN_CONCURRENCY = 12
 /** 已经找到这么多条就不再往下翻，剩下的留给下次 */
 private const val PINYIN_ENOUGH_HITS = 8
 
+/** 本地已命中但不足 [PINYIN_ENOUGH_HITS] 时，补扫网络的短预算（首帧已出，不阻塞观感） */
+private const val PINYIN_ENRICH_BUDGET_MS = 12_000L
+
 /** 启动预热：每个源补扫到第几页 */
 private const val PINYIN_WARM_PAGES = 20
 
@@ -479,12 +482,16 @@ class Repository(private val net: Net = Net) {
     ): List<SearchItem> {
         if (!Pinyin.ready || !Pinyin.isQuery(query)) return emptyList()
         val cached = synchronized(seenLock) { seenItems.values.filter { Pinyin.matches(it.name, query) } }
-        if (cached.isNotEmpty()) {
-            // 本地索引已经命中：不必再打网络，这是「查已见过的片名」的快路径
-            return cached
-                .let { Parsers.filterAdult(it, adultFilter) }
-                .distinctBy { "${it.sourceKey}:${it.vodId}" }
+        // 本地索引命中时先把结果推给界面（零网络、首帧即出），
+        // 但不再像以前那样「有 1 条就完全不打网络」——1 条命中就停会漏掉
+        // 后面几页的同名续集/不同季；这里继续用一段短预算补全。
+        val cachedRanked = rankPinyin(Parsers.filterAdult(cached, adultFilter), query)
+        if (cachedRanked.isNotEmpty()) {
+            onProgress?.invoke(0, cachedRanked)
+            if (cachedRanked.size >= PINYIN_ENOUGH_HITS) return cachedRanked
         }
+        val effectiveBudget =
+            if (cachedRanked.isEmpty()) budgetMs else minOf(budgetMs, PINYIN_ENRICH_BUDGET_MS)
 
         // 扫描策略：源内滑动窗口并发 + 扫描专用限流。
         //
@@ -496,7 +503,7 @@ class Repository(private val net: Net = Net) {
         // 约 2.3s/页），「师兄啊师兄」在第 11 页 → 串行要 26 秒，超预算。
         // 一次并发 [PINYIN_WINDOW] 页后，11 页约 3 轮 ≈ 7 秒。
         val found = java.util.Collections.synchronizedList(ArrayList<SearchItem>())
-        val deadline = System.nanoTime() + budgetMs * 1_000_000
+        val deadline = System.nanoTime() + effectiveBudget * 1_000_000
         val scanGate = Semaphore(PINYIN_CONCURRENCY)
         coroutineScope {
             sources
@@ -545,8 +552,12 @@ class Repository(private val net: Net = Net) {
                                 if (shortPage) stop = true
                             }
                             next += window.size
-                            // 每翻完一个窗口回报一次，界面可以显示「已翻到第 N 页」
-                            onProgress?.invoke(next - 1, found.toList())
+                            // 每翻完一个窗口回报一次，界面可以显示「已翻到第 N 页」，
+                            // 顺带按相关度排好，流式结果不会出现「先来的排前面」。
+                            onProgress?.invoke(
+                                next - 1,
+                                rankPinyin(Parsers.filterAdult(found.toList(), adultFilter), query),
+                            )
                             if (stop) break
                         }
                     }
@@ -554,10 +565,21 @@ class Repository(private val net: Net = Net) {
                 .awaitAll()
         }
 
-        return (found.toList() + cached)
-            .let { Parsers.filterAdult(it, adultFilter) }
-            .distinctBy { "${it.sourceKey}:${it.vodId}" }
+        return rankPinyin(Parsers.filterAdult(found.toList() + cached, adultFilter), query)
     }
+
+    /**
+     * 拼音结果排序：精确 > 前缀 > 包含 > 只有多音字备选命中；
+     * 同分按片名短、再按字典序，保证同样的查询每次顺序一致。
+     */
+    private fun rankPinyin(items: List<SearchItem>, query: String): List<SearchItem> =
+        items
+            .distinctBy { "${it.sourceKey}:${it.vodId}" }
+            .sortedWith(
+                compareByDescending<SearchItem> { Pinyin.score(it.name, query) }
+                    .thenBy { it.name.length }
+                    .thenBy { it.name },
+            )
 
     /**
      * 后台预热拼音索引。
