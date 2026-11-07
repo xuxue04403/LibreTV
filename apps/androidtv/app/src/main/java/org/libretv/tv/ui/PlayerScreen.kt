@@ -50,6 +50,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -149,6 +150,18 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
     val errorFocus = remember { FocusRequester() }
     val drawerState = rememberLazyListState()
     val exo = remember { Playback.build(context) }
+
+    /**
+     * 倍速统一入口。
+     *
+     * ExoPlayer 的 PlaybackParameters 默认会跨媒体项保留，但换源时我们可能重建播放器
+     * （见 tryFailover），所以换集/换源后由 [LaunchedEffect] 统一重新应用一次。
+     */
+    fun applyRate(next: Float) {
+        rate = next
+        runCatching { exo.playbackParameters = PlaybackParameters(next) }
+        showControls()
+    }
 
     /**
      * 统一的「放这个地址」入口。
@@ -351,6 +364,11 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
     }
 
     LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
+
+    // 换集后把用户选的倍速重新挂上：ExoPlayer 对同一实例通常会保留，但换源重建/重置时不一定
+    LaunchedEffect(index) {
+        runCatching { exo.playbackParameters = PlaybackParameters(rate) }
+    }
 
     // 抽屉打开：把焦点送到当前集对应的卡片上，用户才能用左右键选其它集
     LaunchedEffect(drawerVisible) {
@@ -597,7 +615,7 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                 }
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "OK 播放/暂停   ←→ 快退/快进 10s   ↑ 选集   ↓↓ 下一集   菜单 换源   返回 退出",
+                    "OK 播放/暂停   ←→ 快退/快进 10s   ↑ 选集/倍速   ↓↓ 下一集   菜单 换源   返回 退出",
                     color = Color(0xFF9AA4B4),
                     fontSize = MaterialTheme.typography.bodySmall.fontSize,
                 )
@@ -632,7 +650,52 @@ fun PlayerScreen(vm: AppViewModel, target: Screen.Player, onExit: () -> Unit) {
                     .background(Color(0xF20E1117))
                     .padding(horizontal = 34.dp, vertical = 18.dp),
             ) {
-                Text("选集（↑ 打开 / ↓ 收起）", color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
+                Text("选集 / 倍速（↑ 打开 / ↓ 收起）", color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("倍速", color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
+                    listOf(1f, 1.25f, 1.5f, 1.75f, 2f).forEach { option ->
+                        EpisodeChip(
+                            label = if (option == 1f) "1×" else "${option}×",
+                            selected = kotlin.math.abs(rate - option) < 0.01f,
+                            onClick = { applyRate(option) },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("跳集", color = TextMuted, fontSize = MaterialTheme.typography.bodySmall.fontSize)
+                    EpisodeChip(
+                        label = "上一集",
+                        selected = false,
+                        onClick = {
+                            if (index > 0) {
+                                index -= 1
+                                drawerVisible = false
+                                tried.clear()
+                                tried += "${current.source.key}:${current.vodId}"
+                                discovered = false
+                            } else {
+                                note = "已经是第一集"
+                            }
+                        },
+                    )
+                    EpisodeChip(
+                        label = "下一集",
+                        selected = false,
+                        onClick = {
+                            if (index + 1 < current.episodes.size) {
+                                index += 1
+                                drawerVisible = false
+                                tried.clear()
+                                tried += "${current.source.key}:${current.vodId}"
+                                discovered = false
+                            } else {
+                                note = "已经是最后一集"
+                            }
+                        },
+                    )
+                }
                 Spacer(Modifier.height(10.dp))
                 LazyRow(state = drawerState, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     itemsIndexed(current.episodes) { i, _ ->
