@@ -10,8 +10,12 @@ import {
 } from './defaults';
 import {
   DEFAULT_SETTINGS,
+  clearSourceHealth,
   dedupeHistory as dedupeHistoryList,
   normalizeSettings,
+  pruneSourceHealth,
+  recordSourceFailure,
+  recordSourceSuccess,
   stableKey,
   toggleFavorite as toggleFavoriteList,
   toggleLiveFavorite as toggleLiveFavoriteList,
@@ -22,6 +26,8 @@ import {
   type LiveFavoriteEntry,
   type LiveSourceConfig,
   type SourceConfig,
+  type SourceDisableEvent,
+  type SourceHealthMap,
 } from '@libretv/core';
 import { liveCacheKey, readLiveCache } from './live-cache';
 
@@ -55,6 +61,8 @@ export interface AppState {
   defaultsVersion: number;
   /** 用户主动删掉的内置源地址：升级补源时不要把它们又塞回来 */
   removedDefaultUrls: string[];
+  /** 源健康度（连续失败自动暂停），只影响搜索是否发起请求，不改勾选 */
+  sourceHealth: SourceHealthMap;
 
   /** 首次导入 + 版本升级时补齐新增的内置源（幂等） */
   seedDefaults: () => void;
@@ -76,6 +84,10 @@ export interface AppState {
   toggleFavorite: (entry: Omit<FavoriteEntry, 'createdAt'>) => void;
   toggleLiveFavorite: (entry: Omit<LiveFavoriteEntry, 'createdAt'>) => void;
   addRecentSearch: (keyword: string) => void;
+  /** 记录一次源搜索成败；本次失败导致暂停时返回事件供 UI 提示 */
+  recordSourceOutcome: (key: string, ok: boolean) => SourceDisableEvent | null;
+  /** 用户手动恢复被暂停的源 */
+  restoreSourceHealth: (key: string) => void;
   importSources: (sources: SourceConfig[], liveSources: LiveSourceConfig[]) => { addedVod: number; addedLive: number };
   clearHistory: () => void;
   removeHistory: (id: string) => void;
@@ -196,6 +208,7 @@ export const useAppStore = create<AppState>()(
       defaultsSeeded: false,
       defaultsVersion: 0,
       removedDefaultUrls: [],
+      sourceHealth: {},
 
       seedDefaults: () =>
         set((s) => {
@@ -429,6 +442,27 @@ export const useAppStore = create<AppState>()(
           return { recentSearches: [kw, ...s.recentSearches.filter((x) => x !== kw)].slice(0, 12) };
         }),
 
+      recordSourceOutcome: (key, ok) => {
+        let event: SourceDisableEvent | null = null;
+        set((s) => {
+          const now = Date.now();
+          const current = s.sourceHealth[key];
+          if (ok) {
+            return { sourceHealth: { ...s.sourceHealth, [key]: recordSourceSuccess(current, now) } };
+          }
+          const result = recordSourceFailure(current, now);
+          if (result.event) event = { ...result.event, key };
+          return { sourceHealth: { ...s.sourceHealth, [key]: result.entry } };
+        });
+        return event;
+      },
+
+      restoreSourceHealth: (key) =>
+        set((s) => {
+          const next = clearSourceHealth(s.sourceHealth, key);
+          return next === s.sourceHealth ? s : { sourceHealth: next };
+        }),
+
       importSources: (incomingVod, incomingLive) => {
         const state = get();
         const existingVodUrls = new Set(state.sources.map((s) => s.url));
@@ -472,7 +506,13 @@ export const useAppStore = create<AppState>()(
        */
       merge: (persisted, current) => {
         const saved = (persisted && typeof persisted === 'object' ? persisted : {}) as Partial<AppState>;
-        return { ...current, ...saved, settings: normalizeSettings(saved.settings) };
+        // 老存档没有 sourceHealth；顺手清掉 7 天没参与搜索的条目，
+        // 否则「已经不用的源」会一直留在暂停列表里。
+        const sourceHealth =
+          saved.sourceHealth && typeof saved.sourceHealth === 'object'
+            ? pruneSourceHealth(saved.sourceHealth, Date.now())
+            : {};
+        return { ...current, ...saved, settings: normalizeSettings(saved.settings), sourceHealth };
       },
       partialize: (s) => ({
         settings: s.settings,
@@ -489,6 +529,7 @@ export const useAppStore = create<AppState>()(
         // 只存 defaultsSeeded 的话，老用户永远停在旧的内置源列表上。
         defaultsVersion: s.defaultsVersion,
         removedDefaultUrls: s.removedDefaultUrls,
+        sourceHealth: s.sourceHealth,
       }),
     }
   )

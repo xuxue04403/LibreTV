@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  describeDisabledRemaining,
+  describeSourceDisable,
   groupSearchResults,
+  isSourceDisabled,
   searchSources,
   type AggregatedGroup,
   type SourceSearchOutcome,
@@ -39,10 +42,23 @@ export function SearchPage({
     () => allSources.filter((s) => selectedKeys.includes(s.key)),
     [allSources, selectedKeys]
   );
+  const sourceHealth = useAppStore((s) => s.sourceHealth);
+  const recordSourceOutcome = useAppStore((s) => s.recordSourceOutcome);
+  const restoreSourceHealth = useAppStore((s) => s.restoreSourceHealth);
   const settings = useAppStore((s) => s.settings);
   const recentSearches = useAppStore((s) => s.recentSearches);
   const addRecentSearch = useAppStore((s) => s.addRecentSearch);
   const toast = useToast();
+
+  // 暂停只影响「这次搜索发不发请求」，不动用户勾选：恢复后不用再去设置里重新打勾
+  const pausedSources = useMemo(() => {
+    const at = Date.now();
+    return sources.filter((s) => isSourceDisabled(sourceHealth[s.key], at));
+  }, [sources, sourceHealth]);
+  const searchableSources = useMemo(() => {
+    const paused = new Set(pausedSources.map((s) => s.key));
+    return sources.filter((s) => !paused.has(s.key));
+  }, [sources, pausedSources]);
 
   const [state, setState] = useState<SearchState>({ outcomes: [], groups: [] });
   const [loading, setLoading] = useState(false);
@@ -60,6 +76,10 @@ export function SearchPage({
         toast.err('还没有启用任何点播源，请先在设置中添加');
         return;
       }
+      if (searchableSources.length === 0) {
+        toast.err('所有已启用的源都因连续失败暂停了，可点击上方的「恢复」重新启用');
+        return;
+      }
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
@@ -71,7 +91,7 @@ export function SearchPage({
       addRecentSearch(word);
 
       // 先出缓存结果，网络结果回来后覆盖：同一个片名搜第二遍不该再等十几秒
-      const cached = cachedSearch(sources, settings.adultFilter, word);
+      const cached = cachedSearch(searchableSources, settings.adultFilter, word);
       if (cached && cached.length > 0) {
         setState({ outcomes: [], groups: groupSearchResults(cached) });
         setFromCache(true);
@@ -86,12 +106,19 @@ export function SearchPage({
         setFromCache(false);
         const items = merged.flatMap((o) => (o.ok ? o.list : []));
         setState({ outcomes: merged, groups: groupSearchResults(items) });
+        // 连续失败累计到阈值会在这里返回事件：暂停后本次搜索不再请求它，
+        // 下次搜索直接跳过——死源不该让每次搜索都先等满 10 秒超时。
+        const event = recordSourceOutcome(outcome.sourceKey, outcome.ok);
+        if (event) {
+          const name = sources.find((s) => s.key === outcome.sourceKey)?.name ?? outcome.sourceName;
+          toast.push(`${name} 连续失败，${describeSourceDisable(event.level)}`);
+        }
       };
 
       try {
         const result = await searchSources({
           wd: word,
-          sources,
+          sources: searchableSources,
           http,
           filterAdult: settings.adultFilter,
           maxPages: 3,
@@ -106,7 +133,7 @@ export function SearchPage({
           toast.push(`没有找到「${word}」的相关内容`);
         } else {
           // 有结果才落盘：把「确实没搜到」也缓存住，会让下次重试直接看到空页面
-          rememberSearch(sources, settings.adultFilter, word, result.list);
+          rememberSearch(searchableSources, settings.adultFilter, word, result.list);
         }
       } catch (err) {
         // 取消不是失败：离开搜索页时 abort 会让 searchSources 抛错，
@@ -118,7 +145,7 @@ export function SearchPage({
         if (myRun === runId.current) setLoading(false);
       }
     },
-    [addRecentSearch, settings.adultFilter, sources, toast]
+    [addRecentSearch, recordSourceOutcome, searchableSources, settings.adultFilter, sources, toast]
   );
 
   useEffect(() => {
@@ -162,12 +189,33 @@ export function SearchPage({
             </span>
             <span className="hint">
               {loading
-                ? `搜索中… 已完成 ${state.outcomes.length}/${sources.length} 个源`
+                ? `搜索中… 已完成 ${state.outcomes.length}/${searchableSources.length} 个源`
                 : fromCache
                   ? `${state.groups.length} 部影片（本地缓存）`
                   : `${state.groups.length} 部影片`}
             </span>
           </div>
+
+          {pausedSources.length > 0 ? (
+            <div style={{ marginBottom: 14 }}>
+              <div className="hint">
+                已暂停 {pausedSources.length} 个源（连续失败 2 次自动暂停；暂停只影响搜索，不影响勾选）。
+                恢复后从第 1 次失败重新累计：
+              </div>
+              <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                {pausedSources.map((source) => (
+                  <button
+                    key={source.key}
+                    className="chip warn"
+                    title="点击恢复此源"
+                    onClick={() => restoreSourceHealth(source.key)}
+                  >
+                    {source.name} · {describeDisabledRemaining(sourceHealth[source.key], Date.now())} · 恢复
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
             {state.outcomes.map((o) => (
@@ -217,6 +265,16 @@ export function SearchPage({
                   <div className="poster-fallback" />
                 </div>
               ))}
+            </div>
+          ) : searchableSources.length === 0 ? (
+            <div className="empty">
+              <Icon name="search" size={26} />
+              <h3>所有源都暂停了</h3>
+              <div style={{ fontSize: 12.5 }}>
+                连续失败的源会被自动暂停，避免每次搜索都先等一轮超时。
+                <br />
+                点击上方任一源的「恢复」即可重新参与搜索。
+              </div>
             </div>
           ) : (
             <div className="empty">
