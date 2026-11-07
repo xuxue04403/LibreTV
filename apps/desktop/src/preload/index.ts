@@ -93,6 +93,19 @@ const bridge = {
     query: BridgeRecommendQuery
   ): Promise<{ ok: boolean; items: BridgeRecommendItem[]; error?: string; fetchedAt?: number }> =>
     ipcRenderer.invoke('recommend:fetch', query),
+  /** 画质探测：主进程抓 m3u8 / 分片前缀并解析，渲染层只拿结论 */
+  qualityProbe: (input: {
+    source: { key: string; name: string; url: string; detail?: string; isAdult?: boolean };
+    vodId: string;
+  }): Promise<{
+    ok: boolean;
+    height?: number;
+    label?: string;
+    error?: string;
+    reason?: string;
+    retryable: boolean;
+    cached: boolean;
+  }> => ipcRenderer.invoke('quality:probe', input),
   toggleFullscreen: (): Promise<boolean> => ipcRenderer.invoke('window:toggle-fullscreen'),
   setFullscreen: (value: boolean): Promise<boolean> => ipcRenderer.invoke('window:set-fullscreen', value),
   isFullscreen: (): Promise<boolean> => ipcRenderer.invoke('window:is-fullscreen'),

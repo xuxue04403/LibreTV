@@ -4,6 +4,7 @@ import {
   type HttpClient,
   type RecommendItem,
   type HttpResponse,
+  type SourceConfig,
 } from '@libretv/core';
 
 export interface AppInfo {
@@ -177,6 +178,25 @@ export async function fetchRecommend(query: RecommendQuery): Promise<RecommendIt
     ...item,
     listId: item.listId as HotListId | undefined,
   }));
+}
+
+export interface QualityProbeResult {
+  ok: boolean;
+  height?: number;
+  label?: string;
+  error?: string;
+  reason?: string;
+  retryable: boolean;
+  cached: boolean;
+}
+
+/**
+ * 画质探测：主进程抓 m3u8 / 分片前缀并解析。
+ * 浏览器预览没有该能力，明确报错而不是静默返回「未知」。
+ */
+export async function qualityProbe(source: SourceConfig, vodId: string): Promise<QualityProbeResult> {
+  if (!window.libretv) throw new Error('画质探测仅在桌面端可用');
+  return window.libretv.qualityProbe({ source, vodId });
 }
 
 /**

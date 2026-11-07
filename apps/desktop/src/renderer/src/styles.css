@@ -460,6 +460,36 @@ textarea.input {
   background: var(--accent-soft);
 }
 
+/* 同片源测速/画质：数字比源名弱一档，徽章用颜色区分「有档位/未知/失败」 */
+.q-meta {
+  font-size: 10.5px;
+  color: #7b8698;
+  font-variant-numeric: tabular-nums;
+}
+.q-meta.muted {
+  color: #5f6a7c;
+}
+.q-badge {
+  font-size: 10.5px;
+  padding: 0 5px;
+  border-radius: 5px;
+  line-height: 16px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #8d97a8;
+}
+.q-badge.value {
+  background: rgba(78, 203, 143, 0.14);
+  color: #9fe8c4;
+}
+.q-badge.failed {
+  background: rgba(242, 85, 90, 0.14);
+  color: #ffb3b5;
+}
+.q-badge.unknown {
+  background: rgba(255, 255, 255, 0.06);
+  color: #8d97a8;
+}
+
 .empty {
   padding: 56px 20px;
   text-align: center;

@@ -150,6 +150,24 @@ export interface AppSettings {
   recommendSource: RecommendSource;
 }
 
+/**
+ * 画质探测/实测结果。
+ *
+ * `from: 'probe'` 是解析播放列表或分片得到的「源站声明」，
+ * `from: 'play'` 是播放器解码后读到的真实高度；合并时后者优先。
+ */
+export interface QualityEntry {
+  sourceKey: string;
+  vodId: string;
+  /** 视频短边高度（1080/720…）；无值表示「测不出」 */
+  height?: number;
+  /** 探测失败原因原文；无值且无 height 表示「未知」而非失败 */
+  error?: string;
+  from: 'probe' | 'play';
+  /** epoch ms */
+  timestamp: number;
+}
+
 export interface HistoryEntry {
   /** `${sourceKey}:${vodId}` */
   id: string;

@@ -10,12 +10,24 @@ import {
   type SourceConfig,
   type VideoDetail,
 } from '@libretv/core';
-import { http } from '../lib/bridge';
+import { http, qualityProbe, type QualityProbeResult } from '../lib/bridge';
 import { useAppStore } from '../lib/store';
 import { useToast } from './toast-context';
 import { Icon } from './Icons';
 import { Poster } from './Poster';
 import type { WatchTarget } from '../pages/Watch';
+
+interface ProbeInfo {
+  probing: boolean;
+  /** 详情接口耗时（同片源横向比较用） */
+  speedMs?: number;
+  speedError?: string;
+  quality?: QualityProbeResult;
+}
+
+function probeKeyOf(item: SearchResultItem): string {
+  return `${item.sourceKey}:${item.vodId}`;
+}
 
 export function DetailPanel({
   group,
@@ -38,6 +50,15 @@ export function DetailPanel({
   const [error, setError] = useState<string | null>(null);
   const [episodeIndex, setEpisodeIndex] = useState(0);
 
+  /**
+   * 同片源测速 + 画质探测。
+   *
+   * 打开详情时对每个候选源各拉一次详情（顺带测详情接口耗时），再让主进程探画质；
+   * 面板关闭即 abort。只测前 8 个源，避免同片几十个源时把源站打爆。
+   */
+  const [probes, setProbes] = useState<Record<string, ProbeInfo>>({});
+  const [probeNonce, setProbeNonce] = useState(0);
+
   const resolveSource = useCallback(
     (item: SearchResultItem): SourceConfig => {
       const found = sources.find((s) => s.key === item.sourceKey);
@@ -59,6 +80,79 @@ export function DetailPanel({
         active: { sourceKey: selected.sourceKey, vodId: selected.vodId },
       }),
     [group.items, sources, selected.sourceKey, selected.vodId]
+  );
+
+  useEffect(() => {
+    let alive = true;
+    const controller = new AbortController();
+    const items = group.items.slice(0, 8);
+    const initial: Record<string, ProbeInfo> = {};
+    for (const item of items) initial[probeKeyOf(item)] = { probing: true };
+    setProbes(initial);
+
+    const patch = (item: SearchResultItem, part: Partial<ProbeInfo>) => {
+      if (!alive) return;
+      setProbes((prev) => ({ ...prev, [probeKeyOf(item)]: { ...prev[probeKeyOf(item)], ...part } }));
+    };
+
+    const queue = [...items];
+    const worker = async () => {
+      for (;;) {
+        const item = queue.shift();
+        if (!item || !alive) return;
+        const source = resolveSource(item);
+        if (!source.url) {
+          patch(item, { probing: false, speedError: '缺少接口地址' });
+          continue;
+        }
+        const started = performance.now();
+        let speedMs: number | undefined;
+        let speedError: string | undefined;
+        try {
+          await fetchDetail(source, item.vodId, http, { timeoutMs: 8000, signal: controller.signal });
+          speedMs = Math.round(performance.now() - started);
+        } catch (err) {
+          if (!alive) return;
+          speedError = err instanceof Error ? err.message : '详情获取失败';
+        }
+        patch(item, { speedMs, speedError });
+        try {
+          const quality = await qualityProbe(source, item.vodId);
+          patch(item, { quality });
+        } catch (err) {
+          patch(item, {
+            quality: {
+              ok: false,
+              error: err instanceof Error ? err.message : '探测失败',
+              retryable: false,
+              cached: false,
+            },
+          });
+        }
+        patch(item, { probing: false });
+      }
+    };
+    void Promise.all(Array.from({ length: Math.min(2, queue.length) }, () => worker()));
+
+    return () => {
+      alive = false;
+      controller.abort();
+    };
+  }, [group.items, probeNonce, resolveSource]);
+
+  /** 测速成功的排前面，测不出/失败保持原顺序垫底 */
+  const orderedItems = useMemo(
+    () =>
+      group.items
+        .map((item, index) => ({ item, index }))
+        .sort((a, b) => {
+          const sa = probes[probeKeyOf(a.item)]?.speedMs ?? Number.POSITIVE_INFINITY;
+          const sb = probes[probeKeyOf(b.item)]?.speedMs ?? Number.POSITIVE_INFINITY;
+          if (sa !== sb) return sa - sb;
+          return a.index - b.index;
+        })
+        .map(({ item }) => item),
+    [group.items, probes]
   );
 
   useEffect(() => {
@@ -205,17 +299,57 @@ export function DetailPanel({
           <span style={{ color: '#8d97a8', fontSize: 12, alignSelf: 'center' }}>
             同片源（{group.items.length}）：
           </span>
-          {group.items.map((item) => (
-            <button
-              key={`${item.sourceKey}:${item.vodId}`}
-              className={`chip${item.sourceKey === selected.sourceKey && item.vodId === selected.vodId ? ' on' : ''}`}
-              style={{ cursor: 'pointer' }}
-              onClick={() => setSelected(item)}
-              title={item.sourceUrl}
-            >
-              {item.sourceName}
-            </button>
-          ))}
+          {orderedItems.map((item) => {
+            const info = probes[probeKeyOf(item)];
+            const isCurrent = item.sourceKey === selected.sourceKey && item.vodId === selected.vodId;
+            const q = info?.quality;
+            const qKind = !q || !q.ok ? 'failed' : q.label ? 'value' : q.error ? 'failed' : 'unknown';
+            const qText = q ? (q.label ?? (q.error ? '未测到' : '未知')) : '';
+            const qTitle = q
+              ? q.label
+                ? `画质 ${q.label}${q.cached ? '（缓存）' : ''}`
+                : q.error
+                  ? `探测失败：${q.error}`
+                  : '播放列表与分片里没有画质信息，播放后会记录实测分辨率'
+              : '';
+            return (
+              <button
+                key={`${item.sourceKey}:${item.vodId}`}
+                className={`chip${isCurrent ? ' on' : ''}`}
+                style={{ cursor: 'pointer' }}
+                onClick={() => setSelected(item)}
+                title={item.sourceUrl}
+              >
+                {item.sourceName}
+                {isCurrent ? (
+                  <span className="q-meta">当前</span>
+                ) : info?.speedMs !== undefined ? (
+                  <span className="q-meta">{info.speedMs}ms</span>
+                ) : info?.speedError ? (
+                  <span className="q-meta muted">测速失败</span>
+                ) : null}
+                {info?.probing ? (
+                  <span className="q-badge unknown">探测中</span>
+                ) : q ? (
+                  <span className={`q-badge ${qKind}`} title={qTitle}>
+                    {qText}
+                    {q.reason ? `·${q.reason}` : ''}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+          <button
+            className="btn"
+            style={{ padding: '2px 8px', fontSize: 12 }}
+            onClick={() => {
+              setProbes({});
+              setProbeNonce((n) => n + 1);
+            }}
+            title="重新测速并重新探测画质"
+          >
+            重新测速
+          </button>
         </div>
 
         <div className="section-title" style={{ marginTop: 14 }}>

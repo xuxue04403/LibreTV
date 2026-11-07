@@ -4,6 +4,8 @@ import path from 'node:path';
 import { startMediaProxy, assertAllowedTarget, fetchChecked, readLimited, type MediaProxy } from './proxy';
 import { castToDevice, discoverDevices, parseDeviceDescription, stopCast, type DlnaDevice } from './dlna';
 import { fetchRecommend } from './recommend';
+import { probeQuality } from './quality';
+import type { SourceConfig } from '@libretv/core';
 
 const DEFAULT_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
@@ -211,6 +213,32 @@ ipcMain.handle('recommend:fetch', async (_event, input: unknown) => {
       ok: false as const,
       items: [],
       error: err instanceof Error ? err.message : '推荐内容加载失败',
+    };
+  }
+});
+
+/**
+ * 画质探测：渲染层传源配置与影片 ID，主进程负责抓播放列表/分片前缀。
+ * 放主进程的原因：m3u8 与分片没有 CORS 头，渲染层 fetch 会被浏览器拦；
+ * 且分片只读前缀，不必把几十 MB 的内容搬进渲染层。
+ */
+ipcMain.handle('quality:probe', async (_event, input: unknown) => {
+  if (!input || typeof input !== 'object') {
+    return { ok: false as const, error: '无效的探测请求', retryable: false, cached: false };
+  }
+  const { source, vodId } = input as { source?: unknown; vodId?: unknown };
+  if (!source || typeof source !== 'object' || typeof vodId !== 'string') {
+    return { ok: false as const, error: '无效的探测请求', retryable: false, cached: false };
+  }
+  try {
+    const result = await probeQuality({ source: source as SourceConfig, vodId });
+    return result;
+  } catch (err) {
+    return {
+      ok: false as const,
+      error: err instanceof Error ? err.message : '画质探测失败',
+      retryable: false,
+      cached: false,
     };
   }
 });
