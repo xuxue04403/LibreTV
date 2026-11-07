@@ -96,6 +96,10 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
   const [rate, setRate] = useState(1);
+  /** 倍速的 ref 镜像：媒体加载 effect 不依赖 rate（否则调一次倍速就整集重载），
+   * 但 loadedmetadata 回填时要读最新值 */
+  const rateRef = useRef(rate);
+  rateRef.current = rate;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [controlsVisible, setControlsVisible] = useState(true);
@@ -362,6 +366,12 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
       if (disposed) return;
       setLoading(false);
       setDuration(video.duration || 0);
+      // 换集/换源后重新挂载媒体，playbackRate 会跟着新元素/新源回到默认值；
+      // 这里按用户选的倍速再落一次（default 也写，下次 load 才不会被复位）。
+      if (rateRef.current !== 1) {
+        video.playbackRate = rateRef.current;
+        video.defaultPlaybackRate = rateRef.current;
+      }
       // 续播阈值：看到 5 秒以上才续（片头几秒通常只是台标，续了反而奇怪），
       // 离结尾不足 5 秒也不续（那基本已经看完了，再从尾巴播等于直接结束）。
       //
@@ -610,7 +620,11 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     const video = videoRef.current;
     if (!video) return;
     const next = rate >= 2 ? 1 : rate + 0.25;
+    // 两个都要写：媒体元素的 load 算法会把 playbackRate 复位成 defaultPlaybackRate，
+    // 只写 playbackRate 的话换集/换源/错误重建后就会悄悄回到 1×，而按钮还显示旧倍速。
     video.playbackRate = next;
+    video.defaultPlaybackRate = next;
+    rateRef.current = next;
     setRate(next);
   }, [rate]);
 
