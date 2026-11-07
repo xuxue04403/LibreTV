@@ -494,10 +494,11 @@ export const useAppStore = create<AppState>()(
           }
           const prev = s.skipMarks[key];
           const merged: SkipMarks = {
-            introEnd: patch.introEnd ?? prev?.introEnd,
-            outroStart: patch.outroStart ?? prev?.outroStart,
-            segments: patch.segments ?? prev?.segments ?? [],
-            enabled: patch.enabled ?? prev?.enabled,
+            // 显式传 undefined 表示清除该字段（面板里删单个标记要用）
+            introEnd: 'introEnd' in patch ? patch.introEnd : prev?.introEnd,
+            outroStart: 'outroStart' in patch ? patch.outroStart : prev?.outroStart,
+            segments: 'segments' in patch ? patch.segments ?? [] : prev?.segments ?? [],
+            enabled: 'enabled' in patch ? patch.enabled : prev?.enabled,
           };
           const next = normalizeSkipMarks({ ...s.skipMarks, [key]: merged });
           return { skipMarks: next };

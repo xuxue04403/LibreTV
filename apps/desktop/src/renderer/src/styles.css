@@ -810,6 +810,22 @@ textarea.input {
   transform: translate(-50%, -50%);
   box-shadow: 0 0 0 4px rgba(255, 107, 61, 0.25);
 }
+/* 跳过区间色带：片头/片尾琥珀，中段青色；不拦截指针，避免影响拖动 */
+.progress .skip-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  opacity: 0.55;
+  border-radius: 3px;
+}
+.progress .skip-band.intro,
+.progress .skip-band.outro {
+  background: rgba(255, 180, 60, 0.9);
+}
+.progress .skip-band.mid {
+  background: rgba(60, 210, 235, 0.85);
+}
 .controls-row {
   display: flex;
   align-items: center;
@@ -867,6 +883,47 @@ textarea.input {
 .drawer-body {
   overflow: auto;
   padding: 12px 14px 24px;
+}
+/* 跳过标记面板 */
+.skip-panel {
+  width: 420px;
+}
+.skip-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 6px 14px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 12px;
+}
+.skip-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.skip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.skip-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line);
+  font-size: 13px;
+  color: #cfd6e2;
+}
+.skip-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 消息条 */

@@ -22,6 +22,8 @@ export interface SearchOptions {
   maxPages?: number;
   /** 单源总死线（毫秒，默认 10000） */
   timeoutMs?: number;
+  /** 单源最多保留的结果数（默认 80；采集站一页常给 20-50 条，多页叠加后要设上限） */
+  maxResultsPerSource?: number;
   signal?: AbortSignal;
   /** 每个源结算时回调（健康源结果不必等坏源超时） */
   onSource?: (outcome: SourceSearchOutcome) => void;
@@ -35,6 +37,7 @@ export interface SearchResult {
 
 export const DEFAULT_SEARCH_TIMEOUT_MS = 10_000;
 export const DEFAULT_SEARCH_MAX_PAGES = 3;
+export const DEFAULT_SEARCH_MAX_RESULTS_PER_SOURCE = 80;
 
 interface CmsSearchPage {
   list?: unknown;
@@ -137,6 +140,8 @@ async function searchOne(
     list = dedupeResults(list);
     list = filterRelevantResults(list, wd);
     list = filterAdultResults(list, opts.filterAdult ?? true);
+    // 上限放在过滤之后：先砍数量会把可能相关的条目砍掉，留下的是无关条目
+    list = list.slice(0, Math.max(1, opts.maxResultsPerSource ?? DEFAULT_SEARCH_MAX_RESULTS_PER_SOURCE));
     return finish({ sourceKey: source.key, ok: true, list });
   };
 

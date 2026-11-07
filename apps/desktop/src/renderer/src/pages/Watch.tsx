@@ -13,6 +13,7 @@ import {
   pickEpisodeIndex,
   skipMarkKey,
   type PlaybackCandidate,
+  type SkipMarks,
 } from '@libretv/core';
 import { http, prefetchSegments, proxify } from '../lib/bridge';
 import { attachVolumeBoost, type VolumeBoostHandle } from '../lib/volume-boost';
@@ -126,6 +127,9 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
   const skipHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Shift+S 记下的中段起点，等 Shift+E 收尾 */
   const midStartRef = useRef<number | null>(null);
+  /** 跳过标记面板（标记列表 / 按剧开关 / 清除） */
+  const [skipPanelOpen, setSkipPanelOpen] = useState(false);
+  const marks = useAppStore((s) => s.skipMarks[skipKey]);
 
   /** 候选链：换源时可能按片名反查追加，所以放 state；ref 供回调读取最新值 */
   const [candidates, setCandidates] = useState<PlaybackCandidate[]>(target.candidates ?? []);
@@ -792,6 +796,10 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
             setCastOpen(false);
             break;
           }
+          if (skipPanelOpen) {
+            setSkipPanelOpen(false);
+            break;
+          }
           if (drawerOpen) {
             setDrawerOpen(false);
             break;
@@ -812,10 +820,32 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [applyFullscreen, castOpen, changeEpisode, drawerOpen, index, manualSwitch, onClose, revealControls, seekBy, skipKey, toast, toggleFullscreen, toggleMute, togglePlay, updateSkipMarks]);
+  }, [applyFullscreen, castOpen, changeEpisode, drawerOpen, index, manualSwitch, onClose, revealControls, seekBy, skipKey, skipPanelOpen, toast, toggleFullscreen, toggleMute, togglePlay, updateSkipMarks]);
 
   const playedPercent = duration > 0 ? (current / duration) * 100 : 0;
   const bufferedPercent = duration > 0 ? (buffered / duration) * 100 : 0;
+  /** 进度条上的跳过区间色带：片头/片尾琥珀色，中段青色 */
+  const skipBands = (() => {
+    if (!marks || duration <= 0) return [] as { start: number; end: number; kind: string }[];
+    const bands: { start: number; end: number; kind: string }[] = [];
+    if (marks.introEnd && marks.introEnd > 0) bands.push({ start: 0, end: marks.introEnd, kind: 'intro' });
+    for (const segment of marks.segments) bands.push({ start: segment.start, end: segment.end, kind: 'mid' });
+    if (marks.outroStart && marks.outroStart < duration) bands.push({ start: marks.outroStart, end: duration, kind: 'outro' });
+    return bands;
+  })();
+
+  /** 面板里的打点：以当前进度为准 */
+  const markNow = (patch: Partial<SkipMarks>) => {
+    if (!Number.isFinite(current) || current <= 0) return;
+    updateSkipMarks(skipKey, patch);
+  };
+  const toggleDramaSkip = () => {
+    updateSkipMarks(skipKey, { enabled: marks?.enabled === false });
+  };
+  const clearDramaMarks = () => {
+    updateSkipMarks(skipKey, null);
+    toast.ok('已清除本剧的跳过标记');
+  };
 
   const seekToRatio = (ratio: number) => {
     const video = videoRef.current;
@@ -925,6 +955,9 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
             </div>
           </div>
           <div className="spacer" />
+          <button className="ctrl" onClick={() => setSkipPanelOpen(true)} title="跳过标记（Shift+I/O/S/E）">
+            <Icon name="sliders" size={20} />
+          </button>
           <button className="ctrl" onClick={() => setCastOpen(true)} title="投屏到电视（DLNA）">
             <Icon name="tv" size={20} />
           </button>
@@ -950,6 +983,16 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
           >
             <div className="buffered" style={{ width: `${bufferedPercent}%` }} />
             <div className="played" style={{ width: `${playedPercent}%` }} />
+            {skipBands.map((band, i) => (
+              <div
+                key={`${band.kind}-${i}`}
+                className={`skip-band ${band.kind}`}
+                style={{
+                  left: `${(band.start / duration) * 100}%`,
+                  width: `${Math.max(0.4, ((band.end - band.start) / duration) * 100)}%`,
+                }}
+              />
+            ))}
             <div className="knob" style={{ left: `${playedPercent}%` }} />
           </div>
           <div className="controls-row">
@@ -1074,6 +1117,112 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
                   </button>
                 ))}
               </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {skipPanelOpen && (
+        <>
+          <div className="drawer-mask" onClick={() => setSkipPanelOpen(false)} />
+          <div className="drawer skip-panel">
+            <div className="drawer-head">
+              <div>
+                <div style={{ fontWeight: 600 }}>跳过标记</div>
+                <div style={{ color: '#8d97a8', fontSize: 12 }}>
+                  按剧保存，同名各集共用 · Shift+I 片头结束 / Shift+O 片尾开始 / Shift+S+E 中段
+                </div>
+              </div>
+              <button className="ctrl" onClick={() => setSkipPanelOpen(false)} aria-label="关闭">
+                <Icon name="x" size={18} />
+              </button>
+            </div>
+            <div className="drawer-body">
+              <div className="skip-row">
+                <div>
+                  <div style={{ fontWeight: 600 }}>自动跳过</div>
+                  <div style={{ color: '#8d97a8', fontSize: 12 }}>只影响本剧；关闭后保留标记</div>
+                </div>
+                <button
+                  className={`switch${marks?.enabled !== false ? ' on' : ''}`}
+                  onClick={toggleDramaSkip}
+                  aria-label="自动跳过"
+                />
+              </div>
+              <div className="skip-actions">
+                <button className="btn ghost" onClick={() => markNow({ introEnd: current })}>
+                  片头结束 {formatTime(current)}
+                </button>
+                <button className="btn ghost" onClick={() => markNow({ outroStart: current })}>
+                  片尾开始 {formatTime(current)}
+                </button>
+                <button
+                  className="btn ghost"
+                  onClick={() =>
+                    markNow({
+                      segments: [
+                        ...(marks?.segments ?? []),
+                        { start: midStartRef.current ?? current, end: Math.max(current, (midStartRef.current ?? current) + 1) },
+                      ],
+                    })
+                  }
+                >
+                  记录中段
+                </button>
+              </div>
+              {!marks ? (
+                <div style={{ color: '#8d97a8', fontSize: 13, padding: '10px 2px' }}>
+                  还没有标记。播放到片头结束处按 Shift+I，或点上面的按钮直接记录。
+                </div>
+              ) : (
+                <div className="skip-list">
+                  {typeof marks.introEnd === 'number' && (
+                    <div className="skip-item">
+                      <span>片头结束 · {formatTime(marks.introEnd)}</span>
+                      <button
+                        className="ctrl"
+                        onClick={() => updateSkipMarks(skipKey, { introEnd: undefined })}
+                        aria-label="删除片头标记"
+                      >
+                        <Icon name="trash" size={16} />
+                      </button>
+                    </div>
+                  )}
+                  {typeof marks.outroStart === 'number' && (
+                    <div className="skip-item">
+                      <span>片尾开始 · {formatTime(marks.outroStart)}</span>
+                      <button
+                        className="ctrl"
+                        onClick={() => updateSkipMarks(skipKey, { outroStart: undefined })}
+                        aria-label="删除片尾标记"
+                      >
+                        <Icon name="trash" size={16} />
+                      </button>
+                    </div>
+                  )}
+                  {marks.segments.map((segment, i) => (
+                    <div className="skip-item" key={`${segment.start}-${i}`}>
+                      <span>
+                        中段 {i + 1} · {formatTime(segment.start)} - {formatTime(segment.end)}
+                      </span>
+                      <button
+                        className="ctrl"
+                        onClick={() =>
+                          updateSkipMarks(skipKey, {
+                            segments: marks.segments.filter((_, j) => j !== i),
+                          })
+                        }
+                        aria-label="删除中段标记"
+                      >
+                        <Icon name="trash" size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button className="btn ghost" style={{ marginTop: 10 }} onClick={clearDramaMarks}>
+                清除本剧全部标记
+              </button>
             </div>
           </div>
         </>

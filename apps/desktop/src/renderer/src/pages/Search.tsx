@@ -4,6 +4,7 @@ import {
   describeSourceDisable,
   groupSearchResults,
   isSourceDisabled,
+  rankSearchGroups,
   searchSources,
   type AggregatedGroup,
   type SourceSearchOutcome,
@@ -68,6 +69,51 @@ export function SearchPage({
   const runId = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
 
+  const commitOutcome = useCallback(
+    (outcome: SourceSearchOutcome, myRun: number, word: string) => {
+      if (myRun !== runId.current) return;
+      const merged = [...outcomesRef.current.filter((o) => o.sourceKey !== outcome.sourceKey), outcome];
+      outcomesRef.current = merged;
+      // 第一个源回来后就把缓存结果换掉：缓存里没有「哪些源有/没有」的信息，
+      // 混着用会让用户以为某个源也返回了这些条目
+      setFromCache(false);
+      const items = merged.flatMap((o) => (o.ok ? o.list : []));
+      setState({ outcomes: merged, groups: rankSearchGroups(groupSearchResults(items), word) });
+      // 连续失败累计到阈值会在这里返回事件：暂停后本次搜索不再请求它，
+      // 下次搜索直接跳过——死源不该让每次搜索都先等满 10 秒超时。
+      const event = recordSourceOutcome(outcome.sourceKey, outcome.ok);
+      if (event) {
+        const name = sources.find((s) => s.key === outcome.sourceKey)?.name ?? outcome.sourceName;
+        toast.push(`${name} 连续失败，${describeSourceDisable(event.level)}`);
+      }
+    },
+    [recordSourceOutcome, sources, toast]
+  );
+
+  /** 只重试一个失败源：不重跑整轮搜索，已有的结果不闪 */
+  const retrySource = useCallback(
+    async (sourceKey: string) => {
+      const word = keyword.trim();
+      const source = searchableSources.find((s) => s.key === sourceKey);
+      if (!word || !source) return;
+      const myRun = runId.current;
+      try {
+        const result = await searchSources({
+          wd: word,
+          sources: [source],
+          http,
+          filterAdult: settings.adultFilter,
+          maxPages: 3,
+          timeoutMs: 10_000,
+        });
+        for (const outcome of result.outcomes) commitOutcome(outcome, myRun, word);
+      } catch (err) {
+        if (myRun === runId.current) toast.err(err instanceof Error ? err.message : '重试失败');
+      }
+    },
+    [commitOutcome, keyword, searchableSources, settings.adultFilter, toast]
+  );
+
   const run = useCallback(
     async (kw: string) => {
       const word = kw.trim();
@@ -93,27 +139,9 @@ export function SearchPage({
       // 先出缓存结果，网络结果回来后覆盖：同一个片名搜第二遍不该再等十几秒
       const cached = cachedSearch(searchableSources, settings.adultFilter, word);
       if (cached && cached.length > 0) {
-        setState({ outcomes: [], groups: groupSearchResults(cached) });
+        setState({ outcomes: [], groups: rankSearchGroups(groupSearchResults(cached), word) });
         setFromCache(true);
       }
-
-      const commit = (outcome: SourceSearchOutcome) => {
-        if (myRun !== runId.current) return;
-        const merged = [...outcomesRef.current.filter((o) => o.sourceKey !== outcome.sourceKey), outcome];
-        outcomesRef.current = merged;
-        // 第一个源回来后就把缓存结果换掉：缓存里没有「哪些源有/没有」的信息，
-        // 混着用会让用户以为某个源也返回了这些条目
-        setFromCache(false);
-        const items = merged.flatMap((o) => (o.ok ? o.list : []));
-        setState({ outcomes: merged, groups: groupSearchResults(items) });
-        // 连续失败累计到阈值会在这里返回事件：暂停后本次搜索不再请求它，
-        // 下次搜索直接跳过——死源不该让每次搜索都先等满 10 秒超时。
-        const event = recordSourceOutcome(outcome.sourceKey, outcome.ok);
-        if (event) {
-          const name = sources.find((s) => s.key === outcome.sourceKey)?.name ?? outcome.sourceName;
-          toast.push(`${name} 连续失败，${describeSourceDisable(event.level)}`);
-        }
-      };
 
       try {
         const result = await searchSources({
@@ -124,7 +152,7 @@ export function SearchPage({
           maxPages: 3,
           timeoutMs: 10_000,
           signal: controller.signal,
-          onSource: commit,
+          onSource: (outcome) => commitOutcome(outcome, myRun, word),
         });
         if (myRun !== runId.current) return;
         if (result.list.length === 0 && result.failures.length > 0) {
@@ -145,7 +173,7 @@ export function SearchPage({
         if (myRun === runId.current) setLoading(false);
       }
     },
-    [addRecentSearch, recordSourceOutcome, searchableSources, settings.adultFilter, sources, toast]
+    [addRecentSearch, commitOutcome, searchableSources, settings.adultFilter, sources, toast]
   );
 
   useEffect(() => {
@@ -218,13 +246,22 @@ export function SearchPage({
           ) : null}
 
           <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
-            {state.outcomes.map((o) => (
-              <span key={o.sourceKey} className={`chip ${o.ok ? 'ok' : o.timedOut ? 'warn' : 'err'}`}>
-                {o.ok
-                  ? `${o.sourceName} · ${o.list.length} 条 · ${o.ms ?? 0}ms`
-                  : `${o.sourceName} · ${o.timedOut ? '超时' : o.error ?? '失败'}`}
-              </span>
-            ))}
+            {state.outcomes.map((o) =>
+              o.ok ? (
+                <span key={o.sourceKey} className="chip ok">
+                  {o.sourceName} · {o.list.length} 条 · {o.ms ?? 0}ms
+                </span>
+              ) : (
+                <button
+                  key={o.sourceKey}
+                  className={`chip ${o.timedOut ? 'warn' : 'err'}`}
+                  title="点击只重试这个源"
+                  onClick={() => void retrySource(o.sourceKey)}
+                >
+                  {o.sourceName} · {o.timedOut ? '超时' : o.error ?? '失败'} · 重试
+                </button>
+              )
+            )}
             {!loading && state.outcomes.length > 0 ? (
               <span className="chip">
                 可用 {okCount} / 失败 {failCount}

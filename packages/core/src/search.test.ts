@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { groupSearchResults, dedupeResults } from './group';
+import { groupSearchResults, dedupeResults, rankSearchGroups } from './group';
 import type { HttpClient, HttpResponse } from './http';
 import { searchSources } from './search';
 import type { SearchResultItem, SourceConfig } from './types';
@@ -67,6 +67,17 @@ describe('searchSources', () => {
     expect(seen.sort()).toEqual(['k1', 'k2']);
   });
 
+  it('单源结果超过上限时截断', async () => {
+    const http = makeHttp(() =>
+      res({
+        pagecount: 1,
+        list: Array.from({ length: 10 }, (_, i) => ({ vod_id: i + 1, vod_name: `X ${i}` })),
+      })
+    );
+    const result = await searchSources({ wd: 'X', sources: [s1], http, maxResultsPerSource: 4 });
+    expect(result.list).toHaveLength(4);
+  });
+
   it('源超时被标记 timedOut 且不影响其他源', async () => {
     const http = makeHttp(async (url) => {
       if (url.startsWith('https://a.example.com')) {
@@ -126,6 +137,36 @@ describe('groupSearchResults', () => {
 
   it('dedupeResults 按源 + vodId 去重', () => {
     expect(dedupeResults([item('a', 's'), item('a', 's'), item('a', 't')])).toHaveLength(2);
+  });
+});
+
+describe('rankSearchGroups', () => {
+  const item = (name: string, sourceName: string): SearchResultItem => ({
+    sourceKey: sourceName,
+    sourceName,
+    vodId: `${sourceName}-${name}`,
+    name,
+  });
+
+  it('精确命中排在前缀/包含/分词命中之前', () => {
+    const groups = groupSearchResults([
+      item('流浪地球2 高清', '甲源'),
+      item('流浪地球', '乙源'),
+      item('流浪地球 幕后花絮', '丙源'),
+    ]);
+    const ranked = rankSearchGroups(groups, '流浪地球');
+    expect(ranked[0].name).toBe('流浪地球');
+  });
+
+  it('同分时源更多的排前面，再按标题长度兜底', () => {
+    const groups = groupSearchResults([
+      item('沙丘 导演剪辑版', '甲源'),
+      item('沙丘', '乙源'),
+      item('沙丘', '丙源'),
+    ]);
+    const ranked = rankSearchGroups(groups, '沙丘');
+    expect(ranked[0].items).toHaveLength(2);
+    expect(ranked[1].name).toBe('沙丘 导演剪辑版');
   });
 });
 

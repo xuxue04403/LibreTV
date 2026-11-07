@@ -249,9 +249,17 @@ DetailPanel 打开
 - 搜索页顶部列出「源名 · 剩 N 分钟 · 恢复」，全暂停时给空态与恢复入口；7 天未参与搜索的普通条目清理，但仍在暂停期的条目保留。
 - 纯逻辑在 `packages/core/src/health.ts`，TV 端未接。
 
+### 检索结果相关性排序
+
+多源搜索的原始顺序是「谁先回来谁靠前」，同一个片名两次搜索可能排得不一样。现在在过滤之后补一层稳定排序：
+
+- **单源先截断**：每源最多 80 条（`DEFAULT_SEARCH_MAX_RESULTS_PER_SOURCE`），且是在相关性/成人过滤**之后**截断，避免无关条目占名额。
+- **相关性分**：精确匹配 100、前缀 70、包含 50−位置、分词全中 25，再加 `min(源数, 6) × 3`；同分按标题长度、再按 `zh-CN` 排序（`rankSearchGroups`，`packages/core/src/group.ts`）。
+- **失败源单源重试**：搜索页底部失败 chip 可点，只重跑该源并合并结果，不整轮重搜；重试同样计入源健康度。
+
 ### 跳过片段与音量增强
 
-- **跳过片段**：按「剧名 + 年份」聚合，跨集、跨同名源共享。播放中 `Shift+I` 记片头结束、`Shift+O` 记片尾开始、`Shift+S` / `Shift+E` 记中段区间；`timeupdate` 命中区间自动跳（片头/中段跳到末尾，片尾直接结束本集并交给自动连播）。跳过时给 8 秒「撤销」条；每部剧可单独关闭。存储形状 `SkipMarks { introEnd, outroStart, segments[], enabled }`，逻辑在 `packages/core/src/skip-marks.ts`。
+- **跳过片段**：按「剧名 + 年份」聚合，跨集、跨同名源共享。播放中 `Shift+I` 记片头结束、`Shift+O` 记片尾开始、`Shift+S` / `Shift+E` 记中段区间；`timeupdate` 命中区间自动跳（片头/中段跳到末尾，片尾直接结束本集并交给自动连播）。跳过时给 8 秒「撤销」条；播放器右上「跳过标记」面板可查看/删除单个标记、按剧关闭自动跳过、一键清除，进度条上以琥珀/青色色带标出片头片尾与中段。存储形状 `SkipMarks { introEnd, outroStart, segments[], enabled }`，逻辑在 `packages/core/src/skip-marks.ts`。
 - **音量增强**：默认关闭，开启后 `Gain 1.8 → DynamicsCompressor(0/0/20/0.003/0.25)` 限制峰值。`createMediaElementSource` 每个 video 只建一次（WeakMap）；关闭增强走「单位增益直通」而不是 `disconnect`（后者会永久静音）；AudioContext 处于 suspended 时先等用户手势，期间保持原生音频。视频元素加 `crossOrigin="anonymous"`，依赖代理已回 `Access-Control-Allow-Origin: *`。
 - 两者都不进 TV 端；TV 没有任何倍速控制，桌面端的倍速用 `defaultPlaybackRate` + `rateRef` 保证换集/重建后不回落（不监听 `ratechange`，避免加载复位被误判成用户改速）。
 
