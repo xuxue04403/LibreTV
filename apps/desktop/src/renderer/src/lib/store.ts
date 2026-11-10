@@ -251,8 +251,19 @@ export const useAppStore = create<AppState>()(
           // 用户删掉过的内置源不要再塞回来：升级补源不能把「我不想要这个站」
           // 变成「每次升级都复活一次」。
           const removed = new Set(s.removedDefaultUrls);
-          const added = DEFAULT_SOURCES.filter((d) => !existingUrls.has(d.url) && !removed.has(d.url));
-          const sources = [...merged, ...added];
+          // 内置源**换了地址**（同 key、不同 url）时要用新地址替换旧条目：key 是按下标
+          // 生成的，光按 url 判重会留下一条旧地址的 `builtin_N`，再追加一条同 key 的
+          // 新条目——列表里出现两条同名同 key 的源，React key 与勾选状态都会打架。
+          // 直播源一直有这一步（下面的 freshByKey），点播源以前漏了。
+          const srcFresh = new Map<string, (typeof DEFAULT_SOURCES)[number]>();
+          for (const d of DEFAULT_SOURCES) {
+            const local = merged.find((x) => x.key === d.key);
+            if (local && local.url !== d.url && !removed.has(local.url)) srcFresh.set(d.key, d);
+          }
+          const added = DEFAULT_SOURCES.filter(
+            (d) => !existingUrls.has(d.url) && !removed.has(d.url) && !merged.some((x) => x.key === d.key)
+          );
+          const sources = [...merged.map((x) => srcFresh.get(x.key) ?? x), ...added];
           const liveRemoved = removed;
           const addedLive = DEFAULT_LIVE_SOURCES.filter(
             (d) => !s.liveSources.some((x) => x.url === d.url) && !liveRemoved.has(d.url)
@@ -279,7 +290,7 @@ export const useAppStore = create<AppState>()(
               sources.some((x) => x.key === key)
             ),
             liveSources,
-            // 只勾选清单里「默认启用」的内置源：两个 iptv-org 源这类默认关掉的
+            // 只勾选清单里「默认启用」的内置源：iptv-org 两条与 Guovin 这类默认关掉的
             // 源虽然进列表，但不参与加载，否则新用户开箱就是一屏死台。
             liveSelectedKeys: [
               ...new Set([

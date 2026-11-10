@@ -43,11 +43,12 @@ export const DEFAULT_LIVE_SOURCES: LiveSourceConfig[] = (data.liveSources ?? [])
 /**
  * 新装用户默认启用的内置直播源。
  *
- * 「iptv-org 全球频道」有一万多个频道、「iptv-org 中国频道」实测 138 个里只有 66
- * 个能打开，开着它们只会让用户随便点一个台就是死台。清单里用 `selected: false`
- * 标出来：源照样加进列表，只是默认不勾选，需要时在设置里手动打开。默认启用的
- * 是 Collect-IPTV 精选（等距抽测 65% 可播、13/23 为 1080p）与 vbskycn 国内 IPv4
- * （抽测 79% 可播、含 3840×2160 的湖南卫视），两者同名的台在合并时自动去重。
+ * 「iptv-org 全球频道」「iptv-org 中国频道」「Guovin 央视卫视」在国内等距抽测的
+ * 可播率分别只有 8%~30%、10%~15%、18%~23%，开着它们只会让用户随便点一个台就是死台。
+ * 清单里用 `selected: false` 标出来：源照样加进列表，只是默认不勾选，需要时在设置里
+ * 手动打开。默认启用的是 vbskycn 国内 IPv4（73%~78% 可播、含 3840×2160）、zhi35
+ * 央视卫视港澳台（55%~60%）、best-fan 国内全量（57%~60%）与 Collect-IPTV 精选
+ * （40%~43%），同名的台在合并时按清单顺序去重，因此清单里按可播率从高到低排列。
  */
 export const DEFAULT_LIVE_SELECTED_KEYS: string[] = (data.liveSources ?? [])
   .map((source, index) => (source.selected === false ? null : `builtin_live_${index}`))

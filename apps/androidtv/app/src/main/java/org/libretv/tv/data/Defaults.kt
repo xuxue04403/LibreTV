@@ -62,10 +62,12 @@ object Defaults {
     /**
      * 新装用户默认启用的内置直播源 key。
      *
-     * 两个 iptv-org 源实测可播率太低（全球榜一万多个频道绝大多数境内打不开，中国榜
-     * 138 个里只有 66 个能开），默认启用它们只会让用户随手点一个台就是死台。清单里
-     * 用 `"selected": false` 标出来：源照样进列表，只是默认不勾选。默认启用的只有
-     * Collect-IPTV 精选（实测 94% 可播）。
+     * 三个源实测可播率太低（国内等距抽测：iptv-org 全球榜 8%~30%、中国榜
+     * 10%~15%、Guovin 央视卫视 18%~23%），默认启用它们只会让用户随手点一个台就是
+     * 死台。清单里用 `"selected": false` 标出来：源照样进列表，只是默认不勾选。默认
+     * 启用的是 vbskycn 国内 IPv4（73%~78%）、zhi35 央视卫视港澳台（55%~60%）、
+     * best-fan 国内全量（57%~60%）与 Collect-IPTV 精选（40%~43%），四者同名的台在
+     * 合并时按清单顺序去重。
      */
     fun defaultLiveSelectedKeys(context: Context): Set<String> =
         defaultLiveSelectedKeysFrom(assetText(context))

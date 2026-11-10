@@ -1,46 +1,60 @@
 {
   "name": "LibreTV 内置默认源",
-  "version": 6,
+  "version": 7,
   "notice": "以下地址均为第三方公开接口，与本项目无隶属关系；仅作为开箱即用的示例，可在设置中随时删除。内容合法性由对应数据源负责。",
   "sources": [
     { "name": "非凡资源", "url": "https://api.ffzyapi.com/api.php/provide/vod" },
     { "name": "量子资源", "url": "https://cj.lziapi.com/api.php/provide/vod" },
-    { "name": "魔都资源", "url": "https://caiji.moduapi.cc/api.php/provide/vod" },
+    { "name": "魔都资源", "url": "https://www.mdzyapi.com/api.php/provide/vod" },
     { "name": "360 资源", "url": "https://www.360zy.com/api.php/provide/vod" },
-    { "name": "电影天堂", "url": "http://caiji.dyttzyapi.com/api.php/provide/vod" },
+    { "name": "电影天堂", "url": "https://caiji.dyttzyapi.com/api.php/provide/vod" },
     { "name": "极速资源", "url": "https://jszyapi.com/api.php/provide/vod" },
-    { "name": "红牛资源", "url": "https://www.hongniuzy2.com/api.php/provide/vod" },
+    { "name": "红牛资源", "url": "https://www.hongniuzy3.com/api.php/provide/vod" },
     { "name": "如意资源", "url": "https://cj.rycjapi.com/api.php/provide/vod" },
     { "name": "暴风资源", "url": "https://bfzyapi.com/api.php/provide/vod" },
-    { "name": "百度资源", "url": "https://api.apibdzy.com/api.php/provide/vod" }
+    { "name": "百度资源", "url": "https://api.apibdzy.com/api.php/provide/vod" },
+    { "name": "金鹰资源", "url": "https://jyzyapi.com/api.php/provide/vod" },
+    { "name": "新浪资源", "url": "https://api.xinlangapi.com/xinlangapi.php/provide/vod" },
+    { "name": "光速资源", "url": "https://api.guangsuapi.com/api.php/provide/vod" }
   ],
   "liveSources": [
     {
       "name": "iptv-org 全球频道",
       "url": "https://iptv-org.github.io/iptv/index.m3u",
       "selected": false,
-      "note": "一万多个频道，绝大多数在境内打不开。默认不启用，需要外语台时在设置里手动打开。"
+      "note": "一万多个频道、清单 11MB，境内下载常常 25 秒都下不完，等距抽测可播率只有 8%~30%。默认不启用，需要外语台时在设置里手动打开。"
     },
     {
       "name": "iptv-org 中国频道",
       "url": "https://iptv-org.github.io/iptv/countries/cn.m3u",
       "selected": false,
-      "note": "实测 138 个频道里只有 66 个能打开（48%），其余是 403、超时或返回网页错误页。默认不启用，需要时可在设置里手动打开。"
-    },
-    {
-      "name": "Collect-IPTV 精选",
-      "url": "https://cdn.jsdelivr.net/gh/zilong7728/Collect-IPTV@main/best_sorted.m3u",
-      "note": "上游定期重建，频道数在 500~630 之间浮动。抽测 40 个：26 个可播（65%），能测到分辨率的 23 个里 13 个 1920×1080、6 个 1280×720、4 个更低；首响中位数 0.17s。走 jsDelivr 镜像，实测比 ghfast.top 那种 GitHub 反代快，也不容易断。"
+      "note": "151 个频道、27 个分组，清单本身能下（约 0.9 秒）。但境内等距抽测 40 个只有 4~6 个能播（10%~15%），其余是 403、超时或返回网页错误页。默认不启用，需要时可在设置里手动打开。"
     },
     {
       "name": "vbskycn 国内 IPv4",
-      "url": "https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv4.m3u",
-      "note": "308 个频道，与上面那源同名台会自动去重（排序靠后的源只补缺）。等距抽测 39 个：31 个可播（79%），27 个测到分辨率里 11 个 1920×1080、8 个 1280×720；首响中位数 0.14s。含贵州/黑龙江等卫视。"
+      "url": "https://fastly.jsdelivr.net/gh/vbskycn/iptv@master/tv/iptv4.m3u",
+      "note": "398 个频道、11 个分组，等距抽测 40 个里 29~31 个可播（73%~78%），测到 4~5 个分辨率、含一个 3840×2160。走 fastly.jsdelivr.net 镜像——国内直连 raw.githubusercontent.com 会被断。可播率最高，排在前面：同名的台以它为准。"
+    },
+    {
+      "name": "zhi35 央视卫视港澳台",
+      "url": "https://fastly.jsdelivr.net/gh/zhi35/iptv@master/iptv.m3u",
+      "note": "397 个频道、6 个分组（央视频道 / 卫视频道 / 地方频道 / 电影频道 / 港澳台 / 直播中国），等距抽测 40 个里 22~24 个可播（55%~60%），首响中位数 1.1~1.4 秒。走 fastly.jsdelivr.net 镜像，用来补港澳台与电影频道。"
+    },
+    {
+      "name": "best-fan 国内全量",
+      "url": "https://testingcf.jsdelivr.net/gh/best-fan/iptv-sources@main/cn_all_status.m3u8",
+      "note": "199 个频道、9 个分组，等距抽测 40 个里 23~24 个可播（57%~60%），首响中位数 1.8~2.1 秒。清单由上游按「状态优先」重排，走 testingcf.jsdelivr.net 镜像。"
+    },
+    {
+      "name": "Collect-IPTV 精选",
+      "url": "https://fastly.jsdelivr.net/gh/zilong7728/Collect-IPTV@main/best_sorted.m3u",
+      "note": "600 多个频道、40 个分组，频道最多但可播率偏低：等距抽测 40 个里 16~17 个能播（40%~43%），首响中位数 1.0~1.1 秒。走 fastly.jsdelivr.net 镜像（cdn.jsdelivr.net 在国内直连被断，整份清单都下不下来）。放在中间，主要用来补前面几个源缺的台。"
     },
     {
       "name": "Guovin 央视卫视",
-      "url": "https://cdn.jsdelivr.net/gh/Guovin/iptv-api@gd/output/ipv4/result.m3u",
-      "note": "473 个频道，主要用来补前两个源缺的台（CCTV-1、CCTV-6、北京卫视等）。等距抽测 40 个：30 个可播（75%），25 个测到分辨率里 17 个 1920×1080、8 个 1280×720；首响中位数 0.93s。走 jsDelivr，直接连 raw.githubusercontent 时好时坏。"
+      "url": "https://testingcf.jsdelivr.net/gh/Guovin/iptv-api@gd/output/ipv4/result.m3u",
+      "selected": false,
+      "note": "466 个频道、31 个分组，但境内等距抽测 40 个只有 8~9 个能播（18%~23%），加载还要 1.2~2.6 秒。默认不启用；想要它补 CCTV-1、CCTV-6 之类的缺台时，在设置里手动打开。"
     }
   ]
 }

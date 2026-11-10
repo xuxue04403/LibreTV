@@ -47,8 +47,8 @@
 | 观看进度续播 / 历史 / 收藏 | ✅ 同一片子跨源只留一条记录（同名不同年份不合并）| ✅ 同左 |
 | 数据源管理、订阅导入（LibreTV / TVBOX）、导入导出 | ✅ | ✅ |
 | **投屏** | ✅ DLNA **发送端**（把影片推到电视/盒子） | ✅ DLNA **接收端**（手机投到电视） |
-| 内置默认源（点播 10 个 + 直播 3 个） | ✅ 首次启动导入，可删除/恢复 | ✅ 同左（同一份 `defaults/sources.json`） |
-| **直播源默认只启用 Collect-IPTV**（两个 iptv-org 源默认不勾：实测可播率 48% 以下） | ✅ 设置里一键打开 | ✅ 同左 |
+| 内置默认源（点播 13 个 + 直播 7 个） | ✅ 首次启动导入，可删除/恢复 | ✅ 同左（同一份 `defaults/sources.json`） |
+| **直播默认启用 4 个国内实测可播的源**（vbskycn 73%~78% / zhi35 55%~60% / best-fan 57%~60% / Collect-IPTV 40%~43%；iptv-org 两条与 Guovin 默认不勾） | ✅ 设置里一键打开 | ✅ 同左 |
 | **内置源清单可升级**（`version` 递增时自动补齐缺的源，删过的不复活） | ✅ | ✅ |
 
 ### 桌面端
@@ -145,9 +145,10 @@ TV 端没有真机也能验：普通 `system-images;android-35;default;x86_64` �
 
 ## 关于内置源与内容
 
-- 内置的点播源是**第三方公开 Apple CMS 接口**（非凡 / 量子 / 魔都 / 360 / 电影天堂 / 极速 / 红牛 / 如意 / 暴风 / 百度），直播源包括 [iptv-org](https://github.com/iptv-org/iptv) 的公开 M3U 列表与 [Collect-IPTV](https://github.com/zilong7728/Collect-IPTV) 的精选列表；它们与本项目**无隶属关系**，仅作为开箱即用的示例。
-- 直播列表里的死链很常见（返回 HTML 错误页、被地区限制）。实测 **iptv-org 中国频道只有 48% 能打开**（403 / 超时 / HTML 错误页），Collect-IPTV 精选则是 94%。播放页 15 秒内没有画面就明确提示「可能已下线或被地区限制」，直接 `↑`/`↓` 换台即可，不会一直卡在「正在连接…」。
-- **默认只启用 Collect-IPTV 精选这一个直播源**。两个 iptv-org 源仍在列表里、但默认不勾选（全球榜一万多个频道、中国榜实测 138 个里只有 66 个能打开）。设置里点一下就能打开，需要外语台或更多频道时再用。
+- 内置的点播源是**第三方公开 Apple CMS 接口**（非凡 / 量子 / 魔都 / 360 / 电影天堂 / 极速 / 红牛 / 如意 / 暴风 / 百度 / 金鹰 / 新浪 / 光速），直播源包括 [iptv-org](https://github.com/iptv-org/iptv)、[vbskycn/iptv](https://github.com/vbskycn/iptv)、[zhi35/iptv](https://github.com/zhi35/iptv)、[best-fan/iptv-sources](https://github.com/best-fan/iptv-sources)、[Collect-IPTV](https://github.com/zilong7728/Collect-IPTV) 与 [Guovin/iptv-api](https://github.com/Guovin/iptv-api) 的公开 M3U 列表；它们与本项目**无隶属关系**，仅作为开箱即用的示例。
+- 上述清单是 2026-11 在中国移动宽带（未挂代理）下逐条实测挑出来的：13 个点播源里 12 个能完整走完「分类 → 搜索 → 详情 → m3u8 → 分片」全链路，直播源按等距抽 40 个频道的可播率排序。直播死链仍然常见（返回 HTML 错误页、被地区限制），播放页 15 秒内没有画面就明确提示「可能已下线或被地区限制」，直接 `↑`/`↓` 换台即可，不会一直卡在「正在连接…」。
+- **默认启用 4 个直播源**（vbskycn 国内 IPv4 / zhi35 央视卫视港澳台 / best-fan 国内全量 / Collect-IPTV 精选，多轮抽测可播率 73%~78% / 55%~60% / 57%~60% / 40%~43%）。iptv-org 全球频道（8%~30%）、iptv-org 中国频道（10%~15%）与 Guovin 央视卫视（18%~23%）仍在列表里、但默认不勾选，设置里点一下就能打开。
+- 清单里的 GitHub 托管源一律走 `fastly.jsdelivr.net` / `testingcf.jsdelivr.net` 镜像：国内直连 `raw.githubusercontent.com` 与 `cdn.jsdelivr.net` 会被重置，源整份都下不下来。
 - 本项目**不存储、不制作、不分发**任何视频内容，只提供第三方公开接口的解析与播放能力；内容的合法性由对应数据源负责。
 - 所有源都可以在设置里停用/删除，也可以完全手动添加自己的源或订阅。
 
@@ -155,6 +156,8 @@ TV 端没有真机也能验：普通 `system-images;android-35;default;x86_64` �
 
 - [上游分析与「服务端 → 客户端」改造决策](docs/analysis.md)
 - [架构设计（进程模型 / 播放链路 / 投屏链路）](docs/architecture.md)
+- [内置播放源体检与换血（2026-11，清单 version 7）](docs/source-audit-2026-11.md)
+- [1.3.7 发布说明](docs/release-1.3.7.md)
 - [构建、打包与联调指南](docs/build.md)
 
 ## 许可证

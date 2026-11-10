@@ -414,8 +414,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val removed = current.removedDefaultUrls.toSet()
         val addedVod = vod.filter { s -> current.sources.none { it.url == s.url } && s.url !in removed }
         val addedLive = liveSources.filter { s -> current.liveSources.none { it.url == s.url } && s.url !in removed }
-        // 只勾选清单里「默认启用」的内置直播源：两个 iptv-org 源这类默认关掉的
-        // 源进列表但不参与加载，否则新用户开箱就是一屏死台。
+        // 只勾选清单里「默认启用」的内置直播源：两个 iptv-org 源与 Guovin 这类
+        // 默认关掉的源进列表但不参与加载，否则新用户开箱就是一屏死台。
         val defaultLiveSelected = Defaults.defaultLiveSelectedKeys(getApplication())
         // v4 之前老用户是三个直播源全开的。清单把两个 iptv-org 源改成默认关闭后，
         // 光改 `selected` 对老用户没用（勾选状态早就存下来了），所以升级到
@@ -430,13 +430,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         store.update {
             // 内置源**换了地址**（同 key、不同 url）时用新地址替换旧条目：
             // key 是按下标生成的，光按 url 判重会让列表里出现两条同 key 的同名源
-            // （一条旧镜像、一条新镜像），勾选状态也会打架。
+            // （一条旧镜像、一条新镜像），勾选状态也会打架。直播源一直有这一步，
+            // 点播源以前漏了，同一站换域名时会留下一条永远连不上的旧条目。
+            val freshVodByKey = vod.filter { d ->
+                val local = it.sources.firstOrNull { s -> s.key == d.key }
+                local != null && local.url != d.url && local.url !in removed
+            }.associateBy { s -> s.key }
+            val mergedVod = it.sources.map { s -> freshVodByKey[s.key] ?: s }
+            val addedVodKeys = addedVod
+                .filter { s -> it.sources.none { old -> old.key == s.key } }
+                .map { s -> s.key }
             val freshByKey = addedLive.associateBy { s -> s.key }
             val mergedLive = it.liveSources.map { s -> freshByKey[s.key] ?: s } +
                 addedLive.filter { s -> it.liveSources.none { old -> old.key == s.key } }
             it.copy(
-                sources = (it.sources + addedVod).distinctBy { s -> s.url },
-                selected = (it.selected + addedVod.map { s -> s.key }).distinct(),
+                sources = (mergedVod + addedVod).distinctBy { s -> s.url },
+                selected = (it.selected + addedVodKeys).distinct(),
                 liveSources = mergedLive.distinctBy { s -> s.url },
                 liveSelected = (
                     liveBase + addedLive.filter { s -> s.key in defaultLiveSelected }.map { s -> s.key }

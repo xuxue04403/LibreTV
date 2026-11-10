@@ -70,10 +70,11 @@ class DefaultsSelectionTest {
     }
 
     @Test
-    fun `仓库里的真实清单默认只启用三个实测可播的源`() {
-        // 与 defaults/sources.json 保持同步：0=iptv-org 全球频道、1=iptv-org 中国频道
-        // 都标了 selected:false（实测可播率极低），2=Collect-IPTV 精选、3=vbskycn 国内
-        // IPv4 才是默认启用的两个（等距抽测 65% / 79% 可播）。
+    fun `仓库里的真实清单默认只启用四个实测可播的源`() {
+        // 与 defaults/sources.json 保持同步：0=iptv-org 全球频道、1=iptv-org 中国频道、
+        // 6=Guovin 央视卫视都标了 selected:false（国内等距抽测 8% / 10% / 18% 可播），
+        // 2=vbskycn 国内 IPv4、3=zhi35 央视卫视港澳台、4=best-fan 国内全量、
+        // 5=Collect-IPTV 精选才是默认启用的四个（抽测 75% / 60% / 60% / 40% 可播）。
         //
         // 清单由 gradle 的 copyDefaultSources 拷进 assets（preBuild 依赖），所以这里
         // 在几种可能的工作目录下都找一遍；找不到时必须让用例失败，不能 return 装作通过
@@ -89,9 +90,12 @@ class DefaultsSelectionTest {
             ) as java.io.File
         val text = file.readText()
         assertEquals(
-            setOf("builtin_live_2", "builtin_live_3", "builtin_live_4"),
+            setOf("builtin_live_2", "builtin_live_3", "builtin_live_4", "builtin_live_5"),
             Defaults.defaultLiveSelectedKeysFrom(text),
         )
-        assertEquals(setOf("builtin_live_0", "builtin_live_1"), Defaults.defaultLiveDisabledKeysFrom(text))
+        assertEquals(
+            setOf("builtin_live_0", "builtin_live_1", "builtin_live_6"),
+            Defaults.defaultLiveDisabledKeysFrom(text),
+        )
     }
 }

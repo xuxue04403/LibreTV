@@ -131,6 +131,8 @@ TV 端同构：`Repository.liveChannelsStream` 按 `batchSize = 120` 回调，`A
 | 实际可打开 | 66（**48%**） | 427（**94%**） |
 | 首响 p50 / p90 | 508ms / 994ms | **169ms** / 655ms |
 
+> 上表是 2026-10 在海外 IP 下测的旧数据。2026-11 换到国内网络复测后两边的可播率都明显下降（iptv-org 中国 10%~15%、Collect-IPTV 40%~43%），且 GitHub 托管的三个源直连全部加载失败——以 `version: 7` 那轮的结论为准，见下文「内置源的死链与镜像」。这里保留旧表只为说明当初为什么改成「默认只开健康源」。
+
 也就是说「加载不出来」约有一半来自**源数据本身**：iptv-org 中国榜里近一半是 403、超时或返回 HTML 错误页。默认把三个直播源全勾上、又按「全球频道（一万多个、绝大多数境内打不开）」排在最前，用户随手点一个就是死台。
 
 **改动 1：默认只开健康源。**`defaults/sources.json` 给两个 iptv-org 源加 `"selected": false`（外加 `note` 字段在设置页解释一句），`defaultsVersion` 4→5。默认启用的只有 Collect-IPTV 精选。源照样进列表，只是新装用户默认不勾。
@@ -187,7 +189,12 @@ renderer 选设备 ──▶ main: dlna:cast
 
 ### 内置默认源
 
-`defaults/sources.json` 是唯一事实来源：桌面端通过 Vite alias `@defaults` 在构建期内联，Android TV 在 `preBuild` 阶段复制到 `assets/default-sources.json`。首次启动写入本地状态并置 `defaultsSeeded=true`；之后即使用户删光也不会自动加回，直到手动「恢复默认源」。
+`defaults/sources.json` 是唯一事实来源：桌面端通过 Vite alias `@defaults` 在构建期内联，Android TV 在 `preBuild` 阶段复制到 `assets/default-sources.json`（该副本也入库，改完清单要一起提交）。首次启动写入本地状态并置 `defaultsSeeded=true`；之后即使用户删光也不会自动加回，直到手动「恢复默认源」。
+
+清单当前是 `version: 7`（点播 13 个 + 直播 7 个）。两条硬约束：
+
+- **点播源 key 是 `builtin_${index}`，新源只能末尾追加**。从中间删除会让后面所有下标前移，老用户已保存的 `builtin_N` 会突然指向另一个站，历史记录与收藏跟着串台——所以即便某个源已经全域名不可达（如如意资源），也是「保留原位 + 靠健康检查自动暂停」，而不是删掉重排。
+- **直播源的数组顺序就是加载与去重优先级**：`store.ts` 的 `activeLiveSources()` 按数组过滤，`Live.tsx` 跨源同名台只留最靠前的一条。因此直播源按国内实测可播率从高到低排（vbskycn 73%~78% → zhi35 55%~60% → best-fan 57%~60% → Collect-IPTV 40%~43% → Guovin 18%~23%），`selected: false` 的三条排在后面。
 
 ### 首页推荐（推荐流与片源解耦）
 
@@ -733,9 +740,13 @@ iptv 列表的特性：频道地址随时会挂，且很多挂掉的地址返回
 | 如意资源 | 3/3 可播 | **0/4，TLS 握手被重置**（DNS 正常、TCP 能连、`secureConnect` 前收到 RST） |
 | 百度资源 | 3/3 可播 | 3/4（偶发 `请求超时`） |
 
-排查结论值得记一笔：如意资源不是「源挂了」，`Resolve-DnsName` 正常、`Test-NetConnection 23.224.68.246 -Port 443` 成功、用 `servername: 'www.example.com'` 连能拿到 `CERT_HAS_EXPIRED`——说明 TCP 通、SNI 不同就不重置，是**按域名做的连接重置**（典型地区封锁特征）。所以它留在清单里但排在最后，用户在国内会看到「连接被重置」，海外用户正常。
+排查结论值得记一笔：如意资源不是「源挂了」，`Resolve-DnsName` 正常、`Test-NetConnection 23.224.68.246 -Port 443` 成功、用 `servername: 'www.example.com'` 连能拿到 `CERT_HAS_EXPIRED`——说明 TCP 通、SNI 不同就不重置，是**按域名做的连接重置**（典型地区封锁特征）。
 
 暴风和百度因此被加入清单（`version` 3）。同时把「地区限制」和「源失效」在文案上区分开：前者是目标站明确拒绝，后者是拿不到地址。
+
+**2026-11 复测更新（`version` 7）**：如意资源这层判断至今成立，但它的全部已知域名（`cj.rycjapi.com`、`ryzyapi.com`、`rycjzy.com`、`ruyizy.com`、`api./js./caiji./www.` 子域与 http 版）在中国移动宽带下都已 `ECONNRESET`，属于彻底不可达；由于它占着 `builtin_7` 这个下标，**保留原位不删**，靠 `packages/core/src/health.ts` 的 `SOURCE_HEALTH_FAIL_THRESHOLD = 2`（连挂两次自动停用 30 分钟、再挂 24 小时）兜底，用户不会一直等它。同一轮实测还发现：魔都资源原 `caiji.moduapi.cc` 与红牛资源原 `www.hongniuzy2.com` 均被按域名重置，分别换成同站点的新域名 `www.mdzyapi.com` 与 `www.hongniuzy3.com`（片库不变，走 `freshByKey` 换址替换）。
+
+**GitHub 托管的源必须换镜像**：关掉代理后 `raw.githubusercontent.com` 与 `cdn.jsdelivr.net` 在国内一律 TLS 握手被重置，整份清单都下不下来（表现为「加载失败」，不是「频道打不开」）。可用替代是 jsDelivr 的备用域名 `fastly.jsdelivr.net`（约 0.9s）、`testingcf.jsdelivr.net`（约 1.0s）与 `gcore.jsdelivr.net`（约 1.5s）；GitHub 反代（ghfast.top、ghproxy.net、gh.llkk.cc、ghp.ci 等十余个）实测全部不可用。注意 jsDelivr 路径必须写全 `gh/user/repo@branch/path`，漏掉 `@branch` 会 404。`iptv-org` 是 GitHub Pages 而非仓库文件，只能走 `iptv-org.github.io`。
 
 ## 数据安全
 
