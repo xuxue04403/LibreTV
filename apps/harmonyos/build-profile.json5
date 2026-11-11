@@ -1,0 +1,56 @@
+{
+  "app": {
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "./signing/libretv-app.cer",
+          "storePassword": "00000030d88913718439084700a0f632943c2b540e8c9529f189a6bf6208acee9ca13b73ba6e4dcce421b86bdace11cb93157173a9d90cdb9ffb42a60214a7d2",
+          "keyAlias": "libretv-key",
+          "keyPassword": "00000030d88913718439084700a0f632943c2b540e8c9529f189a6bf6208acee9ca13b73ba6e4dcce421b86bdace11cb93157173a9d90cdb9ffb42a60214a7d2",
+          "profile": "./signing/profile.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "./signing/libretv.p12"
+        }
+      }
+    ],
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "compatibleSdkVersion": "26.0.0",
+        "targetSdkVersion": "26.0.0",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -19,3 +19,14 @@ apps/androidtv/*.keystore
 # 本地临时目录（截图、测量脚本、抓下来的清单）
 .tmp-*/
 .tmp-*
+
+# 记忆索引
+.memsearch/
+
+# 鸿蒙工程构建产物与本地签名材料（含私钥，不入库；用 tools/harmony/gen-sign-material.cjs 就地生成）
+apps/harmonyos/.hvigor/
+apps/harmonyos/.idea/
+apps/harmonyos/**/build/
+apps/harmonyos/**/oh_modules/
+apps/harmonyos/signing/
+apps/harmonyos/local.properties

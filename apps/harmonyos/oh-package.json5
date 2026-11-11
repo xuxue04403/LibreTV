@@ -1,0 +1,10 @@
+{
+  "modelVersion": "26.0.0",
+  "name": "libretv_harmony",
+  "version": "1.0.0",
+  "description": "LibreTV HarmonyOS 手机版",
+  "main": "",
+  "author": "",
+  "license": "AGPL-3.0",
+  "dependencies": {}
+}
