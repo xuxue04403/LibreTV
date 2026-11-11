@@ -1,0 +1,27 @@
+{
+  "version-name": "2.0.0",
+  "version-code": 2,
+  "app-distribution-type": "os_integration",
+  "uuid": "__UUID__",
+  "validity": {
+    "not-before": __NOT_BEFORE__,
+    "not-after": __NOT_AFTER__
+  },
+  "type": "release",
+  "bundle-info": {
+    "developer-id": "librextv",
+    "distribution-certificate": "__CERT__",
+    "bundle-name": "__BUNDLE__",
+    "apl": "normal",
+    "app-feature": "hos_normal_app"
+  },
+  "acls": {
+    "allowed-acls": [
+      ""
+    ]
+  },
+  "permissions": {
+    "restricted-permissions": []
+  },
+  "issuer": "pki_internal"
+}
