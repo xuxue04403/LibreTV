@@ -76,7 +76,7 @@ apps\desktop\node_modules\electron\dist\electron.exe apps\desktop --user-data-di
 | flavor | 源码目录 | 包名 | 形态 |
 | --- | --- | --- | --- |
 | `tv` | `app/src/tv/` | `org.librextv.tv` | 横屏、遥控器焦点导航、Leanback 启动器；可覆盖升级旧版电视端 |
-| `phone` | `app/src/phone/` | `org.librextv.tv.phone` | 竖屏、触摸、底部导航；与电视版同机共存，互不覆盖 |
+| `phone` | `app/src/phone/` | `org.librextv.tv.phone` | 竖屏（清单锁 `portrait`，播放页动态切横屏）、触摸、底部导航；与电视版同机共存，互不覆盖 |
 
 ### 编译
 

@@ -329,7 +329,7 @@ AppStore（DataStore Preferences，整份 AppData 以 JSON 存储）
 
 | 维度 | 电视版 | 手机版 |
 | --- | --- | --- |
-| 方向 | 锁定 landscape | `unspecified`，随系统旋转（`configChanges` 含 orientation） |
+| 方向 | 锁定 landscape | 清单锁 `portrait`；播放页由 `KeepScreenOrientation` 动态切 `landscape`，退出时复位竖屏 |
 | 导航 | 顶部 `NavRail` + 焦点移上去就切页 | 底部四栏 `PhoneBottomNav`，点击切换 |
 | 首页入口 | 横幅 + 分类入口 + 片单 | 继续观看 + 分类入口 + 片单 + 收藏 + 本机数据 |
 | 焦点 | `FocusRequester` 全链路可达，`navFocusHold` 防止误跳 | 无焦点系统，`clickable` 直接响应 |
@@ -338,6 +338,8 @@ AppStore（DataStore Preferences，整份 AppData 以 JSON 存储）
 | 包名 | `org.librextv.tv`（可覆盖升级旧版） | `org.librextv.tv.phone`（同机共存） |
 
 `NavStack`（返回键退几级）与 `AppViewModel` 的全部方法两边完全一致，所以「进详情 → 播放 → 返回」这种路径在两种形态下落到同一页。
+
+手机版的横竖屏切换落在 `PhoneApp` 里的 `KeepScreenOrientation(screen)`：`Screen.Player`/`LivePlayer`/`CastPlayer` 时设 `SCREEN_ORIENTATION_LANDSCAPE`，其余设 `SCREEN_ORIENTATION_PORTRAIT`，并在 `onDispose` 复位竖屏。不用 `sensorLandscape` 是因为用户可能躺着看，固定 `landscape` 才不会跟着重力跳。
 
 ## 电视端实现细节（flavor tv）
 

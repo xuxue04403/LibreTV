@@ -1,5 +1,7 @@
 package org.librextv.tv.phone
 
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -29,6 +31,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -37,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -73,6 +77,9 @@ fun PhoneApp(vm: AppViewModel) {
     // 手机上系统返回键/手势是主入口，必须接管，否则一返回就退出 App
     BackHandler(enabled = screen !is Screen.Home) { vm.back() }
 
+    // 清单里固定竖屏；播放页需要横屏全屏，进出时动态切回来
+    KeepScreenOrientation(screen)
+
     Box(Modifier.fillMaxSize().background(Bg)) {
         when (screen) {
             is Screen.Player -> PlayerScreen(vm, screen, onExit = { vm.back() })
@@ -97,8 +104,33 @@ fun PhoneApp(vm: AppViewModel) {
     }
 }
 
-private data class NavItem(val screen: Screen, val label: String, val icon: ImageVector)
+/**
+ * 播放页横屏、其它页面竖屏。
+ *
+ * 清单把 Activity 固定成 portrait（手机是竖屏设备，锁竖屏最稳），
+ * 播放时再用 [Activity.requestedOrientation] 临时切到 landscape 全屏。
+ * 不用 `sensorLandscape` 是因为用户可能正躺着看，固定 landscape 才不跳。
+ */
+@Composable
+private fun KeepScreenOrientation(screen: Screen) {
+    val activity = LocalContext.current as? Activity
+    val landscape = screen is Screen.Player || screen is Screen.LivePlayer || screen is Screen.CastPlayer
+    LaunchedEffect(landscape) {
+        activity?.requestedOrientation = if (landscape) {
+            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+    }
+    // 离开时把横屏留下会让下一屏也用横屏布局，所以离开组合时复位
+    DisposableEffect(Unit) {
+        onDispose {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+    }
+}
 
+private data class NavItem(val screen: Screen, val label: String, val icon: ImageVector)
 /** 底部四个 Tab。「投屏」不占 Tab 位，从首页的投屏状态条进。 */
 @Composable
 private fun PhoneBottomNav(current: Screen, onSelect: (Screen) -> Unit) {

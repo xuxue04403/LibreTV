@@ -106,7 +106,7 @@ fun DetailScreen(vm: AppViewModel, target: Screen.Detail, data: AppData) {
                         )
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            vod?.desc?.replace(Regex("<[^>]+>"), " ")?.trim()?.take(220) ?: "暂无简介",
+                            cleanDesc(vod?.desc),
                             color = TextMuted,
                             fontSize = MaterialTheme.typography.bodyMedium.fontSize,
                             maxLines = 3,
@@ -201,4 +201,25 @@ fun DetailScreen(vm: AppViewModel, target: Screen.Detail, data: AppData) {
             }
         }
     }
+}
+
+/**
+ * 清洗源站返回的简介：去掉 HTML 标签、解开常见实体、压缩空白。
+ *
+ * 采集站常把 `&nbsp;` 直接塞在简介里（非凡资源就有一批），
+ * 不解码会让设置页/详情页显示成 `&amp;nbsp;`。
+ */
+private fun cleanDesc(raw: String?): String {
+    val text = raw
+        ?.replace(Regex("<[^>]+>"), " ")
+        ?.replace("&nbsp;", " ")
+        ?.replace("&amp;", "&")
+        ?.replace("&quot;", "\"")
+        ?.replace("&#39;", "'")
+        ?.replace("&lt;", "<")
+        ?.replace("&gt;", ">")
+        ?.replace(Regex("\\s+"), " ")
+        ?.trim()
+        ?.take(220)
+    return if (text.isNullOrBlank()) "暂无简介" else text
 }

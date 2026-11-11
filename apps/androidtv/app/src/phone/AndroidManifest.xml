@@ -6,7 +6,8 @@
         手机版：
         - 不声明 leanback，避免出现在电视的精简商店列表里；
         - 触摸屏 required=true：手机上明确可用，电视盒子侧装会提示不适用；
-        - 竖屏为主，但允许系统旋转（播放页自己会切到横屏全屏）。
+        - 竖屏固定：手机是最典型的竖屏设备，横屏只在播放页出现，
+          由 PhoneApp 里的 ScreenOrientationKeep 在进/出播放页时动态切横屏/竖屏。
     -->
     <uses-feature
         android:name="android.hardware.touchscreen"
@@ -22,7 +23,7 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:resizeableActivity="true"
-            android:screenOrientation="unspecified"
+            android:screenOrientation="portrait"
             android:theme="@style/Theme.LibreXTV"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>

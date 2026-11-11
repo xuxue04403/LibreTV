@@ -230,6 +230,13 @@ private fun DetailHead(
             }
             val desc = vod.desc
                 ?.replace(Regex("<[^>]+>"), " ")
+                ?.replace("&nbsp;", " ")
+                ?.replace("&amp;", "&")
+                ?.replace("&quot;", "\"")
+                ?.replace("&#39;", "'")
+                ?.replace("&lt;", "<")
+                ?.replace("&gt;", ">")
+                ?.replace(Regex("\\s+"), " ")
                 ?.trim()
                 ?.take(180)
             Text(

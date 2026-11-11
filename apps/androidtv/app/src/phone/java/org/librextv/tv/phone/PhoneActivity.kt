@@ -16,7 +16,7 @@ import org.librextv.tv.ui.theme.LibreXtvTheme
  *
  * 与电视版 [MainActivity] 的差别只在壳：
  * - 不做 960×540 的电视密度归一化，直接用系统 density（手机本来就按 dp 排版）；
- * - 不强制横屏（清单里是 unspecified），播放页按需自己切横屏；
+ * - 清单里固定竖屏；播放页由 [PhoneApp] 在进出时动态切横屏/竖屏；
  * - 其余（数据层、[AppViewModel]、拼音表、DLNA 接收端）与电视版完全一致。
  *
  * 本文件在 `src/phone`，与 `src/tv` 的 MainActivity 靠 product flavor 二选一编译。

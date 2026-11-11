@@ -10,6 +10,8 @@ const COMPONENT = new Int8Array([49, 243, 9, 115, 214, 175, 91, 184, 211, 190, 1
 
 const projectDir = path.resolve(process.argv[2]);
 const plain = process.argv[3];
+// 第 4 个参数可选：密钥别名。用华为 AGC 签发的证书时别名由用户自己定
+const keyAlias = process.argv[4] || 'librextv-key';
 const signingDir = path.join(projectDir, 'signing');
 
 // 每份材料必须是 16 字节
@@ -66,7 +68,7 @@ const profile = {
         material: {
           certpath: './signing/librextv-app.cer',
           storePassword: pwdHex,
-          keyAlias: 'librextv-key',
+          keyAlias: keyAlias,
           keyPassword: pwdHex,
           profile: './signing/profile.p7b',
           signAlg: 'SHA256withECDSA',
