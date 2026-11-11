@@ -23,7 +23,7 @@
             android:launchMode="singleTask"
             android:resizeableActivity="true"
             android:screenOrientation="unspecified"
-            android:theme="@style/Theme.LibreTV"
+            android:theme="@style/Theme.LibreXTV"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -1,7 +1,7 @@
 {
   "string": [
-    { "name": "module_desc", "value": "LibreTV 鸿蒙手机版" },
-    { "name": "EntryAbility_desc", "value": "LibreTV 影视聚合客户端" },
-    { "name": "EntryAbility_label", "value": "LibreTV" }
+    { "name": "module_desc", "value": "LibreXTV 鸿蒙手机版" },
+    { "name": "EntryAbility_desc", "value": "LibreXTV 影视聚合客户端" },
+    { "name": "EntryAbility_label", "value": "LibreXTV" }
   ]
 }

@@ -5,7 +5,7 @@
     "jsx": "react-jsx",
     "types": ["vite/client"],
     "paths": {
-      "@libretv/core": ["../../packages/core/src/index.ts"],
+      "@librextv/core": ["../../packages/core/src/index.ts"],
       "@renderer/*": ["./src/renderer/src/*"],
       "@defaults": ["../../defaults/sources.json"]
     }

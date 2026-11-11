@@ -1,7 +1,7 @@
 /**
  * 鸿蒙版的数据模型。
  *
- * 与 Android 版 org.libretv.tv.data.Models 保持同构，便于两端对照维护：
+ * 与 Android 版 org.librextv.tv.data.Models 保持同构，便于两端对照维护：
  * 字段含义、key 生成规则（builtin_N / builtin_live_N）完全一致。
  */
 

@@ -10,7 +10,7 @@ import { common } from '@kit.AbilityKit';
 import { AppData, emptyData } from '../model/Types';
 import { defaultSettings } from '../model/Types';
 
-const STORE_NAME = 'libretv_store';
+const STORE_NAME = 'librextv_store';
 const DATA_KEY = 'app_data_v1';
 const SAVE_DEBOUNCE_MS = 400;
 

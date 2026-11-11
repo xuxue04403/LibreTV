@@ -8,7 +8,7 @@ import {
   type HotListId,
   type RecommendItem,
   type RecommendSource,
-} from '@libretv/core';
+} from '@librextv/core';
 import { fetchRecommend, type RecommendQuery } from '../lib/bridge';
 import { useAppStore } from '../lib/store';
 import { Poster } from './Poster';

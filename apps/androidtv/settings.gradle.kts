@@ -20,5 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "LibreTV"
+rootProject.name = "LibreXTV"
 include(":app")

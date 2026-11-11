@@ -62,7 +62,7 @@ async function main() {
     });
 
     // —— 清缓存，保证测的是冷启动 ——
-    await evaluate(session, `localStorage.removeItem('libretv-live-cache-v1'); return 1;`);
+    await evaluate(session, `localStorage.removeItem('librextv-live-cache-v1'); return 1;`);
 
     const navStart = Date.now();
     // 左侧导航是纯图标按钮，没有文字，只能按 title 找（title 形如「直播（Ctrl+3）」）

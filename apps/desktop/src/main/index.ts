@@ -5,7 +5,7 @@ import { startMediaProxy, assertAllowedTarget, fetchChecked, readLimited, type M
 import { castToDevice, discoverDevices, parseDeviceDescription, stopCast, type DlnaDevice } from './dlna';
 import { fetchRecommend } from './recommend';
 import { probeQuality } from './quality';
-import type { SourceConfig } from '@libretv/core';
+import type { SourceConfig } from '@librextv/core';
 
 const DEFAULT_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
@@ -66,7 +66,7 @@ const isDev = !!process.env.ELECTRON_RENDERER_URL;
  * 历史、源和设置），自动化脚本也需要一个干净目录来跑，不能污染用户真实数据。
  * 必须放在 app ready 之前执行，setPath 之后才生效。
  */
-const userDataOverride = process.env.LIBRETV_USER_DATA;
+const userDataOverride = process.env.LIBREXTV_USER_DATA;
 if (userDataOverride) app.setPath('userData', path.resolve(userDataOverride));
 
 /** 窗口/任务栏图标：与上游 LibreTV 同一套 artwork（打包后放在 resources/icon.png） */
@@ -84,7 +84,7 @@ function createWindow(): void {
     icon: appIcon,
     backgroundColor: '#0a0c10',
     autoHideMenuBar: true,
-    title: 'LibreTV',
+    title: 'LibreXTV',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -136,7 +136,7 @@ function createWindow(): void {
           seeded = true;
           try {
             await win?.webContents.executeJavaScript(
-              `localStorage.setItem('libretv-desktop-v1', ${JSON.stringify(smokeSeed)})`
+              `localStorage.setItem('librextv-desktop-v1', ${JSON.stringify(smokeSeed)})`
             );
           } catch (err) {
             console.error('smoke seed failed', err);
@@ -174,7 +174,7 @@ function buildMenu(): void {
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: '文件',
-      submenu: [{ role: 'quit', label: '退出 LibreTV' }],
+      submenu: [{ role: 'quit', label: '退出 LibreXTV' }],
     },
     {
       label: '视图',
@@ -451,7 +451,7 @@ ipcMain.handle('dialog:save-text', async (_event, defaultName: string, content: 
   if (!win) return { ok: false as const, canceled: true };
   const result = await dialog.showSaveDialog(win, {
     // 文件名只取 basename：渲染层不能借此把文件写到任意目录
-    defaultPath: path.basename(String(defaultName || 'libretv-export.json')),
+    defaultPath: path.basename(String(defaultName || 'librextv-export.json')),
     filters: [{ name: 'JSON', extensions: ['json'] }],
   });
   if (result.canceled || !result.filePath) return { ok: false as const, canceled: true };
@@ -567,7 +567,7 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
-    app.setAppUserModelId('org.libretv.desktop');
+    app.setAppUserModelId('org.librextv.desktop');
     proxy = await startMediaProxy();
     buildMenu();
     createWindow();

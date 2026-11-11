@@ -1,8 +1,8 @@
-import type { LibreTVBridge } from './index';
+import type { LibreXTVBridge } from './index';
 
 declare global {
   interface Window {
-    libretv?: LibreTVBridge;
+    librextv?: LibreXTVBridge;
   }
 }
 

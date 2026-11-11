@@ -120,7 +120,7 @@ log(`起播 ${JSON.stringify(state)}，总耗时 ${Date.now() - started}ms`);
 await sleep(1500);
 const stats = await evaluateAsync(
   session,
-  `const info = await window.libretv.info();
+  `const info = await window.librextv.info();
    const base = info && info.proxyBase ? info.proxyBase : '';
    if (!base) return null;
    const res = await fetch(base + '/stats');

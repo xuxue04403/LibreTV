@@ -22,11 +22,11 @@
         由清单合并按 flavor 组装：电视版横屏 + Leanback 入口，手机版竖屏 + 触摸。
     -->
     <application
-        android:name=".LibreTvApp"
+        android:name=".LibreXtvApp"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.LibreTV"
+        android:theme="@style/Theme.LibreXTV"
         android:usesCleartextTraffic="true" />
 </manifest>

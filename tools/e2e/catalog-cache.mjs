@@ -34,8 +34,8 @@ async function run(session) {
   // 清掉缓存，保证第一次是冷的
   await evaluate(
     session,
-    `localStorage.removeItem('libretv-catalog-v1');
-     localStorage.removeItem('libretv-search-cache-v1');
+    `localStorage.removeItem('librextv-catalog-v1');
+     localStorage.removeItem('librextv-search-cache-v1');
      return 'cleared';`
   );
 
@@ -157,8 +157,8 @@ async function run(session) {
 
   const store = await evaluate(
     session,
-    `const raw = localStorage.getItem('libretv-catalog-v1');
-     const sraw = localStorage.getItem('libretv-search-cache-v1');
+    `const raw = localStorage.getItem('librextv-catalog-v1');
+     const sraw = localStorage.getItem('librextv-search-cache-v1');
      const cat = raw ? JSON.parse(raw) : null;
      const sea = sraw ? JSON.parse(sraw) : null;
      return {

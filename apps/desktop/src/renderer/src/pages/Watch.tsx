@@ -14,7 +14,7 @@ import {
   skipMarkKey,
   type PlaybackCandidate,
   type SkipMarks,
-} from '@libretv/core';
+} from '@librextv/core';
 import { http, prefetchSegments, proxify } from '../lib/bridge';
 import { attachVolumeBoost, type VolumeBoostHandle } from '../lib/volume-boost';
 import { useAppStore } from '../lib/store';
@@ -622,8 +622,8 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     async (value: boolean): Promise<void> => {
       fullscreenRef.current = value;
       setFullscreen(value);
-      if (window.libretv) {
-        await window.libretv.setFullscreen(value);
+      if (window.librextv) {
+        await window.librextv.setFullscreen(value);
         return;
       }
       // 浏览器里预览时的兜底：Electron 走窗口全屏，网页版只能走元素全屏
@@ -644,14 +644,14 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
   // 进播放页先对齐一次真实状态，并订阅主进程回推（F11 / 菜单栏的全屏不经过这里的按钮）
   useEffect(() => {
     let alive = true;
-    void window.libretv?.isFullscreen().then((on) => {
+    void window.librextv?.isFullscreen().then((on) => {
       if (!alive) return;
       // 进页面那一刻的状态就是「用户原本的状态」，退出时据此决定要不要还原
       fullscreenBeforeRef.current = on;
       fullscreenRef.current = on;
       setFullscreen(on);
     });
-    const off = window.libretv?.onFullscreenChange((on) => {
+    const off = window.librextv?.onFullscreenChange((on) => {
       fullscreenRef.current = on;
       setFullscreen(on);
     });
@@ -671,7 +671,7 @@ export function WatchPage({ target, onClose }: { target: WatchTarget; onClose: (
     () => () => {
       if (!fullscreenRef.current || fullscreenBeforeRef.current) return;
       fullscreenRef.current = false;
-      if (window.libretv) void window.libretv.setFullscreen(false);
+      if (window.librextv) void window.librextv.setFullscreen(false);
       else if (document.fullscreenElement) void document.exitFullscreen();
     },
     []

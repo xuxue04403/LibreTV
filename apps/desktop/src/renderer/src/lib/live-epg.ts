@@ -1,4 +1,4 @@
-import { currentAndNext, maybeGunzip, parseXmltv, type EpgProgram, type LiveEpg } from '@libretv/core';
+import { currentAndNext, maybeGunzip, parseXmltv, type EpgProgram, type LiveEpg } from '@librextv/core';
 import { http } from './bridge';
 
 /**

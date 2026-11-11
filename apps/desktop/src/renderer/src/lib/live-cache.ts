@@ -1,4 +1,4 @@
-import type { LiveChannel, LivePlaylist } from '@libretv/core';
+import type { LiveChannel, LivePlaylist } from '@librextv/core';
 
 /**
  * 直播频道列表的本地缓存。
@@ -7,7 +7,7 @@ import type { LiveChannel, LivePlaylist } from '@libretv/core';
  * 每次进直播页都重下要等一分钟以上。频道列表一天内基本不变，缓存 6 小时
  * 就能把「进直播页」从一分钟降到 0（命中即渲染），后台再静默刷新。
  */
-const CACHE_KEY = 'libretv-live-cache-v1';
+const CACHE_KEY = 'librextv-live-cache-v1';
 const TTL_MS = 6 * 60 * 60 * 1000;
 
 /**

@@ -13,19 +13,19 @@ import {
   type CategoryKey,
   type SearchResultItem,
   type SourceConfig,
-} from '@libretv/core';
+} from '@librextv/core';
 
 /**
  * 分类目录的本地缓存（localStorage 适配层）。
  *
- * 纯逻辑在 `@libretv/core` 的 `catalog.ts`，这里只负责读写与「源变更时整体作废」。
+ * 纯逻辑在 `@librextv/core` 的 `catalog.ts`，这里只负责读写与「源变更时整体作废」。
  *
  * 为什么值得落盘：用户抱怨「每次切换分类、每次检索都像在重新加载播放源」。
  * 一次分类浏览要打 4 个源 × 最多 6 个子分类，冷启动约 2~6 秒；缓存命中是 0 毫秒。
  */
 
-const KEY = 'libretv-catalog-v1';
-const SEARCH_KEY = 'libretv-search-cache-v1';
+const KEY = 'librextv-catalog-v1';
+const SEARCH_KEY = 'librextv-search-cache-v1';
 
 function readJson<T>(key: string): T | undefined {
   try {

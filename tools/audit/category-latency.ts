@@ -6,7 +6,7 @@
  *   2. `?ac=list` 分类表 vs 子分类列表各占多少
  *   3. 整体是 max(源) 还是 sum(页)
  */
-import { createFetchHttp, browseCategory, DEFAULT_SOURCES as _unused } from '@libretv/core';
+import { createFetchHttp, browseCategory, DEFAULT_SOURCES as _unused } from '@librextv/core';
 import { readFileSync } from 'node:fs';
 
 const raw = JSON.parse(readFileSync(new URL('../../defaults/sources.json', import.meta.url), 'utf8'));

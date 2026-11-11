@@ -1,5 +1,5 @@
-appId: org.libretv.desktop
-productName: LibreTV
+appId: org.librextv.desktop
+productName: LibreXTV
 electronVersion: 33.4.11
 copyright: AGPL-3.0-or-later · 基于 LibreSpark/LibreTV
 
@@ -31,29 +31,29 @@ win:
     - nsis
     - portable
   # 两个目标不能共用 artifactName，否则后构建的会覆盖前一个（实测只剩便携版）
-  artifactName: LibreTV-${version}-${arch}.${ext}
+  artifactName: LibreXTV-${version}-${arch}.${ext}
 
 nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
-  shortcutName: LibreTV
-  artifactName: LibreTV-Setup-${version}-${arch}.${ext}
+  shortcutName: LibreXTV
+  artifactName: LibreXTV-Setup-${version}-${arch}.${ext}
 
 portable:
-  artifactName: LibreTV-Portable-${version}-${arch}.${ext}
+  artifactName: LibreXTV-Portable-${version}-${arch}.${ext}
 
 mac:
   target:
     - dmg
     - zip
   category: public.app-category.entertainment
-  artifactName: LibreTV-${version}-${arch}.${ext}
+  artifactName: LibreXTV-${version}-${arch}.${ext}
 
 linux:
   target:
     - AppImage
     - deb
   category: AudioVideo
-  artifactName: LibreTV-${version}-${arch}.${ext}
+  artifactName: LibreXTV-${version}-${arch}.${ext}

@@ -5,13 +5,13 @@
         "name": "default",
         "type": "HarmonyOS",
         "material": {
-          "certpath": "./signing/libretv-app.cer",
-          "storePassword": "00000030d88913718439084700a0f632943c2b540e8c9529f189a6bf6208acee9ca13b73ba6e4dcce421b86bdace11cb93157173a9d90cdb9ffb42a60214a7d2",
-          "keyAlias": "libretv-key",
-          "keyPassword": "00000030d88913718439084700a0f632943c2b540e8c9529f189a6bf6208acee9ca13b73ba6e4dcce421b86bdace11cb93157173a9d90cdb9ffb42a60214a7d2",
+          "certpath": "./signing/librextv-app.cer",
+          "storePassword": "00000031a6243f54c139013dfe1330e586fb7543533f02c0f5a8ba2355d8e9fe8c0e41e1e27a0bb5b5e38186b12abc0202eae0efa480b638d8070691256ff000a0",
+          "keyAlias": "librextv-key",
+          "keyPassword": "00000031a6243f54c139013dfe1330e586fb7543533f02c0f5a8ba2355d8e9fe8c0e41e1e27a0bb5b5e38186b12abc0202eae0efa480b638d8070691256ff000a0",
           "profile": "./signing/profile.p7b",
           "signAlg": "SHA256withECDSA",
-          "storeFile": "./signing/libretv.p12"
+          "storeFile": "./signing/librextv.p12"
         }
       }
     ],

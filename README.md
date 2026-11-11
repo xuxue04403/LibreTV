@@ -1,4 +1,4 @@
-# LibreTV PC / Android TV / Android 手机 / 鸿蒙 客户端
+# LibreXTV PC / Android TV / Android 手机 / 鸿蒙 客户端
 
 基于 [LibreSpark/LibreTV](https://github.com/LibreSpark/LibreTV) 的**桌面端（Windows / macOS / Linux）**、**Android TV**、**Android 手机**与**鸿蒙原生（HarmonyOS NEXT）**客户端。把上游 Next.js 服务端的采集聚合、解析与代理逻辑全部下放到客户端运行：**不需要部署服务器、不需要访问密码**，装好即用。
 
@@ -23,10 +23,10 @@
 
 | 形态 | 技术栈 | 包名 / 产物 | 适用设备 |
 | --- | --- | --- | --- |
-| 桌面端 | Electron + React + hls.js | `LibreTV-Setup-*.exe` / dmg / AppImage | Windows / macOS / Linux |
-| Android TV | Kotlin + Compose + Media3 | `org.libretv.tv`，`app-tv-release.apk` | 电视盒子、智能电视 |
-| Android 手机 | 同电视版，独立 flavor 与竖屏 UI | `org.libretv.tv.phone`，`app-phone-release.apk` | Android 手机/平板；**HarmonyOS 4.x 及更早的华为手机也能直接装** |
-| 鸿蒙原生 | ArkTS + ArkUI + AVPlayer | `org.libretv.harmony`，`entry-default-signed.hap` | **HarmonyOS 5 / NEXT**（纯血鸿蒙，不兼容 APK） |
+| 桌面端 | Electron + React + hls.js | `LibreXTV-Setup-*.exe` / dmg / AppImage | Windows / macOS / Linux |
+| Android TV | Kotlin + Compose + Media3 | `org.librextv.tv`，`app-tv-release.apk` | 电视盒子、智能电视 |
+| Android 手机 | 同电视版，独立 flavor 与竖屏 UI | `org.librextv.tv.phone`，`app-phone-release.apk` | Android 手机/平板；**HarmonyOS 4.x 及更早的华为手机也能直接装** |
+| 鸿蒙原生 | ArkTS + ArkUI + AVPlayer | `org.librextv.harmony`，`entry-default-signed.hap` | **HarmonyOS 5 / NEXT**（纯血鸿蒙，不兼容 APK） |
 
 Android 电视版与手机版共用同一份 `data/` 层、`AppViewModel`、投屏（DLNA）与主题，只有界面、入口 Activity 与 Manifest 按 product flavor 分开——所以两边的源管理、换源、续播、拼音检索行为完全一致。鸿蒙版是独立重写的原生工程，逻辑逐条移植但代码不复用。
 
@@ -56,7 +56,7 @@ Android 电视版与手机版共用同一份 `data/` 层、`AppViewModel`、投�
 | **直播起播优化**（落后 1 个切片起播、上游无响应 12 秒死线、直播不走分片缓存） | ✅ | ✅ |
 | **直播换台** | ✅ `↑ / ↓` 换台、`M` 静音、`Esc` 退出 | ✅ 遥控器 `↑ / ↓ / ← / →`、`CH+ / CH-` |
 | 观看进度续播 / 历史 / 收藏 | ✅ 同一片子跨源只留一条记录（同名不同年份不合并）| ✅ 同左 |
-| 数据源管理、订阅导入（LibreTV / TVBOX）、导入导出 | ✅ | ✅ |
+| 数据源管理、订阅导入（LibreTV-SourceList / TVBOX）、导入导出 | ✅ | ✅ |
 | **投屏** | ✅ DLNA **发送端**（把影片推到电视/盒子） | ✅ DLNA **接收端**（手机投到电视） |
 | 内置默认源（点播 13 个 + 直播 7 个） | ✅ 首次启动导入，可删除/恢复 | ✅ 同左（同一份 `defaults/sources.json`） |
 | **直播默认启用 4 个国内实测可播的源**（vbskycn 73%~78% / zhi35 55%~60% / best-fan 57%~60% / Collect-IPTV 40%~43%；iptv-org 两条与 Guovin 默认不勾） | ✅ 设置里一键打开 | ✅ 同左 |
@@ -90,12 +90,12 @@ Android 电视版与手机版共用同一份 `data/` 层、`AppViewModel`、投�
 - 首页分类入口只显示**真正有内容**的分类（探测结果落 DataStore，冷启动不闪烁）
 - 播放页把操作映射到遥控器：`OK` 播放/暂停、`←→` 快退/快进 10s、`↑` 选集、`返回` 退出
 - 直播播放中 `↑ / ↓`（含 `← / →`、`CH+ / CH-`）直接换台，在当前分组/搜索结果内循环
-- 作为 **DLNA 接收端（DMR）** 常驻：手机视频 App 的投屏列表里出现「LibreTV 电视」，选中即在电视播放
+- 作为 **DLNA 接收端（DMR）** 常驻：手机视频 App 的投屏列表里出现「LibreXTV 电视」，选中即在电视播放
 - 开机横幅、Leanback 启动器、`android.software.leanback` 声明齐全
 
 ### Android 手机版
 
-和电视版同一套代码、独立 flavor（包名 `org.libretv.tv.phone`，可与电视版同机共存），界面为竖屏触摸重做：
+和电视版同一套代码、独立 flavor（包名 `org.librextv.tv.phone`，可与电视版同机共存），界面为竖屏触摸重做：
 
 - 底部四栏导航（首页 / 搜索 / 直播 / 设置），返回键走与电视版相同的 `NavStack` 语义
 - 首页：继续观看（进度条 + 集数）、分类入口、各分类横向片单、我的收藏、直播收藏、本机数据概览
@@ -118,7 +118,7 @@ Android 电视版与手机版共用同一份 `data/` 层、`AppViewModel`、投�
 
 ```
 defaults/sources.json        内置默认源（四个端共用同一份）
-packages/core/               共享 TS 核心：解析 / 聚合 / 订阅 / 存储模型 / 增量解析 / 分类与检索缓存（266 项单测）
+packages/core/               共享 TS 核心：解析 / 聚合 / 订阅 / 存储模型 / 增量解析 / 分类与检索缓存（290 项单测）
 apps/desktop/                Electron 桌面端（main / preload / renderer）
 apps/androidtv/              Android 电视版（flavor tv）+ 手机版（flavor phone），Kotlin + Compose + Media3 + 自研 DLNA DMR
 apps/harmonyos/              鸿蒙原生版（ArkTS + ArkUI + AVPlayer）
@@ -140,7 +140,7 @@ npm run build:desktop    # 产物构建到 apps/desktop/out
 npm run dist:desktop     # 打包安装包（NSIS / portable / dmg / AppImage）
 ```
 
-> Linux/macOS 上打包目标会自动切换；Windows 上默认产出 `release/LibreTV-*.exe`。
+> Linux/macOS 上打包目标会自动切换；Windows 上默认产出 `release/LibreXTV-*.exe`。
 > 首次启动会自动导入 `defaults/sources.json` 里的默认源，可在「设置 → 点播源 / 直播源」里停用或删除，也可随时「恢复默认源」。
 > 内置源清单带版本号：升级到带新内置源的版本时，会自动补齐**你本地没有的**那些源；你删掉过的内置源不会被偷偷加回来。
 
@@ -155,26 +155,27 @@ adb connect <电视IP>:5555       # 电视开启「网络调试」
 adb install -r app/build/outputs/apk/tv/debug/app-tv-debug.apk
 ```
 
-产物：电视版 `apps/androidtv/app/build/outputs/apk/tv/*/app-tv-*.apk`（debug 包名带 `.debug` 后缀），手机版 `apps/androidtv/app/build/outputs/apk/phone/release/app-phone-release.apk`（约 2.8 MB，包名 `org.libretv.tv.phone`，可与电视版同机共存）。
+产物：电视版 `apps/androidtv/app/build/outputs/apk/tv/*/app-tv-*.apk`（debug 包名带 `.debug` 后缀），手机版 `apps/androidtv/app/build/outputs/apk/phone/release/app-phone-release.apk`（约 2.8 MB，包名 `org.librextv.tv.phone`，可与电视版同机共存）。
 
 ### 鸿蒙原生版
 
 ```bash
-node tools/harmony/gen-sign-material.cjs apps/harmonyos "<32位以上密码>"   # 首次：生成本地签名材料
+pwsh -File tools/harmony/gen-signing.ps1                                  # 首次：生成本地签名材料（换包名要重跑）
 pwsh -File tools/harmony/build.ps1                                        # 构建 HAP
 ```
 
-产物：`apps/harmonyos/entry/build/default/outputs/default/entry-default-signed.hap`（约 780 KB）。工具链装配（SDK 拍平、hvigor 手工安装、三处 SDK 补丁）与真机安装步骤见 [docs/build.md](docs/build.md#鸿蒙原生版harmonyos-next)。
+产物：`apps/harmonyos/entry/build/default/outputs/default/entry-default-signed.hap`（约 340 KB）。工具链装配（SDK 拍平、hvigor 手工安装、三处 SDK 补丁）与真机安装步骤见 [docs/build.md](docs/build.md#鸿蒙原生版harmonyos-next)。
 
 ### 测试
 
 ```bash
-npm test                     # 核心解析/聚合/换源/增量解析 \+ 桌面代理 266 项单测
+npm test                     # 核心解析/聚合/换源/增量解析 + 桌面代理 358 项单测
 npm run test:dlna            # DLNA 发送端链路（SSDP → 设备描述 → SOAP）
-cd apps/androidtv && ./gradlew testTvDebugUnitTest   # Kotlin 解析层/换源/缩放/换台/播放器参数/观看记录去重/拼音/广告过滤/缓存/默认源选择/首焦点与遥控器 168 项单测
+cd apps/androidtv && ./gradlew testTvDebugUnitTest testPhoneDebugUnitTest
+# 电视版 168 项（含首焦点与遥控器） + 手机版 156 项（不含仅电视适用的焦点测试）
 ```
 
-电视端的焦点与遥控器行为用 Robolectric 在 JVM 上跑真实 Compose 组合（`app/src/testTv/.../ui/AutoFocusUiTest.kt`），不需要真机或模拟器。CI 配置在 `.github/workflows/ci.yml`，同时跑桌面端与电视端两套测试。
+电视端的焦点与遥控器行为用 Robolectric 在 JVM 上跑真实 Compose 组合（`app/src/testTv/.../ui/AutoFocusUiTest.kt`），不需要真机或模拟器。CI 配置在 `.github/workflows/ci.yml`，同时跑桌面端与两个 Android flavor 三套测试。
 
 端到端联调（本地假采集站 + 真实 HLS 视频）：见 [docs/build.md](docs/build.md#端到端联调)。
 
@@ -201,6 +202,7 @@ TV 端没有真机也能验：普通 `system-images;android-35;default;x86_64` �
 - [上游分析与「服务端 → 客户端」改造决策](docs/analysis.md)
 - [架构设计（进程模型 / 播放链路 / 投屏链路 / 四端分层）](docs/architecture.md)
 - [内置播放源体检与换血（2026-11，清单 version 7）](docs/source-audit-2026-11.md)
+- [1.3.9 发布说明（项目更名为 LibreXTV）](docs/release-1.3.9.md)
 - [1.3.8 发布说明（Android 手机版 + 鸿蒙原生版）](docs/release-1.3.8.md)
 - [1.3.7 发布说明](docs/release-1.3.7.md)
 - [构建、打包与联调指南](docs/build.md)

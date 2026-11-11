@@ -11,7 +11,7 @@ import {
   indexOfChannel,
   stepChannelIndex,
   type LiveChannel,
-} from '@libretv/core';
+} from '@librextv/core';
 import { http, proxify } from '../lib/bridge';
 import { loadChannelEpg } from '../lib/live-epg';
 import { flushLiveCacheWrite, liveCacheKey, readLiveCache, writeLiveCache } from '../lib/live-cache';
@@ -792,7 +792,7 @@ function LivePlayer({
         <button className="ctrl" onClick={() => switchTo(1)} title="下一个频道（↓）" disabled={total <= 1}>
           <Icon name="right" size={18} />
         </button>
-        <button className="ctrl" onClick={() => void window.libretv?.toggleFullscreen()} title="全屏">
+        <button className="ctrl" onClick={() => void window.librextv?.toggleFullscreen()} title="全屏">
           <Icon name="maximize" size={18} />
         </button>
       </div>

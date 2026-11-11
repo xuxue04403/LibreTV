@@ -138,7 +138,7 @@ export struct LivePlayerPage {
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       XComponent({
-        id: 'libretv_live',
+        id: 'librextv_live',
         type: XComponentType.SURFACE,
         controller: this.controller,
       })

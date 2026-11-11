@@ -22,7 +22,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import dns from 'node:dns/promises';
 import net from 'node:net';
 import crypto from 'node:crypto';
-import { stripAdGroups } from '@libretv/core';
+import { stripAdGroups } from '@librextv/core';
 
 const DEFAULT_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';

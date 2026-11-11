@@ -8,7 +8,7 @@
 -keepclasseswithmembers class kotlinx.serialization.json.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
--keep,includedescriptorclasses class org.libretv.tv.**$$serializer { *; }
--keepclassmembers class org.libretv.tv.** {
+-keep,includedescriptorclasses class org.librextv.tv.**$$serializer { *; }
+-keepclassmembers class org.librextv.tv.** {
     *** Companion;
 }

@@ -1,5 +1,5 @@
 /**
- * @libretv/core —— PC（Electron）与 Android TV 客户端共用的纯逻辑层。
+ * @librextv/core —— PC（Electron）与 Android TV 客户端共用的纯逻辑层。
  *
  * 移植自 LibreTV（AGPL-3.0-or-later）https://github.com/LibreSpark/LibreTV 的
  * src/lib 解析与聚合逻辑，去掉 Next.js 服务端依赖，HTTP 由宿主注入：

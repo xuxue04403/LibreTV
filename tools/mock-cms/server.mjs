@@ -79,7 +79,7 @@ function posterSvg(title, hue) {
   <rect width="400" height="600" fill="url(#g)"/>
   <circle cx="320" cy="120" r="90" fill="hsl(${hue + 20},80%,55%)" opacity="0.5"/>
   <text x="30" y="520" fill="#ffffff" font-family="sans-serif" font-size="34" font-weight="bold">${title}</text>
-  <text x="30" y="560" fill="#ffffffaa" font-family="sans-serif" font-size="20">LIBRETV DEMO</text>
+  <text x="30" y="560" fill="#ffffffaa" font-family="sans-serif" font-size="20">LIBREXTV DEMO</text>
 </svg>`;
 }
 
@@ -138,7 +138,7 @@ const server = createServer((req, res) => {
     const body = `<?xml version="1.0" encoding="UTF-8"?>
 <tv>
   <programme start="${fmt(new Date(now - 600000))}" stop="${fmt(new Date(now + 1800000))}" channel="demo1">
-    <title>演示节目 · 正在播出</title><desc>LibreTV 演示节目单</desc>
+    <title>演示节目 · 正在播出</title><desc>LibreXTV 演示节目单</desc>
   </programme>
   <programme start="${fmt(new Date(now + 1800000))}" stop="${fmt(new Date(now + 3600000))}" channel="demo1">
     <title>演示节目 · 下一档</title>

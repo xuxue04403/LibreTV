@@ -4,7 +4,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { appModel } from '../model/AppModel';
 
 const DOMAIN = 0x0000;
-const TAG = 'LibreTV';
+const TAG = 'LibreXTV';
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {

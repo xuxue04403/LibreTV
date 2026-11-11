@@ -34,7 +34,7 @@ import {
   type SourceDisableEvent,
   type SourceHealthMap,
   type SubscriptionEntry,
-} from '@libretv/core';
+} from '@librextv/core';
 import { liveCacheKey, readLiveCache } from './live-cache';
 
 /** 取 URL 的 host；解析不了就返回空串（用于删直播源时按域名兜底清收藏） */
@@ -159,7 +159,7 @@ function writeNow(name: string, value: string): void {
     localStorage.setItem(name, value);
   } catch {
     // 配额满了：先释放纯缓存（分类目录 / 检索 / 直播频道），它们下次能重新抓
-    for (const key of ['libretv-live-cache-v1', 'libretv-search-cache-v1', 'libretv-catalog-v1']) {
+    for (const key of ['librextv-live-cache-v1', 'librextv-search-cache-v1', 'librextv-catalog-v1']) {
       try {
         localStorage.removeItem(key);
       } catch {
@@ -169,7 +169,7 @@ function writeNow(name: string, value: string): void {
     try {
       localStorage.setItem(name, value);
     } catch (err) {
-      console.warn('[libretv] 本地存储写入失败，本次状态未持久化', err);
+      console.warn('[librextv] 本地存储写入失败，本次状态未持久化', err);
     }
   }
 }
@@ -605,7 +605,7 @@ export const useAppStore = create<AppState>()(
         })),
     }),
     {
-      name: 'libretv-desktop-v1',
+      name: 'librextv-desktop-v1',
       version: 1,
       storage: createJSONStorage(() => quotaSafeStorage),
       /**

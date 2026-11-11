@@ -1,12 +1,12 @@
 # 双端学习管控与手机端规划（暂缓实施）
 
 > 状态：**已评估、方案已定、暂不实施**（2026-11-08）。
-> 触发原因：用户希望把 StudyOnTV 的“答题才能看”能力引入 LibreTV，并新增 Android 手机版（含播放、直播、投屏、TV 管控）。
+> 触发原因：用户希望把 StudyOnTV 的“答题才能看”能力引入 LibreXTV，并新增 Android 手机版（含播放、直播、投屏、TV 管控）。
 > 本文只记录方案与结论，仓库代码未做任何改动。
 
 ## 1. 结论摘要
 
-- **可行，且许可允许**：StudyOnTV 为 *Source Available, Personal Use Only*，允许个人/家庭自用、修改、编译；禁止再分发、商用、借用品牌。LibreTV 仅自用、不发布、仓库无 remote，因此可直接移植其“学习闸门”子系统（**前提是永不对外分发**）。
+- **可行，且许可允许**：StudyOnTV 为 *Source Available, Personal Use Only*，允许个人/家庭自用、修改、编译；禁止再分发、商用、借用品牌。LibreXTV 仅自用、不发布、仓库无 remote，因此可直接移植其“学习闸门”子系统（**前提是永不对外分发**）。
 - **不整体搬迁**：只搬学习引擎、题库、SQLite、答题/管理 Web 页与局域网服务；丢弃跨应用管控（无障碍、悬浮窗、前台轮询、看门狗、自更新、Bugly/Pgyer/analytics）。
 - **双端产品**：TV 与手机各自带本地学习引擎；手机额外作为 TV 的管控端；两端数据独立、不同步。
 - **工期**：完整 9–11 周；MVP（TV 闸门 + 手机点播/控制/投屏）约 6–7 周。
@@ -25,7 +25,7 @@
 ## 3. 许可与合规
 
 - 自用范围：不发布源码/APK、不商用、不借用「题了个题 / StudyOnTV」名称与 logo。
-- 移植代码集中放在独立包（建议 `org.libretv.tv.study` / 共享模块），便于未来若公开发布时整体移除。
+- 移植代码集中放在独立包（建议 `org.librextv.tv.study` / 共享模块），便于未来若公开发布时整体移除。
 - 保留第三方资源许可：KaTeX（MIT）、qrcode（保留 notice）、React 管理页（保留 `notices`）。
 - 删除：`BuglyInit`、`CrashDetector`、`Pgyer`、`analytics.js`、自更新相关（`Updater`/`UpdateActivity`/`ApkInstaller`/`ApkProvider`）。
 
@@ -38,7 +38,7 @@ apps/android/
 │  │              PlaybackTuning / Pinyin / DLNA / 学习引擎 / SQLite / LanServer
 │  ├─ src/tv/     TV UI（现有 Compose + FocusPolicy）
 │  └─ src/phone/  手机 UI（新写：底部导航、竖屏、手势、PiP）
-└─ flavors: tv (org.libretv.tv) / phone (org.libretv.phone)
+└─ flavors: tv (org.librextv.tv) / phone (org.librextv.phone)
 ```
 
 - 学习引擎（`LearningEngine`/`LocalStore`/`GradingService`/`HolidayService`）在共享层，两端各自实例化。
@@ -70,7 +70,7 @@ apps/android/
 
 | 位置 | 改动 |
 |---|---|
-| `LibreTvApp.kt` | 初始化学习子系统（SQLite、规则、`LanServer`），仅“学习模式”开启时启动 |
+| `LibreXtvApp.kt` | 初始化学习子系统（SQLite、规则、`LanServer`），仅“学习模式”开启时启动 |
 | `MainActivity` / `ui/App.kt` | 新增 `GateActivity`（`exported=false`，全屏 WebView 加载 `#/quiz` 或 `#/lock`） |
 | `ui/PlayerScreen.kt` | 起播前查 status；播放中 1s ticker 扣时；锁定则暂停并跳闸门，解锁返回续播 |
 | `ui/SettingsScreen.kt` | 「学习模式」入口：开关、PIN、配对码/二维码、管理页地址 |
@@ -104,7 +104,7 @@ apps/android/
 2. `POST /api/cast`：`{sourceKey, vodId, episodeIndex, title, position?}`。
 3. TV 用本地 Repository 解析该源该集，ExoPlayer 起播（带源配置与请求头，兼容 HLS/Referer/防盗链）。
 4. 手机显示遥控器：播放/暂停/进度/音量/下一集（可选）。
-5. 通用 DLNA 推 URL 给非 LibreTV 电视放二期。
+5. 通用 DLNA 推 URL 给非 LibreXTV 电视放二期。
 
 ## 9. 鉴权与配对
 
@@ -133,7 +133,7 @@ MVP 切割：P0 + P1 + P2 + P5 + P6 ≈ 6–7 周。
 
 - 两套 UI 的长期维护：共享层必须“无设备假设”，TV 焦点逻辑不得下沉。
 - TV 常驻服务：否则 TV 退出 App 后手机连不上。
-- 投屏兼容：自有协议只对 LibreTV TV 有效；外部电视 DLNA 是二期。
+- 投屏兼容：自有协议只对 LibreXTV TV 有效；外部电视 DLNA 是二期。
 - 双份学习数据：UI 要明确当前编辑的是哪台设备。
 - 测试成本：手机手势/横竖屏/PiP 需单独 Compose 测试，不能只靠 TV 的 Robolectric 焦点测试。
 - 未来若公开发布：必须先移除所有 StudyOnTV 来源文件。
@@ -144,7 +144,7 @@ MVP 切割：P0 + P1 + P2 + P5 + P6 ≈ 6–7 周。
 2. 手机题库/批改用内嵌 Web 管理页。
 3. 投屏先做自有协议，DLNA 通用投屏二期。
 4. TV 端加可选前台服务。
-5. 两个独立 APK，同签名：`org.libretv.tv` / `org.libretv.phone`。
+5. 两个独立 APK，同签名：`org.librextv.tv` / `org.librextv.phone`。
 
 ## 13. 启动时的第一步（P0 checklist）
 

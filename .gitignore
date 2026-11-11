@@ -23,7 +23,7 @@ apps/androidtv/*.keystore
 # 记忆索引
 .memsearch/
 
-# 鸿蒙工程构建产物与本地签名材料（含私钥，不入库；用 tools/harmony/gen-sign-material.cjs 就地生成）
+# 鸿蒙工程构建产物与本地签名材料（含私钥，不入库；用 tools/harmony/gen-signing.ps1 就地生成）
 apps/harmonyos/.hvigor/
 apps/harmonyos/.idea/
 apps/harmonyos/**/build/

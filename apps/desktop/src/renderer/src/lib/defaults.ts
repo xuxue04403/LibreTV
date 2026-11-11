@@ -1,5 +1,5 @@
 import defaultsRaw from '@defaults';
-import type { LiveSourceConfig, SourceConfig } from '@libretv/core';
+import type { LiveSourceConfig, SourceConfig } from '@librextv/core';
 
 interface DefaultsFile {
   name: string;

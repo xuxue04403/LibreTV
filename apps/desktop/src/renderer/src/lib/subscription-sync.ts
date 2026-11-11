@@ -5,7 +5,7 @@
  * 页面不可见或离线时跳过；失败累计到阈值后订阅自己暂停，不反复打扰用户。
  */
 
-import { isSubscriptionDue, parseSubscription, type SubscriptionEntry } from '@libretv/core';
+import { isSubscriptionDue, parseSubscription, type SubscriptionEntry } from '@librextv/core';
 import { http } from './bridge';
 import { useAppStore } from './store';
 

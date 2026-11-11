@@ -22,7 +22,7 @@ import {
   qualityLabel,
   type QualityEntry,
   type SourceConfig,
-} from '@libretv/core';
+} from '@librextv/core';
 import { assertAllowedTarget } from './proxy';
 import {
   decryptAes128CbcPrefix,

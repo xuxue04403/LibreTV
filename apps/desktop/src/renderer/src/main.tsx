@@ -12,7 +12,7 @@ import './styles.css';
  * 这里至少留下一条可查的日志，不至于让用户与开发者都无从下手。
  */
 window.addEventListener('unhandledrejection', (event) => {
-  console.error('LibreTV 未处理的异步异常', event.reason);
+  console.error('LibreXTV 未处理的异步异常', event.reason);
 });
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(

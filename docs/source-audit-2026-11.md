@@ -2,7 +2,7 @@
 
 用户要求（原文）：
 
-> 1.检查GitHub上libretv项目是否更新了新的点播源和直播源
+> 1.检查GitHub上librextv项目是否更新了新的点播源和直播源
 > 2.验证当前收纳的播放源是否可以正确加载
 > 3.全网检索并验证国内可使用的点播源和直播源，并内置到播放器内
 
@@ -150,7 +150,7 @@ TV 端 `AppViewModel.seedIfNeeded()` 同构补了一份（`freshVodByKey` / `mer
 | 静态检查 | `npm run lint` | ✓ 零告警 |
 | 单测 | `npm test` | ✓ 21 文件 / 358 用例全通过（17.0s） |
 | 桌面构建 | `npm run build:desktop` | ✓ |
-| TV 单测 | `.\gradlew.bat :app:compileDebugKotlin :app:testDebugUnitTest --tests "org.libretv.tv.data.DefaultsSelectionTest"` | ✓ BUILD SUCCESSFUL |
+| TV 单测 | `.\gradlew.bat :app:compileDebugKotlin :app:testDebugUnitTest --tests "org.librextv.tv.data.DefaultsSelectionTest"` | ✓ BUILD SUCCESSFUL |
 
 **构建产物内联校验**：`apps/desktop/out/renderer/assets/index-*.js` 里 `mdzyapi` / `hongniuzy3` / `guangsuapi` / `xinlangapi.php` / `jyzyapi` / `zhi35` / `best-fan` / `fastly.jsdelivr` 全部命中，旧地址 `caiji.moduapi.cc` / `hongniuzy2` / `cdn.jsdelivr.net/gh/zilong` / `raw.githubusercontent.com/vbskycn` 全部消失 → Vite alias `@defaults` 内联正确。
 

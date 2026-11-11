@@ -6,7 +6,7 @@ import {
   formatRelativeTime,
   normalizeHistoryEntry,
   type HistoryEntry,
-} from '@libretv/core';
+} from '@librextv/core';
 import { http } from '../lib/bridge';
 import { useAppStore } from '../lib/store';
 import { Poster } from '../components/Poster';

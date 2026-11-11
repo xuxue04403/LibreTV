@@ -22,7 +22,7 @@ import {
 } from '../model/Types';
 
 const DEFAULT_SOURCES_FILE = 'default-sources.json';
-const DEFAULT_FALLBACK_NAME = 'LibreTV';
+const DEFAULT_FALLBACK_NAME = 'LibreXTV';
 
 /** 读 assets（rawfile）里的清单文本；失败返回空串 */
 export async function readDefaultsText(context: common.UIAbilityContext): Promise<string> {

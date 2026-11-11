@@ -5,7 +5,7 @@ import {
   type RecommendItem,
   type HttpResponse,
   type SourceConfig,
-} from '@libretv/core';
+} from '@librextv/core';
 
 export interface AppInfo {
   version: string;
@@ -25,11 +25,11 @@ export function initBridge(): Promise<AppInfo> {
   if (ready) return ready;
   ready = (async () => {
     // 浏览器预览（没有 preload）走回退，这是正常路径
-    if (!window.libretv) return info;
+    if (!window.librextv) return info;
     // 有 preload 却问不到信息，说明主进程那边出了问题，不能静默降级：
     // 静默降级的结果是 proxyBase 为空，封面与视频全走直连、逐个 CORS/防盗链失败，
     // 用户看到的是「能打开界面，但所有片子都播不了」，比直接报错更难查。
-    const infoTask = window.libretv.info();
+    const infoTask = window.librextv.info();
     // 主进程无响应时不能无限等：10 秒还没回来就当启动失败，让上层给重试入口
     const timeout = new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error('主进程 10 秒内没有响应')), 10_000);
@@ -60,9 +60,9 @@ let streamSeq = 0;
  */
 export const http: HttpClient = {
   async request(url, options = {}): Promise<HttpResponse> {
-    if (!window.libretv) return fetchHttp.request(url, options);
+    if (!window.librextv) return fetchHttp.request(url, options);
     if (options.signal?.aborted) throw new Error('请求已取消');
-    const pending = window.libretv.http(url, {
+    const pending = window.librextv.http(url, {
       headers: options.headers,
       timeoutMs: options.timeoutMs,
       method: options.method,
@@ -95,7 +95,7 @@ export const http: HttpClient = {
    * 没有主进程（浏览器预览）时退回 fetch 的流式实现。
    */
   async stream(url, options): Promise<HttpResponse> {
-    if (!window.libretv) {
+    if (!window.librextv) {
       if (!fetchHttp.stream) return fetchHttp.request(url, options);
       return fetchHttp.stream(url, options);
     }
@@ -105,12 +105,12 @@ export const http: HttpClient = {
     let cancelled = false;
     const onAbort = (): void => {
       cancelled = true;
-      void window.libretv?.streamCancel(streamId);
+      void window.librextv?.streamCancel(streamId);
     };
     options.signal?.addEventListener('abort', onAbort, { once: true });
 
     try {
-      const res = await window.libretv.stream(
+      const res = await window.librextv.stream(
         url,
         { headers: options.headers, idleTimeoutMs: options.idleTimeoutMs, streamId },
         (chunk) => {
@@ -171,8 +171,8 @@ export type RecommendQuery =
  * 不如明确告诉用户这是桌面端能力。
  */
 export async function fetchRecommend(query: RecommendQuery): Promise<RecommendItem[]> {
-  if (!window.libretv) throw new Error('推荐内容仅在桌面端可用');
-  const result = await window.libretv.recommend(query);
+  if (!window.librextv) throw new Error('推荐内容仅在桌面端可用');
+  const result = await window.librextv.recommend(query);
   if (!result.ok) throw new Error(result.error || '推荐内容加载失败');
   return result.items.map((item) => ({
     ...item,
@@ -195,8 +195,8 @@ export interface QualityProbeResult {
  * 浏览器预览没有该能力，明确报错而不是静默返回「未知」。
  */
 export async function qualityProbe(source: SourceConfig, vodId: string): Promise<QualityProbeResult> {
-  if (!window.libretv) throw new Error('画质探测仅在桌面端可用');
-  return window.libretv.qualityProbe({ source, vodId });
+  if (!window.librextv) throw new Error('画质探测仅在桌面端可用');
+  return window.librextv.qualityProbe({ source, vodId });
 }
 
 /**
@@ -229,8 +229,8 @@ export interface DlnaDeviceInfo {
 
 /** 搜索局域网内可投屏设备（SSDP），约 2 秒 */
 export async function discoverDlnaDevices(): Promise<{ devices: DlnaDeviceInfo[]; error?: string }> {
-  if (!window.libretv) return { devices: [], error: '投屏仅在桌面端可用' };
-  const result = await window.libretv.dlnaDiscover();
+  if (!window.librextv) return { devices: [], error: '投屏仅在桌面端可用' };
+  const result = await window.librextv.dlnaDiscover();
   return { devices: result.devices ?? [], error: result.ok ? undefined : result.error };
 }
 
@@ -240,6 +240,6 @@ export async function castToDlna(
   url: string,
   title: string
 ): Promise<{ ok: boolean; error?: string }> {
-  if (!window.libretv) return { ok: false, error: '投屏仅在桌面端可用' };
-  return window.libretv.dlnaCast(device, url, title);
+  if (!window.librextv) return { ok: false, error: '投屏仅在桌面端可用' };
+  return window.librextv.dlnaCast(device, url, title);
 }

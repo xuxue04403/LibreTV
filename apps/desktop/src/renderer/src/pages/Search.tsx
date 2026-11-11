@@ -8,7 +8,7 @@ import {
   searchSources,
   type AggregatedGroup,
   type SourceSearchOutcome,
-} from '@libretv/core';
+} from '@librextv/core';
 import { http } from '../lib/bridge';
 import { cachedSearch, rememberSearch } from '../lib/catalog-cache';
 import { useAppStore } from '../lib/store';
@@ -201,7 +201,7 @@ export function SearchPage({
           <Icon name="film" size={30} />
           <h3>还没有点播源</h3>
           <div style={{ fontSize: 12.5, lineHeight: 1.8 }}>
-            LibreTV 桌面端不内置任何片源。请在设置中添加 Apple CMS 采集站地址，
+            LibreXTV 桌面端不内置任何片源。请在设置中添加 Apple CMS 采集站地址，
             <br />
             或导入一份 LibreTV-SourceList / TVBOX 订阅。
           </div>

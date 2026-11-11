@@ -10,7 +10,7 @@ import {
   subscriptionRefreshLabel,
   type AppSettings,
   type SourceConfig,
-} from '@libretv/core';
+} from '@librextv/core';
 import { appInfo, http } from '../lib/bridge';
 import { DEFAULT_LIVE_NOTES } from '../lib/defaults';
 import { useAppStore } from '../lib/store';
@@ -19,7 +19,7 @@ import { Icon } from '../components/Icons';
 import { useToast } from '../components/toast-context';
 
 /** 导入前的自动备份键：整份替换是不可逆操作，留一条撤销的路 */
-const IMPORT_BACKUP_KEY = 'libretv-import-backup-v1';
+const IMPORT_BACKUP_KEY = 'librextv-import-backup-v1';
 
 type Tab = 'vod' | 'live' | 'sub' | 'play' | 'data';
 
@@ -381,13 +381,13 @@ function SubscriptionPanel() {
   };
 
   const exportAll = async () => {
-    const content = exportSourceList(sources, liveSources, 'LibreTV 桌面端源列表');
-    if (window.libretv) {
+    const content = exportSourceList(sources, liveSources, 'LibreXTV 桌面端源列表');
+    if (window.librextv) {
       // 旧写法只在 result.ok 分支给反馈：用户取消、或主进程写盘失败时
       // 界面毫无动静，用户会以为备份已经生成（下次重装才发现没有）。
       // 而且 saveText 被 reject 时是 unhandledrejection，连控制台都不一定看得见。
       try {
-        const result = await window.libretv.saveText('libretv-sources.json', content);
+        const result = await window.librextv.saveText('librextv-sources.json', content);
         if (result.ok) toast.ok(`已导出到 ${result.path}`);
         else if (result.canceled) toast.push('已取消导出');
         else toast.err('导出失败：无法写入所选位置');
@@ -643,8 +643,8 @@ function DataPanel() {
       liveFavorites: state.liveFavorites,
     });
     const content = serializeSnapshot(snapshot);
-    if (window.libretv) {
-      const result = await window.libretv.saveText('libretv-backup.json', content);
+    if (window.librextv) {
+      const result = await window.librextv.saveText('librextv-backup.json', content);
       if (result.ok) toast.ok('配置已导出');
     } else {
       await navigator.clipboard.writeText(content);
@@ -653,15 +653,15 @@ function DataPanel() {
   };
 
   const importAll = async () => {
-    if (!window.libretv) {
+    if (!window.librextv) {
       toast.err('浏览器预览模式下不可用');
       return;
     }
-    const file = await window.libretv.openText();
+    const file = await window.librextv.openText();
     if (!file.ok || !file.content) return;
     const snapshot = parseSnapshot(file.content);
     if (!snapshot) {
-      toast.err('不是可识别的 LibreTV 配置（文件里没有任何可导入的源或历史）');
+      toast.err('不是可识别的 LibreXTV 配置（文件里没有任何可导入的源或历史）');
       return;
     }
     // 导入是整份替换且不可逆，必须先让用户看到覆盖面再确认
@@ -761,11 +761,11 @@ function DataPanel() {
 
       <div className="panel">
         <div className="section-title" style={{ marginTop: 0 }}>
-          <span>关于 LibreTV 桌面端</span>
+          <span>关于 LibreXTV 桌面端</span>
           <span className="hint">v{info.version}</span>
         </div>
         <div style={{ color: '#b6c0d0', fontSize: 12.5, lineHeight: 1.9 }}>
-          基于 <b>LibreTV</b>（AGPL-3.0-or-later）的衍生客户端，把上游 Next.js 服务端的
+          基于 <b>LibreXTV</b>（AGPL-3.0-or-later）的衍生客户端，把上游 Next.js 服务端的
           采集聚合、解析与广告过滤逻辑下放到本地运行，因此无需部署服务器、无需访问密码。
           <br />
           本项目不内置、不存储、不制作任何视频内容，仅提供第三方公开接口的解析与播放能力。
@@ -773,14 +773,14 @@ function DataPanel() {
         <div className="row" style={{ marginTop: 12 }}>
           <button
             className="btn ghost"
-            onClick={() => void window.libretv?.openExternal('https://github.com/LibreSpark/LibreTV')}
+            onClick={() => void window.librextv?.openExternal('https://github.com/LibreSpark/LibreTV')}
           >
             <Icon name="external" size={15} />
             上游项目
           </button>
           <button
             className="btn ghost"
-            onClick={() => void window.libretv?.openExternal('https://www.gnu.org/licenses/agpl-3.0.html')}
+            onClick={() => void window.librextv?.openExternal('https://www.gnu.org/licenses/agpl-3.0.html')}
           >
             AGPL-3.0 许可
           </button>

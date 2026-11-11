@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { HOME_CATEGORIES, probeCategories, type CategoryKey } from '@libretv/core';
+import { HOME_CATEGORIES, probeCategories, type CategoryKey } from '@librextv/core';
 import { http } from './bridge';
 import { useAppStore } from './store';
 
@@ -12,7 +12,7 @@ import { useAppStore } from './store';
  * 这个文件只导出 hook 与类型（React Fast Refresh 要求组件文件里不放别的导出，
  * 否则改一次样式就要整文件重载，正在播放的视频会被打断）。
  */
-const AVAILABILITY_KEY = 'libretv-category-availability-v1';
+const AVAILABILITY_KEY = 'librextv-category-availability-v1';
 /** 探测结论的有效期：源站内容天天变，超过一天就该重新问一遍 */
 const AVAILABILITY_TTL_MS = 24 * 60 * 60 * 1000;
 

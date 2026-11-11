@@ -2,7 +2,7 @@
 <resources>
     <!-- windowLayoutInDisplayCutoutMode 需要 API 27；minSdk 是 23，
          放在 values-v27 才能既在刘海屏上生效、又不在低版本上触发 NewApi 冲突 -->
-    <style name="Theme.LibreTV" parent="@android:style/Theme.Material.NoActionBar">
+    <style name="Theme.LibreXTV" parent="@android:style/Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/bg</item>
         <item name="android:colorBackground">@color/bg</item>
         <item name="android:statusBarColor">@color/bg</item>

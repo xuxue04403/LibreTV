@@ -8,7 +8,7 @@
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
     "paths": {
-      "@libretv/core": ["../../packages/core/src/index.ts"]
+      "@librextv/core": ["../../packages/core/src/index.ts"]
     }
   },
   "include": ["src/main/**/*.ts", "src/preload/**/*.ts", "electron.vite.config.ts"]

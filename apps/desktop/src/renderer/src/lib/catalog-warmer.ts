@@ -1,4 +1,4 @@
-import { browseCategory, CATALOG_REFRESH_MS, HOME_CATEGORIES, type CategoryKey } from '@libretv/core';
+import { browseCategory, CATALOG_REFRESH_MS, HOME_CATEGORIES, type CategoryKey } from '@librextv/core';
 import { http } from './bridge';
 import { cachedItems, markCategoryChecked, missingCategories, rememberItems, signatureOf } from './catalog-cache';
 import { useAppStore } from './store';

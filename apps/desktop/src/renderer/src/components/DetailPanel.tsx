@@ -9,7 +9,7 @@ import {
   type SearchResultItem,
   type SourceConfig,
   type VideoDetail,
-} from '@libretv/core';
+} from '@librextv/core';
 import { http, qualityProbe, type QualityProbeResult } from '../lib/bridge';
 import { useAppStore } from '../lib/store';
 import { useToast } from './toast-context';

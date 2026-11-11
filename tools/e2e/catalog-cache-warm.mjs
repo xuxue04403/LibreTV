@@ -28,7 +28,7 @@ async function main() {
 async function run(session) {
   const before = await evaluate(
     session,
-    `const raw = localStorage.getItem('libretv-catalog-v1');
+    `const raw = localStorage.getItem('librextv-catalog-v1');
      const cat = raw ? JSON.parse(raw) : null;
      return cat ? Object.keys(cat.entries ?? {}) : [];`
   );

@@ -135,6 +135,6 @@ const bridge = {
     ipcRenderer.invoke('dlna:stop', device),
 };
 
-export type LibreTVBridge = typeof bridge;
+export type LibreXTVBridge = typeof bridge;
 
-contextBridge.exposeInMainWorld('libretv', bridge);
+contextBridge.exposeInMainWorld('librextv', bridge);

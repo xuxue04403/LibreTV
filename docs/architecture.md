@@ -27,7 +27,7 @@
                         └──────────────────────────────┘
 ```
 
-四个端产物：桌面安装包（Electron）、`app-tv-release.apk`（`org.libretv.tv`）、`app-phone-release.apk`（`org.libretv.tv.phone`）、`entry-default-signed.hap`（`org.libretv.harmony`）。电视版与手机版共用 `data/`、`AppViewModel`、`NavBack`、`cast/`、`ui/theme/`；鸿蒙版是独立实现。
+四个端产物：桌面安装包（Electron）、`app-tv-release.apk`（`org.librextv.tv`）、`app-phone-release.apk`（`org.librextv.tv.phone`）、`entry-default-signed.hap`（`org.librextv.harmony`）。电视版与手机版共用 `data/`、`AppViewModel`、`NavBack`、`cast/`、`ui/theme/`；鸿蒙版是独立实现。
 
 没有服务端进程、没有数据库、没有账号体系。所有状态都在本机。
 
@@ -117,7 +117,7 @@ TV 端不经过这个代理（ExoPlayer 直连），OkHttp 自己解压并会重
 直播列表的瓶颈在**下载**，不在解析。实测 iptv-org 的 `index.m3u`（11485 个频道，2.46MB）：服务器只给约 35KB/s 且**不启用 gzip**，整串下完要 70–90 秒；而 `parseM3u` 解析 11 万行只要十几毫秒。所以优化全部围绕「不让用户盯着一分钟空列表」：
 
 ```
-第 0 秒   读本地缓存（libretv-live-cache-v1，TTL 6h）──命中──▶ 立刻渲染，后台静默刷新
+第 0 秒   读本地缓存（librextv-live-cache-v1，TTL 6h）──命中──▶ 立刻渲染，后台静默刷新
 第 0.7 秒 流式响应首块到达 ──▶ 增量解析 ──▶ 首批频道上屏（实测 719–1431ms）
 第 1–90 秒 每批新增频道 append，标题栏显示「仍在读取（x.x MB）」
 第 90 秒   全部完成 ──▶ 去重后落盘
@@ -313,7 +313,7 @@ AppStore（DataStore Preferences，整份 AppData 以 JSON 存储）
 
 | 目录 | 归谁 | 内容 |
 | --- | --- | --- |
-| `app/src/main/` | 共用 | `data/`（采集解析、存储、拼音、广告过滤、分片预取）、`AppViewModel.kt`、`NavBack.kt`、`LibreTvApp.kt`、`cast/`（DLNA DMR）、`ui/theme/`（配色与字号）、`res/`（图标、主题、字符串） |
+| `app/src/main/` | 共用 | `data/`（采集解析、存储、拼音、广告过滤、分片预取）、`AppViewModel.kt`、`NavBack.kt`、`LibreXtvApp.kt`、`cast/`（DLNA DMR）、`ui/theme/`（配色与字号）、`res/`（图标、主题、字符串） |
 | `app/src/tv/` | 电视版 | `MainActivity.kt`、`ui/` 11 个界面文件（含 `FocusPolicy.kt`、`Components.kt` 的十尺屏组件）、`AndroidManifest.xml`（landscape + Leanback 启动器 + banner） |
 | `app/src/phone/` | 手机版 | `PhoneActivity.kt`、`phone/Components.kt`（触摸版组件）、首页/搜索/详情/分类/直播/播放/直播播放/设置/投屏 9 个界面、`AndroidManifest.xml`（portrait + 普通启动器） |
 | `app/src/test/` | 共用测试 | `data/` 的 19 个单测文件（与 flavor 无关） |
@@ -335,7 +335,7 @@ AppStore（DataStore Preferences，整份 AppData 以 JSON 存储）
 | 焦点 | `FocusRequester` 全链路可达，`navFocusHold` 防止误跳 | 无焦点系统，`clickable` 直接响应 |
 | 播放器控件 | 遥控器方向键，3.5 秒自动隐藏 | 点击整屏切换显隐，可拖 `Slider` |
 | 缩放 | `TvScaleSurface`（960×540 基准，`min(w/960,h/540)`） | 直接用系统 density |
-| 包名 | `org.libretv.tv`（可覆盖升级旧版） | `org.libretv.tv.phone`（同机共存） |
+| 包名 | `org.librextv.tv`（可覆盖升级旧版） | `org.librextv.tv.phone`（同机共存） |
 
 `NavStack`（返回键退几级）与 `AppViewModel` 的全部方法两边完全一致，所以「进详情 → 播放 → 返回」这种路径在两种形态下落到同一页。
 
@@ -368,7 +368,7 @@ AppStore（DataStore Preferences，整份 AppData 以 JSON 存储）
 
 #### 验证时先确认跑的是哪个包
 
-`app/build.gradle.kts` 的 debug 构建带 `applicationIdSuffix = ".debug"`。所以装了 debug APK 之后 `am start -n org.libretv.tv/.MainActivity` 启动的仍是**更早装的那个 release 包**，改动看起来"完全没生效"。调试安装包要显式启动 `org.libretv.tv.debug/org.libretv.tv.MainActivity`，或者先 `adb uninstall org.libretv.tv`。
+`app/build.gradle.kts` 的 debug 构建带 `applicationIdSuffix = ".debug"`。所以装了 debug APK 之后 `am start -n org.librextv.tv/.MainActivity` 启动的仍是**更早装的那个 release 包**，改动看起来"完全没生效"。调试安装包要显式启动 `org.librextv.tv.debug/org.librextv.tv.MainActivity`，或者先 `adb uninstall org.librextv.tv`。
 
 ### 分辨率自适应（`ui/theme/Scaling.kt`）
 
@@ -393,10 +393,10 @@ scale = min(逻辑宽度dp / 960, 逻辑高度dp / 540)  // 夹在 [0.35, 5]
 ```powershell
 emulator.exe -avd <名字> -no-window -no-audio -no-boot-anim `
   -gpu swiftshader_indirect -no-snapshot -port 5556
-adb -s emulator-5556 shell am start -n org.libretv.tv/.MainActivity
+adb -s emulator-5556 shell am start -n org.librextv.tv/.MainActivity
 ```
 
-两个小坑：`am start -n org.libretv.tv/MainActivity` 会报 `Activity class does not exist`，必须写带点的 `.MainActivity`；模拟器时区默认 GMT，别按日志时间戳误判时序。
+两个小坑：`am start -n org.librextv.tv/MainActivity` 会报 `Activity class does not exist`，必须写带点的 `.MainActivity`；模拟器时区默认 GMT，别按日志时间戳误判时序。
 
 焦点问题不要靠肉眼看截图判断，用 `uiautomator dump` 拿 `focused="true"` 的 `bounds` 序列来对比最准——「按 ↓ 焦点跳去导航栏」就是这么发现的（分类行 `[292,654][564,760]` → 下一跳直接变成导航栏 `[27,663][181,817]`）。
 
@@ -431,7 +431,7 @@ adb -s emulator-5556 shell am start -n org.libretv.tv/.MainActivity
 
 - 自研实现，不依赖已停止维护的 Cling；
 - 需要 `WifiManager.MulticastLock`（已申请 `CHANGE_WIFI_MULTICAST_STATE`），否则收不到组播；
-- 设备名「LibreTV 电视」，固定 UDN 保证手机端记住设备。
+- 设备名「LibreXTV 电视」，固定 UDN 保证手机端记住设备。
 
 ## 分类浏览
 
@@ -511,7 +511,7 @@ adb -s emulator-5556 shell am start -n org.libretv.tv/.MainActivity
 | 层 | 桌面端 | TV 端 |
 | --- | --- | --- |
 | 纯逻辑（TTL、截断、签名、淘汰） | `packages/core/src/catalog.ts` | 同一份逻辑的 Kotlin 实现 `data/CatalogCache.kt`、`data/SearchCache.kt` |
-| 落盘 | `localStorage`（`libretv-catalog-v1`、`libretv-search-cache-v1`） | DataStore（`catalog-cache`、`search-cache`，格式 `签名\tJSON`） |
+| 落盘 | `localStorage`（`librextv-catalog-v1`、`librextv-search-cache-v1`） | DataStore（`catalog-cache`、`search-cache`，格式 `签名\tJSON`） |
 | 适配层 | `lib/catalog-cache.ts` | `AppStore.catalog()` / `saveCatalog()` |
 
 规则（两端逐条对齐，`packages/core/src/catalog.test.ts` 18 项 + `CatalogCacheTest.kt` 17 项覆盖）：
@@ -590,7 +590,7 @@ TV 端 `CatalogSnapshot.itemsOf()` 对没缓存过的分类返回 `null`（Kotli
 - 探测整体失败（网络全挂）时**退回显示全部入口**，不能因为探测失败就把导航藏空；
 - 成人过滤在此同样生效——唯一一条内容是成人内容时，该分类算作空。
 
-探测要 6~10 秒，如果每次都等它回来再渲染，首页会出现「先显示 8 个、几秒后少一个」的跳动。所以结论按「源签名」落盘：桌面端存 `localStorage`（`libretv-category-availability-v1`），TV 端存 DataStore（`category-availability`，格式 `签名\tkey1,key2`）。下次启动先按上次结论渲染，后台探测回来再覆盖；签名变化（换了源、切了成人过滤）时旧结论自动失效。
+探测要 6~10 秒，如果每次都等它回来再渲染，首页会出现「先显示 8 个、几秒后少一个」的跳动。所以结论按「源签名」落盘：桌面端存 `localStorage`（`librextv-category-availability-v1`），TV 端存 DataStore（`category-availability`，格式 `签名\tkey1,key2`）。下次启动先按上次结论渲染，后台探测回来再覆盖；签名变化（换了源、切了成人过滤）时旧结论自动失效。
 
 实测（4 内置源，2026-10）：电影 ✅ 2 源、电视剧 ✅ 3 源、综艺 ✅ 3、动漫 ✅ 3、纪录片 ✅ 3、短剧 ✅ 3、体育 ✅ 2、**少儿 ❌ 0 源**，耗时约 6.8 秒。
 
@@ -650,7 +650,7 @@ TV 端对应 `CategoryKey` 的 `enum` 声明顺序（判定用）与 `CategoryKe
 
 ## 数据模型
 
-桌面端 zustand（`libretv-desktop-v1`）与 TV 端 DataStore 结构对齐：
+桌面端 zustand（`librextv-desktop-v1`）与 TV 端 DataStore 结构对齐：
 
 ```ts
 interface AppData {

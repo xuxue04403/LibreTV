@@ -25,7 +25,7 @@ import {
   type HotListId,
   type RecommendItem,
   type RecommendSource,
-} from '@libretv/core';
+} from '@librextv/core';
 import { readLimited } from './proxy';
 
 /** 推荐接口都是 JSON；4MB 足够（榜单/日历最大实测不到 200KB） */
@@ -35,8 +35,8 @@ const REQUEST_TIMEOUT_MS = 8000;
 const DOUBAN_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 /** Bangumi 要求 UA 带可识别标识，默认 undici UA 会被拒 */
-const BANGUMI_UA = 'LibreTV-Desktop (+https://github.com/LibreSpark/LibreTV)';
-const SIXTY_UA = 'LibreTV-Desktop (+https://github.com/LibreSpark/LibreTV)';
+const BANGUMI_UA = 'LibreXTV-Desktop (+https://github.com/LibreSpark/LibreTV)';
+const SIXTY_UA = 'LibreXTV-Desktop (+https://github.com/LibreSpark/LibreTV)';
 
 export type RecommendRequest =
   | { kind: 'bangumi' }

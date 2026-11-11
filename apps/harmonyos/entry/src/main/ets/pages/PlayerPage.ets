@@ -321,7 +321,7 @@ export struct PlayerPage {
     Stack({ alignContent: Alignment.TopStart }) {
       // 视频画面
       XComponent({
-        id: 'libretv_player',
+        id: 'librextv_player',
         type: XComponentType.SURFACE,
         controller: this.controller,
       })

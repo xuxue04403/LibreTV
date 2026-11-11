@@ -97,7 +97,7 @@ export async function evaluate(session, expression) {
  * 同 evaluate，但允许在表达式里写 await。
  *
  * evaluate 包的是同步箭头函数，`await` 会直接语法错误（`await is only valid in
- * async functions`）。要调用 `window.libretv.info()` 这类返回 Promise 的接口时用这个。
+ * async functions`）。要调用 `window.librextv.info()` 这类返回 Promise 的接口时用这个。
  */
 export async function evaluateAsync(session, expression) {
   const result = await session.send('Runtime.evaluate', {

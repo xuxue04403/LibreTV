@@ -67,7 +67,7 @@ $env:LTV_ALLOW_PRIVATE_MEDIA='1'                    # 联调本机媒体源时�
 apps\desktop\node_modules\electron\dist\electron.exe apps\desktop --user-data-dir=D:\tmp\profile
 ```
 
-> 如果当前 shell 设置了 `ELECTRON_RUN_AS_NODE=1`（某些 Electron 宿主环境会设置），必须先清掉，否则 `electron.exe` 会以 Node 模式运行并报 `ipcMain undefined`。打包后的 `LibreTV.exe` 同样会继承这个变量，症状是 `bad option: --user-data-dir=...` 并直接退出（exit code 9）。
+> 如果当前 shell 设置了 `ELECTRON_RUN_AS_NODE=1`（某些 Electron 宿主环境会设置），必须先清掉，否则 `electron.exe` 会以 Node 模式运行并报 `ipcMain undefined`。打包后的 `LibreXTV.exe` 同样会继承这个变量，症状是 `bad option: --user-data-dir=...` 并直接退出（exit code 9）。
 
 ## Android 电视版与手机版
 
@@ -75,8 +75,8 @@ apps\desktop\node_modules\electron\dist\electron.exe apps\desktop --user-data-di
 
 | flavor | 源码目录 | 包名 | 形态 |
 | --- | --- | --- | --- |
-| `tv` | `app/src/tv/` | `org.libretv.tv` | 横屏、遥控器焦点导航、Leanback 启动器；可覆盖升级旧版电视端 |
-| `phone` | `app/src/phone/` | `org.libretv.tv.phone` | 竖屏、触摸、底部导航；与电视版同机共存，互不覆盖 |
+| `tv` | `app/src/tv/` | `org.librextv.tv` | 横屏、遥控器焦点导航、Leanback 启动器；可覆盖升级旧版电视端 |
+| `phone` | `app/src/phone/` | `org.librextv.tv.phone` | 竖屏、触摸、底部导航；与电视版同机共存，互不覆盖 |
 
 ### 编译
 
@@ -100,7 +100,7 @@ export ANDROID_HOME=/path/to/android-sdk     # Windows: $env:ANDROID_HOME='D:\..
 ```bash
 adb connect 192.168.1.20:5555      # 电视需开启「开发者选项 → 网络调试」
 adb install -r app/build/outputs/apk/tv/debug/app-tv-debug.apk
-adb shell am start -n org.libretv.tv.debug/org.libretv.tv.MainActivity
+adb shell am start -n org.librextv.tv.debug/org.librextv.tv.MainActivity
 ```
 
 手机版直接装 `app-phone-release.apk` 即可（`adb install -r` 或传到手机点击安装）。也可以把 APK 拷到 U 盘，用电视上的文件管理器安装（需允许「未知来源」）。
@@ -115,7 +115,7 @@ cd apps/androidtv
 ./gradlew testPhoneDebugUnitTest     # 手机版
 ```
 
-覆盖 168 项：搜索列表解析、分集提取、详情兜底、M3U 属性与分组、相关性/成人过滤、同名聚合、订阅宽容解析、DLNA 请求解析（按字节读 + 上限）、拼音（含多音字备选与相关度）、观看记录去重、分片缓存、默认源选择，以及用 Robolectric 在 JVM 上跑真实 Compose 组合的首焦点/遥控器按键（`tv/java/org/libretv/tv/ui/AutoFocusUiTest.kt`）。
+电视版覆盖 168 项、手机版 156 项（手机版不含仅电视适用的焦点与遥控器测试）：搜索列表解析、分集提取、详情兜底、M3U 属性与分组、相关性/成人过滤、同名聚合、订阅宽容解析、DLNA 请求解析（按字节读 + 上限）、拼音（含多音字备选与相关度）、观看记录去重、分片缓存、默认源选择，以及用 Robolectric 在 JVM 上跑真实 Compose 组合的首焦点/遥控器按键（`tv/java/org/librextv/tv/ui/AutoFocusUiTest.kt`）。
 
 ### 常见问题
 
@@ -124,11 +124,11 @@ cd apps/androidtv
 - 本仓库已在 `settings.gradle.kts` 里优先使用阿里云镜像、并在 `gradle.properties` 固定 `https.protocols=TLSv1.2`；
 - 若仍失败，可设置代理：`systemProp.https.proxyHost` / `systemProp.https.proxyPort`。
 
-**组播权限**：DLNA 依赖 `CHANGE_WIFI_MULTICAST_STATE` 并在运行时持有 `MulticastLock`；部分电视系统（如部分国产 ROM）会限制组播，表现为手机搜不到「LibreTV 电视」。
+**组播权限**：DLNA 依赖 `CHANGE_WIFI_MULTICAST_STATE` 并在运行时持有 `MulticastLock`；部分电视系统（如部分国产 ROM）会限制组播，表现为手机搜不到「LibreXTV 电视」。
 
 **模拟器与真机的差异**：模拟器默认 NAT 网络下 SSDP 组播常不可用，投屏请在真机验证。
 
-**手机版和电视版能同时装吗**：能。两者包名不同（`org.libretv.tv` / `org.libretv.tv.phone`），数据各自独立存储。
+**手机版和电视版能同时装吗**：能。两者包名不同（`org.librextv.tv` / `org.librextv.tv.phone`），数据各自独立存储。
 
 ## 鸿蒙原生版（HarmonyOS NEXT）
 
@@ -154,7 +154,7 @@ cd apps/androidtv
 真机安装必须签名。仓库里不放私钥，首次构建前跑一次：
 
 ```bash
-node tools/harmony/gen-sign-material.cjs apps/harmonyos "<32位以上密码>"
+pwsh -File tools/harmony/gen-signing.ps1
 ```
 
 脚本会做三件事：用 SDK 自带的 `hap-sign-tool.jar` 生成应用密钥对与证书链、签发 profile、按 hvigor 的格式生成密码密文与 `signing/material/` 目录，并写好 `build-profile.json5` 的 `signingConfigs`。产物落在 `apps/harmonyos/signing/`（已 gitignore）。
@@ -176,7 +176,7 @@ export DEVECO_SDK_HOME=/path/to/.tools/harmony/sdk-7.0    # Windows: $env:DEVECO
 node node_modules/@ohos/hvigor/bin/hvigor.js assembleHap --no-daemon
 ```
 
-产物：`apps/harmonyos/entry/build/default/outputs/default/entry-default-signed.hap`（约 780 KB）。
+产物：`apps/harmonyos/entry/build/default/outputs/default/entry-default-signed.hap`（约 340 KB）。
 
 ### 安装到真机
 
@@ -239,6 +239,6 @@ node tools/mock-dlna/test.mjs          # 自动跑 SSDP → 描述 → SOAP 全�
 | `apps/desktop/src/main` | 主进程：窗口、IPC、回环代理、DLNA 发送端 |
 | `apps/desktop/src/preload` | contextBridge 白名单 |
 | `apps/desktop/src/renderer` | React 界面、播放器、页面 |
-| `apps/androidtv/app/src/main/java/org/libretv/tv` | TV 应用（data / ui / cast） |
+| `apps/androidtv/app/src/main/java/org/librextv/tv` | TV 应用（data / ui / cast） |
 | `tools/mock-cms`、`tools/mock-dlna` | 联调用假服务 |
 | `reference/LibreTV` | 上游只读快照 |

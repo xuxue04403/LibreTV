@@ -7,7 +7,7 @@ const coreAlias = resolve(__dirname, '../../packages/core/src/index.ts');
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
-    resolve: { alias: { '@libretv/core': coreAlias } },
+    resolve: { alias: { '@librextv/core': coreAlias } },
     build: {
       rollupOptions: { input: { index: resolve(__dirname, 'src/main/index.ts') } },
     },
@@ -23,7 +23,7 @@ export default defineConfig({
     plugins: [react()],
     resolve: {
       alias: {
-        '@libretv/core': coreAlias,
+        '@librextv/core': coreAlias,
         '@renderer': resolve(__dirname, 'src/renderer/src'),
         '@defaults': resolve(__dirname, '../../defaults/sources.json'),
       },

@@ -341,7 +341,7 @@ export function parseSnapshot(text: string): AppSnapshot | null {
   const favorites = normalizeList(obj.favorites, toFavoriteEntry, FAVORITE_LIMIT);
   const liveFavorites = normalizeList(obj.liveFavorites, toLiveFavoriteEntry, FAVORITE_LIMIT);
 
-  // 一项可用内容都没有：这不是 LibreTV 快照（或已被截断），调用方不能拿它覆盖本地数据
+  // 一项可用内容都没有：这不是 LibreXTV 快照（或已被截断），调用方不能拿它覆盖本地数据
   if (sources.length + liveSources.length + history.length + favorites.length + liveFavorites.length === 0) {
     return null;
   }

@@ -8,7 +8,7 @@
 # 依赖（见 docs/build.md「鸿蒙端」）：
 #   - .tools/harmony/sdk-7.0/             HarmonyOS SDK（DEVECO_SDK_HOME 指向这里）
 #   - apps/harmonyos/node_modules/@ohos/  hvigor 与 hvigor-ohos-plugin（手工复制，npm 源无此包）
-#   - apps/harmonyos/signing/             本地签名材料（gen-sign-material.cjs 生成）
+#   - apps/harmonyos/signing/             本地签名材料（gen-signing.ps1 生成）
 param(
     [ValidateSet('debug', 'release')]
     [string]$Mode = 'debug',

@@ -45,7 +45,7 @@ export struct HomePage {
     Column() {
       // 顶部品牌条
       Row() {
-        Text('LibreTV')
+        Text('LibreXTV')
           .fontSize(22)
           .fontWeight(FontWeight.Bold)
           .fontColor(Palette.Accent)

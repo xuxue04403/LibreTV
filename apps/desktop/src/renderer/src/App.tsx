@@ -183,8 +183,8 @@ export function App() {
     <ToastProvider>
       <div className="app">
         <aside className="rail">
-          <div className="brand" title="LibreTV">
-            <img src={logo} alt="LibreTV" />
+          <div className="brand" title="LibreXTV">
+            <img src={logo} alt="LibreXTV" />
           </div>
           {NAV.map((item) => (
             <button
@@ -196,7 +196,7 @@ export function App() {
               <Icon name={item.icon} size={21} />
             </button>
           ))}
-          <div className="rail-foot">LIBRETV DESKTOP</div>
+          <div className="rail-foot">LIBREXTV DESKTOP</div>
         </aside>
 
         <main className="main">

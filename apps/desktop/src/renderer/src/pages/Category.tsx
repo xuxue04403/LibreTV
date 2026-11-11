@@ -6,7 +6,7 @@ import {
   type AggregatedGroup,
   type CategoryKey,
   type CategorySourceOutcome,
-} from '@libretv/core';
+} from '@librextv/core';
 import { http } from '../lib/bridge';
 import { cachedItems, rememberItems } from '../lib/catalog-cache';
 import { useAppStore } from '../lib/store';

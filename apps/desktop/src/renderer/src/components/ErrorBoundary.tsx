@@ -19,7 +19,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode; scope?: stri
   }
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
-    console.error('LibreTV 渲染异常', error, info.componentStack);
+    console.error('LibreXTV 渲染异常', error, info.componentStack);
   }
 
   render(): ReactNode {
