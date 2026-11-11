@@ -1,6 +1,6 @@
-# LibreTV PC & Android TV 客户端
+# LibreTV PC / Android TV / Android 手机 / 鸿蒙 客户端
 
-基于 [LibreSpark/LibreTV](https://github.com/LibreSpark/LibreTV) 的**桌面端（Windows / macOS / Linux）**与 **Android TV** 客户端。把上游 Next.js 服务端的采集聚合、解析与代理逻辑全部下放到客户端运行：**不需要部署服务器、不需要访问密码**，装好即用。
+基于 [LibreSpark/LibreTV](https://github.com/LibreSpark/LibreTV) 的**桌面端（Windows / macOS / Linux）**、**Android TV**、**Android 手机**与**鸿蒙原生（HarmonyOS NEXT）**客户端。把上游 Next.js 服务端的采集聚合、解析与代理逻辑全部下放到客户端运行：**不需要部署服务器、不需要访问密码**，装好即用。
 
 ![桌面端首页](docs/images/desktop-home.png)
 
@@ -17,7 +17,18 @@
 | `/api/status`、`DEFAULT_*` 环境变量 | 改为应用内「设置 / 数据源订阅」 |
 | IndexedDB 播放进度 | 桌面 localStorage（zustand）、TV DataStore |
 
-两端共享同一套解析语义，但各自有原生播放内核与交互：桌面用 Electron + hls.js / mpegts.js，电视用 Kotlin + Media3 ExoPlayer + Compose。
+桌面与 Android 共享同一套解析语义，但各有原生播放内核与交互：桌面用 Electron + hls.js / mpegts.js，Android 用 Kotlin + Media3 ExoPlayer + Compose，鸿蒙用 ArkTS + AVPlayer。
+
+**四种形态**
+
+| 形态 | 技术栈 | 包名 / 产物 | 适用设备 |
+| --- | --- | --- | --- |
+| 桌面端 | Electron + React + hls.js | `LibreTV-Setup-*.exe` / dmg / AppImage | Windows / macOS / Linux |
+| Android TV | Kotlin + Compose + Media3 | `org.libretv.tv`，`app-tv-release.apk` | 电视盒子、智能电视 |
+| Android 手机 | 同电视版，独立 flavor 与竖屏 UI | `org.libretv.tv.phone`，`app-phone-release.apk` | Android 手机/平板；**HarmonyOS 4.x 及更早的华为手机也能直接装** |
+| 鸿蒙原生 | ArkTS + ArkUI + AVPlayer | `org.libretv.harmony`，`entry-default-signed.hap` | **HarmonyOS 5 / NEXT**（纯血鸿蒙，不兼容 APK） |
+
+Android 电视版与手机版共用同一份 `data/` 层、`AppViewModel`、投屏（DLNA）与主题，只有界面、入口 Activity 与 Manifest 按 product flavor 分开——所以两边的源管理、换源、续播、拼音检索行为完全一致。鸿蒙版是独立重写的原生工程，逻辑逐条移植但代码不复用。
 
 ## 功能
 
@@ -82,15 +93,38 @@
 - 作为 **DLNA 接收端（DMR）** 常驻：手机视频 App 的投屏列表里出现「LibreTV 电视」，选中即在电视播放
 - 开机横幅、Leanback 启动器、`android.software.leanback` 声明齐全
 
+### Android 手机版
+
+和电视版同一套代码、独立 flavor（包名 `org.libretv.tv.phone`，可与电视版同机共存），界面为竖屏触摸重做：
+
+- 底部四栏导航（首页 / 搜索 / 直播 / 设置），返回键走与电视版相同的 `NavStack` 语义
+- 首页：继续观看（进度条 + 集数）、分类入口、各分类横向片单、我的收藏、直播收藏、本机数据概览
+- 搜索：软键盘回车即搜，结果双列网格，各源结算情况用 Chip 横滑展示
+- 详情：海报 + 简介 + 同片其它源切换 + 四列选集网格，续播按钮显示「继续播放 · 第 N 集」
+- 播放器：点击唤出/隐藏控件、进度条拖动（拖到片尾前 1 秒自动夹住，避免误触自动连播）、倍速、选集浮层；播放失败或卡顿 15 秒自动换源
+- 直播：分组与台名筛选、双列频道网格、收藏；播放页整屏复用同一个 `ExoPlayer` 切台（避免耗尽 MediaCodec 池）
+- 设置：源管理、订阅导入、四个播放开关、清空历史、投屏接收状态
+
+### 鸿蒙原生版
+
+`apps/harmonyos` 是独立的 ArkTS/ArkUI 工程（**HarmonyOS 5/NEXT 不再兼容 APK，必须有这一版**），逻辑从 `packages/core` 与 Kotlin 层逐条移植：
+
+- `ets/data/`：HTTP（`@ohos.net.http`）、Apple CMS 搜索/详情解析、相关性与同名聚合、成人过滤、M3U 解析、内置源合并与本地存储（`preferences`）
+- `ets/pages/`：首页 / 搜索 / 详情 / 直播 / 设置 / 播放 / 直播播放七个页面，配色与桌面、电视端保持一致
+- 播放器用 `AVPlayer` + `XComponent`（Surface 输出），同样有 15~20 秒卡顿看门狗与自动换源
+- 全应用靠 `AppStorage` 的 `vmVersion` 版本号驱动重绘，单例 `appModel` 持有全部状态
+
 ## 仓库结构
 
 ```
-defaults/sources.json        内置默认源（两端共用同一份）
+defaults/sources.json        内置默认源（四个端共用同一份）
 packages/core/               共享 TS 核心：解析 / 聚合 / 订阅 / 存储模型 / 增量解析 / 分类与检索缓存（266 项单测）
 apps/desktop/                Electron 桌面端（main / preload / renderer）
-apps/androidtv/              Android TV（Kotlin + Compose + Media3 + 自研 DLNA DMR）
+apps/androidtv/              Android 电视版（flavor tv）+ 手机版（flavor phone），Kotlin + Compose + Media3 + 自研 DLNA DMR
+apps/harmonyos/              鸿蒙原生版（ArkTS + ArkUI + AVPlayer）
 tools/mock-cms/              本地假采集站（端到端联调 + 截图）
 tools/mock-dlna/             假 DLNA 渲染器（投屏链路测试）
+tools/harmony/               鸿蒙签名材料生成与构建脚本
 reference/LibreTV/           上游源码只读快照（2.19.7），见 reference/UPSTREAM.md
 docs/                        分析与架构文档
 ```
@@ -110,27 +144,37 @@ npm run dist:desktop     # 打包安装包（NSIS / portable / dmg / AppImage）
 > 首次启动会自动导入 `defaults/sources.json` 里的默认源，可在「设置 → 点播源 / 直播源」里停用或删除，也可随时「恢复默认源」。
 > 内置源清单带版本号：升级到带新内置源的版本时，会自动补齐**你本地没有的**那些源；你删掉过的内置源不会被偷偷加回来。
 
-### Android TV
+### Android 电视版 / 手机版
 
 ```bash
 cd apps/androidtv
 # 需 JDK 17–21、Android SDK 35；Gradle 版本由仓库自带的 wrapper 决定（8.13），不必本机安装
-./gradlew assembleDebug       # Windows：gradlew.bat assembleDebug；也可用 Android Studio 打开该目录
-adb connect <电视IP>:5555     # 电视开启「网络调试」
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+./gradlew assembleTvDebug       # 电视版；Windows：gradlew.bat assembleTvDebug
+./gradlew assemblePhoneRelease  # 手机版（需 keystore.properties 里的签名配置）
+adb connect <电视IP>:5555       # 电视开启「网络调试」
+adb install -r app/build/outputs/apk/tv/debug/app-tv-debug.apk
 ```
 
-APK 位置：`apps/androidtv/app/build/outputs/apk/debug/app-debug.apk`（debug 包名带 `.debug` 后缀）。
+产物：电视版 `apps/androidtv/app/build/outputs/apk/tv/*/app-tv-*.apk`（debug 包名带 `.debug` 后缀），手机版 `apps/androidtv/app/build/outputs/apk/phone/release/app-phone-release.apk`（约 2.8 MB，包名 `org.libretv.tv.phone`，可与电视版同机共存）。
+
+### 鸿蒙原生版
+
+```bash
+node tools/harmony/gen-sign-material.cjs apps/harmonyos "<32位以上密码>"   # 首次：生成本地签名材料
+pwsh -File tools/harmony/build.ps1                                        # 构建 HAP
+```
+
+产物：`apps/harmonyos/entry/build/default/outputs/default/entry-default-signed.hap`（约 780 KB）。工具链装配（SDK 拍平、hvigor 手工安装、三处 SDK 补丁）与真机安装步骤见 [docs/build.md](docs/build.md#鸿蒙原生版harmonyos-next)。
 
 ### 测试
 
 ```bash
 npm test                     # 核心解析/聚合/换源/增量解析 \+ 桌面代理 266 项单测
 npm run test:dlna            # DLNA 发送端链路（SSDP → 设备描述 → SOAP）
-cd apps/androidtv && ./gradlew testDebugUnitTest   # Kotlin 解析层/换源/缩放/换台/播放器参数/观看记录去重/拼音/广告过滤/缓存/默认源选择/首焦点与遥控器 146 项单测
+cd apps/androidtv && ./gradlew testTvDebugUnitTest   # Kotlin 解析层/换源/缩放/换台/播放器参数/观看记录去重/拼音/广告过滤/缓存/默认源选择/首焦点与遥控器 168 项单测
 ```
 
-电视端的焦点与遥控器行为用 Robolectric 在 JVM 上跑真实 Compose 组合（`ui/AutoFocusUiTest.kt`），不需要真机或模拟器。CI 配置在 `.github/workflows/ci.yml`，同时跑桌面端与电视端两套测试。
+电视端的焦点与遥控器行为用 Robolectric 在 JVM 上跑真实 Compose 组合（`app/src/testTv/.../ui/AutoFocusUiTest.kt`），不需要真机或模拟器。CI 配置在 `.github/workflows/ci.yml`，同时跑桌面端与电视端两套测试。
 
 端到端联调（本地假采集站 + 真实 HLS 视频）：见 [docs/build.md](docs/build.md#端到端联调)。
 
@@ -155,8 +199,9 @@ TV 端没有真机也能验：普通 `system-images;android-35;default;x86_64` �
 ## 文档
 
 - [上游分析与「服务端 → 客户端」改造决策](docs/analysis.md)
-- [架构设计（进程模型 / 播放链路 / 投屏链路）](docs/architecture.md)
+- [架构设计（进程模型 / 播放链路 / 投屏链路 / 四端分层）](docs/architecture.md)
 - [内置播放源体检与换血（2026-11，清单 version 7）](docs/source-audit-2026-11.md)
+- [1.3.8 发布说明（Android 手机版 + 鸿蒙原生版）](docs/release-1.3.8.md)
 - [1.3.7 发布说明](docs/release-1.3.7.md)
 - [构建、打包与联调指南](docs/build.md)
 

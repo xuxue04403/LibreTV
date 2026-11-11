@@ -12,12 +12,22 @@
         │                                                          │
 ┌───────▼───────────────────────┐                  ┌───────────────▼──────────────┐
 │ apps/desktop（Electron）       │                  │ apps/androidtv（Kotlin）      │
-│  main: IPC fetch / 回环代理 /  │                  │  ViewModel: 搜索/详情/直播     │
-│        DLNA 发送端             │                  │  Repository + OkHttp          │
-│  renderer: React + hls.js      │                  │  Media3 ExoPlayer             │
-│  preload: contextBridge        │                  │  DLNA 接收端（DMR）           │
+│  main: IPC fetch / 回环代理 /  │                  │  main: data/ + ViewModel      │
+│        DLNA 发送端             │                  │  tv:   横屏 + 遥控器焦点 UI   │
+│  renderer: React + hls.js      │                  │  phone: 竖屏 + 触摸 UI        │
+│  preload: contextBridge        │                  │  Media3 ExoPlayer             │
+│                                │                  │  DLNA 接收端（DMR）           │
 └───────────────────────────────┘                  └──────────────────────────────┘
+
+                        ┌──────────────────────────────┐
+   （无共享代码，逻辑逐条移植）│ apps/harmonyos（ArkTS）      │
+                        │  data/: 解析 · 聚合 · 存储    │
+                        │  pages/: ArkUI 七个页面        │
+                        │  AVPlayer + XComponent        │
+                        └──────────────────────────────┘
 ```
+
+四个端产物：桌面安装包（Electron）、`app-tv-release.apk`（`org.libretv.tv`）、`app-phone-release.apk`（`org.libretv.tv.phone`）、`entry-default-signed.hap`（`org.libretv.harmony`）。电视版与手机版共用 `data/`、`AppViewModel`、`NavBack`、`cast/`、`ui/theme/`；鸿蒙版是独立实现。
 
 没有服务端进程、没有数据库、没有账号体系。所有状态都在本机。
 
@@ -284,18 +294,52 @@ DetailPanel 打开
 - 同步 = 重新拉取订阅文本 → `parseSubscription` → `importSources`（幂等合并），不会删除用户手动停用的源。
 - 失败只累计计数、不重试轰炸；暂停状态在设置页可见，改周期即解除。
 
-## Android TV 端
+## Android 电视版与手机版
 
 ### 分层
 
 ```
-MainActivity ── Compose UI（Home/Search/Detail/Player/Live/Settings/Cast）
+MainActivity（tv） / PhoneActivity（phone）── Compose UI
      │                │
      │                └── AppViewModel（StateFlow<AppData> + 页面状态）
      │                        └── Repository ── Net(OkHttp) ── 采集站 / M3U
      └── DlnaServer（SSDP + HTTP/SOAP，后台线程）
 AppStore（DataStore Preferences，整份 AppData 以 JSON 存储）
 ```
+
+### 双 flavor 的切分（1.3.8）
+
+一个 Gradle 模块、两个 product flavor（维度 `form`），不是两个模块：
+
+| 目录 | 归谁 | 内容 |
+| --- | --- | --- |
+| `app/src/main/` | 共用 | `data/`（采集解析、存储、拼音、广告过滤、分片预取）、`AppViewModel.kt`、`NavBack.kt`、`LibreTvApp.kt`、`cast/`（DLNA DMR）、`ui/theme/`（配色与字号）、`res/`（图标、主题、字符串） |
+| `app/src/tv/` | 电视版 | `MainActivity.kt`、`ui/` 11 个界面文件（含 `FocusPolicy.kt`、`Components.kt` 的十尺屏组件）、`AndroidManifest.xml`（landscape + Leanback 启动器 + banner） |
+| `app/src/phone/` | 手机版 | `PhoneActivity.kt`、`phone/Components.kt`（触摸版组件）、首页/搜索/详情/分类/直播/播放/直播播放/设置/投屏 9 个界面、`AndroidManifest.xml`（portrait + 普通启动器） |
+| `app/src/test/` | 共用测试 | `data/` 的 19 个单测文件（与 flavor 无关） |
+| `app/src/testTv/` | 电视版测试 | `ui/AutoFocusUiTest.kt`、`ui/FocusPolicyTest.kt`（依赖 `src/tv` 的 UI） |
+
+这样切分的依据是**依赖方向**：`data/` 与 `AppViewModel` 里没有一处 `R.` 引用，也没有 Leanback/焦点相关 API，所以能原样留在 `main`；而 `ui/` 下的组件全是十尺屏语义（`focusedScale`、`FocusRequester`、960×540 设计基准），手机版需要另一套触摸组件，所以整目录搬进 `tv`。
+
+代价是产品代码里唯一的 `R.` 引用（`ui/CastScreen.kt:81` 的 `painterResource(R.drawable.logo)`）跟着搬进了 `tv`，但 `logo.png`/`tv_banner.png` 仍在 `main/res/`，flavor 不需要重复提供资源。
+
+### 手机版与电视版的行为差异
+
+只有交互形态不同，业务语义完全共用：
+
+| 维度 | 电视版 | 手机版 |
+| --- | --- | --- |
+| 方向 | 锁定 landscape | `unspecified`，随系统旋转（`configChanges` 含 orientation） |
+| 导航 | 顶部 `NavRail` + 焦点移上去就切页 | 底部四栏 `PhoneBottomNav`，点击切换 |
+| 首页入口 | 横幅 + 分类入口 + 片单 | 继续观看 + 分类入口 + 片单 + 收藏 + 本机数据 |
+| 焦点 | `FocusRequester` 全链路可达，`navFocusHold` 防止误跳 | 无焦点系统，`clickable` 直接响应 |
+| 播放器控件 | 遥控器方向键，3.5 秒自动隐藏 | 点击整屏切换显隐，可拖 `Slider` |
+| 缩放 | `TvScaleSurface`（960×540 基准，`min(w/960,h/540)`） | 直接用系统 density |
+| 包名 | `org.libretv.tv`（可覆盖升级旧版） | `org.libretv.tv.phone`（同机共存） |
+
+`NavStack`（返回键退几级）与 `AppViewModel` 的全部方法两边完全一致，所以「进详情 → 播放 → 返回」这种路径在两种形态下落到同一页。
+
+## 电视端实现细节（flavor tv）
 
 ### 电视交互要点
 
@@ -623,6 +667,61 @@ interface AppData {
   removedDefaultUrls: string[]     // 用户删过的内置源，升级补源时跳过
 }
 ```
+
+## 鸿蒙原生端（`apps/harmonyos`）
+
+HarmonyOS 5 / NEXT 不再兼容 APK，所以这一端是**独立重写的原生工程**，代码与 Kotlin/TS 都不复用，但逻辑逐条移植。这也是四个端里唯一没有共享代码的。
+
+### 分层
+
+```
+EntryAbility（UIAbility）── 先 await appModel.start(context)，再 loadContent('pages/Index')
+     │
+Index.ets ── 按 appModel.page 分发七个页面（@Entry，@StorageLink('vmVersion') 驱动重绘）
+     │
+appModel（单例，model/AppModel.ets）
+     ├── data/Defaults.ets     内置源合并（与桌面、Android 端同构：freshByKey 换址 + 末尾追加）
+     ├── data/Repository.ets   搜索分页 / 详情兜底 / 直播列表（http.createHttp）
+     ├── data/Cms.ets          Apple CMS 解析（play_url → 分集，详情页 HTML 兜底）
+     ├── data/Relevance.ets    相关性与同名聚合（归一标题 + 年份分组 + 排序）
+     ├── data/AdultFilter.ets  成人分类与标题过滤
+     ├── data/M3u.ets          M3U 解析与跨源按台名去重
+     ├── data/Storage.ets      preferences 持久化（整份 AppData 以 JSON 存）
+     └── view/Common.ets       Poster / SectionTitle / PillButton / TagChip / EmptyBox / HintLine
+```
+
+### 状态驱动方式
+
+ArkTS 的 V1 状态管理没有 `StateFlow`，这里用**单例 + 版本号**：
+
+```ts
+bump(): void {
+  this.version += 1;
+  AppStorage.setOrCreate('vmVersion', this.version);
+}
+```
+
+每个页面顶部声明 `@StorageLink('vmVersion') vmVersion: number = 0`，`appModel` 任何状态改动都调 `bump()`，页面随之重绘并从 `appModel` 重新读字段。这样避免了把嵌套对象拆成一堆 `@State`，代价是**重绘粒度粗**（改一个字段整页重绘），对这类页面量级的应用可以接受。
+
+### 播放器
+
+`AVPlayer` + `XComponent`（`XComponentType.SURFACE`）输出到 Surface：
+
+- `XComponent.onLoad` 里取 `controller.getXComponentSurfaceId()`，在 `stateChange` 的 `initialized` 阶段 `player.surfaceId = surfaceId` 再 `prepare()`（顺序错了会黑屏）
+- 状态机：`initialized → prepare()`、`prepared → play()`、`playing → 清 buffering`、`completed → 自动连播或结束`
+- 卡顿看门狗与电视版一致：1 秒 ticker 累计 `stalledSec`，超阈值按 `candidates` 逐个 `fetchDetail` 换源
+- 直播页整页复用同一个 `AVPlayer`，切台只换 `url`，避免反复创建实例
+
+### 与其它端的差异
+
+| 维度 | 其它端 | 鸿蒙端 |
+| --- | --- | --- |
+| 网络 | OkHttp / Electron net / fetch | `@ohos.net.http`（`connectTimeout` 与 `readTimeout` 分开设） |
+| URL 解析 | 全局 `URL` | 无全局 `URL`，必须 `import { url as ArkUrl } from '@kit.ArkTS'` |
+| 播放内核 | ExoPlayer / hls.js | `AVPlayer`（原生支持 HLS） |
+| 状态 | zustand / StateFlow | 单例 + `AppStorage` 版本号 |
+| 投屏 | DLNA 发送端（桌面）/ 接收端（TV、手机） | **本版未实现** |
+| 首页分类推荐 | 有 | **本版为空**（`homeRows()` 返回空数组，见 release-1.3.8 已知限制） |
 
 ## 错误处理与降级
 
