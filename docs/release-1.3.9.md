@@ -70,6 +70,15 @@ Java/Kotlin 包目录整体从 `org/libretv/` 迁到 `org/librextv/`（5 个 sou
 
 鸿蒙 HAP 的 debug 构建约 780 KB，release 构建因为 ArkTS 压缩与符号剥离会小到 340 KB。
 
+本地产物路径（都不入库）：
+
+- 桌面端：`apps/desktop/release/LibreXTV-Setup-1.3.9-x64.exe`、`LibreXTV-Portable-1.3.9-x64.exe`
+- Android：`apps/androidtv/app/build/outputs/apk/tv/release/app-tv-release.apk`、`.../phone/release/app-phone-release.apk`
+- 鸿蒙：`apps/harmonyos/entry/build/default/outputs/default/entry-default-signed.hap`
+- 发布用的统一命名副本：`.artifacts/1.3.9/`（`LibreXTV-TV-1.3.9.apk`、`LibreXTV-Phone-1.3.9.apk`、`LibreXTV-Harmony-1.3.9.hap`）
+
+HAP 只有 340 KB 是正常的：里面是 `ets/modules.abc`（289 KB 的方舟字节码，已含全部 ArkTS 逻辑与中文文案）、`resources`（图标 + 内置源清单）、`module.json` 与签名块，没有大体积的资源或原生库。
+
 ## 已知限制
 
 - **鸿蒙 HAP 用的是本地自签证书**：只能装在已登录开发者账号并开启 USB 调试的设备上。要分发给他人，需在 AppGallery Connect 用正式证书重新签发 profile 后重跑 `tools/harmony/build.ps1`。
