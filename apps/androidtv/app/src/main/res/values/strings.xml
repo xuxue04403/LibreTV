@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">LibreTV</string>
+    <string name="app_name_phone">LibreTV 手机版</string>
     <string name="banner_desc">LibreTV 影视聚合客户端</string>
 </resources>

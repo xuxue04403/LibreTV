@@ -25,8 +25,28 @@ android {
         applicationId = "org.libretv.tv"
         minSdk = 23
         targetSdk = 35
-        versionCode = 16
-        versionName = "1.3.7"
+        versionCode = 17
+        versionName = "1.3.8"
+    }
+
+    /**
+     * 两个形态共用同一套数据层、ViewModel 与播放内核，只把 UI、Activity 与清单分开：
+     * - `tv`    ：遥控器 / 横屏 / Leanback 启动器，applicationId 保持 `org.libretv.tv`（老用户可直接覆盖升级）
+     * - `phone` ：触摸 / 可旋转 / 常规启动器，applicationId 用 `org.libretv.tv.phone`（可与电视版同机共存）
+     *
+     * 共用部分放在 `src/main`（data/、cast/、AppViewModel、NavBack、LibreTvApp、ui/theme/），
+     * 各自的界面放 `src/tv`、`src/phone`。改数据层只需要改一处。
+     */
+    flavorDimensions += "form"
+    productFlavors {
+        create("tv") {
+            dimension = "form"
+            applicationId = "org.libretv.tv"
+        }
+        create("phone") {
+            dimension = "form"
+            applicationId = "org.libretv.tv.phone"
+        }
     }
 
     signingConfigs {

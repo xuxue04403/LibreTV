@@ -34,7 +34,7 @@ jobs:
         run: npm test
 
   androidtv:
-    name: 电视端（Kotlin 单测）
+    name: 电视端与手机端（Kotlin 单测）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,15 +48,18 @@ jobs:
       - uses: android-actions/setup-android@v3
 
       # gradlew 已提交（gradle/wrapper/gradle-wrapper.jar + properties），
-      # 不依赖开发者本机装的 gradle 版本
-      - name: Kotlin 单测
+      # 不依赖开发者本机装的 gradle 版本。
+      # flavor 拆分后任务名带 flavor 前缀：testTvDebugUnitTest / testPhoneDebugUnitTest
+      - name: Kotlin 单测（电视版 + 手机版）
         working-directory: apps/androidtv
-        run: ./gradlew --no-daemon :app:testDebugUnitTest
+        run: ./gradlew --no-daemon :app:testTvDebugUnitTest :app:testPhoneDebugUnitTest
 
       - name: 上传测试报告
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: androidtv-test-report
-          path: apps/androidtv/app/build/reports/tests/testDebugUnitTest
+          path: |
+            apps/androidtv/app/build/reports/tests/testTvDebugUnitTest
+            apps/androidtv/app/build/reports/tests/testPhoneDebugUnitTest
           if-no-files-found: ignore
