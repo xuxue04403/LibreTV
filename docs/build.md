@@ -93,6 +93,8 @@ export ANDROID_HOME=/path/to/android-sdk     # Windows: $env:ANDROID_HOME='D:\..
 - 电视版 `app/build/outputs/apk/tv/debug/app-tv-debug.apk`（包名带 `.debug` 后缀）、release `apk/tv/release/app-tv-release.apk`；
 - 手机版 `app/build/outputs/apk/phone/debug/app-phone-debug.apk`、release `apk/phone/release/app-phone-release.apk`（约 2.8 MB）。
 
+分发用的改名副本放在 `apps/androidtv/release/`（如 `LibreXTV-TV-1.3.9.apk`、`LibreXTV-Phone-1.3.9.apk`），与桌面端 `apps/desktop/release/`、鸿蒙 `apps/harmonyos/release/` 的约定一致。
+
 用 Android Studio 打开 `apps/androidtv` 也可直接运行，在 Build Variants 里选 `tvDebug` 或 `phoneDebug`。
 
 ### 安装
@@ -176,7 +178,10 @@ export DEVECO_SDK_HOME=/path/to/.tools/harmony/sdk-7.0    # Windows: $env:DEVECO
 node node_modules/@ohos/hvigor/bin/hvigor.js assembleHap --no-daemon
 ```
 
-产物：`apps/harmonyos/entry/build/default/outputs/default/entry-default-signed.hap`（约 340 KB）。
+产物：
+
+- hvigor 原生输出 `apps/harmonyos/entry/build/default/outputs/default/entry-default-signed.hap`（约 340 KB）
+- 构建脚本会额外按版本号复制一份到 `apps/harmonyos/release/LibreXTV-Harmony-<版本>.hap`，与桌面端的 `apps/desktop/release/`、Android 的 `apps/androidtv/release/` 对齐，分发时用这份。
 
 ### 安装到真机
 

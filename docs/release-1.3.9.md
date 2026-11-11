@@ -70,12 +70,15 @@ Java/Kotlin 包目录整体从 `org/libretv/` 迁到 `org/librextv/`（5 个 sou
 
 鸿蒙 HAP 的 debug 构建约 780 KB，release 构建因为 ArkTS 压缩与符号剥离会小到 340 KB。
 
-本地产物路径（都不入库）：
+本地产物路径（都不入库，各端产物都放在自己工程下）：
 
-- 桌面端：`apps/desktop/release/LibreXTV-Setup-1.3.9-x64.exe`、`LibreXTV-Portable-1.3.9-x64.exe`
-- Android：`apps/androidtv/app/build/outputs/apk/tv/release/app-tv-release.apk`、`.../phone/release/app-phone-release.apk`
-- 鸿蒙：`apps/harmonyos/entry/build/default/outputs/default/entry-default-signed.hap`
-- 发布用的统一命名副本：`.artifacts/1.3.9/`（`LibreXTV-TV-1.3.9.apk`、`LibreXTV-Phone-1.3.9.apk`、`LibreXTV-Harmony-1.3.9.hap`）
+| 端 | 发布副本 | hvigor / Gradle / electron-builder 原生输出 |
+| --- | --- | --- |
+| 桌面端 | `apps/desktop/release/LibreXTV-Setup-1.3.9-x64.exe`、`LibreXTV-Portable-1.3.9-x64.exe` | 同目录（electron-builder 直接输出到这里） |
+| Android | `apps/androidtv/release/LibreXTV-TV-1.3.9.apk`、`LibreXTV-Phone-1.3.9.apk` | `apps/androidtv/app/build/outputs/apk/{tv,phone}/release/` |
+| 鸿蒙 | `apps/harmonyos/release/LibreXTV-Harmony-1.3.9.hap` | `apps/harmonyos/entry/build/default/outputs/default/entry-default-signed.hap` |
+
+鸿蒙的发布副本由脚本自动完成：跑 `pwsh -File tools/harmony/build.ps1 -Mode release` 后，构建脚本会把签名 HAP 按版本号命名复制到 `apps/harmonyos/release/`。Android 的两个 APK 由 Gradle 输出到 `app/build/outputs/`，发布前手动改名复制到 `apps/androidtv/release/`。
 
 HAP 只有 340 KB 是正常的：里面是 `ets/modules.abc`（289 KB 的方舟字节码，已含全部 ArkTS 逻辑与中文文案）、`resources`（图标 + 内置源清单）、`module.json` 与签名块，没有大体积的资源或原生库。
 

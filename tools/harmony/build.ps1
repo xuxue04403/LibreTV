@@ -9,6 +9,9 @@
 #   - .tools/harmony/sdk-7.0/             HarmonyOS SDK（DEVECO_SDK_HOME 指向这里）
 #   - apps/harmonyos/node_modules/@ohos/  hvigor 与 hvigor-ohos-plugin（手工复制，npm 源无此包）
 #   - apps/harmonyos/signing/             本地签名材料（gen-signing.ps1 生成）
+#
+# 产物：hvigor 原生输出在 entry/build/default/outputs/default/，构建成功后
+# 会额外复制一份到 apps/harmonyos/release/（带版本号的发布名，便于分发）。
 param(
     [ValidateSet('debug', 'release')]
     [string]$Mode = 'debug',
@@ -42,5 +45,20 @@ finally {
 }
 
 $out = Join-Path $project 'entry\build\default\outputs\default'
-Get-ChildItem $out -Filter '*.hap' -ErrorAction SilentlyContinue |
-    ForEach-Object { "{0}  {1:N0} 字节" -f $_.Name, $_.Length }
+$hap = Get-ChildItem $out -Filter '*-signed.hap' -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($hap) {
+    # 发布副本放到工程自己的 release/ 下，与 apps/desktop/release 的约定一致
+    $release = Join-Path $project 'release'
+    New-Item -ItemType Directory -Path $release -Force | Out-Null
+    $appJson = Get-Content (Join-Path $project 'AppScope\app.json5') -Raw
+    $version = [regex]::Match($appJson, 'versionName"\s*:\s*"([^"]+)"').Groups[1].Value
+    if (-not $version) { $version = 'dev' }
+    $copy = Join-Path $release "LibreXTV-Harmony-$version.hap"
+    Copy-Item $hap.FullName $copy -Force
+    "{0}  {1:N0} 字节" -f $hap.Name, $hap.Length
+    "已复制到 {0}  {1:N0} 字节" -f $copy, (Get-Item $copy).Length
+}
+else {
+    Get-ChildItem $out -Filter '*.hap' -ErrorAction SilentlyContinue |
+        ForEach-Object { "{0}  {1:N0} 字节" -f $_.Name, $_.Length }
+}

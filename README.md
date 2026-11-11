@@ -155,7 +155,7 @@ adb connect <电视IP>:5555       # 电视开启「网络调试」
 adb install -r app/build/outputs/apk/tv/debug/app-tv-debug.apk
 ```
 
-产物：电视版 `apps/androidtv/app/build/outputs/apk/tv/*/app-tv-*.apk`（debug 包名带 `.debug` 后缀），手机版 `apps/androidtv/app/build/outputs/apk/phone/release/app-phone-release.apk`（约 2.8 MB，包名 `org.librextv.tv.phone`，可与电视版同机共存）。
+产物：电视版 `apps/androidtv/app/build/outputs/apk/tv/*/app-tv-*.apk`（debug 包名带 `.debug` 后缀），手机版 `apps/androidtv/app/build/outputs/apk/phone/release/app-phone-release.apk`（约 2.8 MB，包名 `org.librextv.tv.phone`，可与电视版同机共存）。分发用的改名副本放在 `apps/androidtv/release/`。
 
 ### 鸿蒙原生版
 
@@ -164,7 +164,7 @@ pwsh -File tools/harmony/gen-signing.ps1                                  # 首�
 pwsh -File tools/harmony/build.ps1                                        # 构建 HAP
 ```
 
-产物：`apps/harmonyos/entry/build/default/outputs/default/entry-default-signed.hap`（约 340 KB）。工具链装配（SDK 拍平、hvigor 手工安装、三处 SDK 补丁）与真机安装步骤见 [docs/build.md](docs/build.md#鸿蒙原生版harmonyos-next)。
+产物：`apps/harmonyos/entry/build/default/outputs/default/entry-default-signed.hap`（约 340 KB），构建脚本会同时按版本号复制一份到 `apps/harmonyos/release/LibreXTV-Harmony-<版本>.hap` 用于分发。工具链装配（SDK 拍平、hvigor 手工安装、三处 SDK 补丁）与真机安装步骤见 [docs/build.md](docs/build.md#鸿蒙原生版harmonyos-next)。
 
 ### 测试
 
